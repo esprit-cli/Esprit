@@ -1,0 +1,846 @@
+#!/usr/bin/env python3
+"""
+Esprit Agent Interface
+
+Commands:
+  esprit scan <target>       Run a penetration test scan
+  esprit provider login      Login to an LLM provider (OAuth)
+  esprit provider status     Show provider authentication status
+  esprit provider logout     Logout from a provider
+"""
+
+import argparse
+import asyncio
+import logging
+import shutil
+import sys
+from pathlib import Path
+from typing import Any
+
+import litellm
+from docker.errors import DockerException
+from rich.console import Console
+from rich.panel import Panel
+from rich.text import Text
+
+from esprit.config import Config, apply_saved_config, save_current_config
+
+
+apply_saved_config()
+
+from esprit.interface.cli import run_cli  # noqa: E402
+from esprit.interface.launchpad import LaunchpadResult, run_launchpad  # noqa: E402
+from esprit.interface.tui import run_tui  # noqa: E402
+from esprit.interface.utils import (  # noqa: E402
+    assign_workspace_subdirs,
+    build_final_stats_text,
+    check_docker_connection,
+    clone_repository,
+    collect_local_sources,
+    generate_run_name,
+    image_exists,
+    infer_target_type,
+    process_pull_line,
+    rewrite_localhost_targets,
+    validate_config_file,
+    validate_llm_response,
+)
+from esprit.runtime.docker_runtime import HOST_GATEWAY_HOSTNAME  # noqa: E402
+from esprit.telemetry import posthog  # noqa: E402
+from esprit.telemetry.tracer import get_global_tracer  # noqa: E402
+
+
+logging.getLogger().setLevel(logging.ERROR)
+
+
+def validate_environment() -> None:  # noqa: PLR0912, PLR0915
+    from esprit.llm.config import DEFAULT_MODEL
+
+    console = Console()
+    missing_required_vars = []
+    missing_optional_vars = []
+
+    # ESPRIT_LLM is no longer required since we have a default model
+    # if not Config.get("esprit_llm"):
+    #     missing_required_vars.append("ESPRIT_LLM")
+
+    has_base_url = any(
+        [
+            Config.get("llm_api_base"),
+            Config.get("openai_api_base"),
+            Config.get("litellm_base_url"),
+            Config.get("ollama_api_base"),
+        ]
+    )
+
+    if not Config.get("llm_api_key"):
+        missing_optional_vars.append("LLM_API_KEY")
+
+    if not has_base_url:
+        missing_optional_vars.append("LLM_API_BASE")
+
+    if not Config.get("perplexity_api_key"):
+        missing_optional_vars.append("PERPLEXITY_API_KEY")
+
+    if not Config.get("esprit_reasoning_effort"):
+        missing_optional_vars.append("ESPRIT_REASONING_EFFORT")
+
+    if missing_required_vars:
+        error_text = Text()
+        error_text.append("MISSING REQUIRED ENVIRONMENT VARIABLES", style="bold red")
+        error_text.append("\n\n", style="white")
+
+        for var in missing_required_vars:
+            error_text.append(f"• {var}", style="bold yellow")
+            error_text.append(" is not set\n", style="white")
+
+        if missing_optional_vars:
+            error_text.append("\nOptional environment variables:\n", style="dim white")
+            for var in missing_optional_vars:
+                error_text.append(f"• {var}", style="dim yellow")
+                error_text.append(" is not set\n", style="dim white")
+
+        error_text.append("\nRequired environment variables:\n", style="white")
+        for var in missing_required_vars:
+            if var == "ESPRIT_LLM":
+                error_text.append("• ", style="white")
+                error_text.append("ESPRIT_LLM", style="bold cyan")
+                error_text.append(
+                    " - Model name to use with litellm (e.g., 'openai/gpt-5')\n",
+                    style="white",
+                )
+
+        if missing_optional_vars:
+            error_text.append("\nOptional environment variables:\n", style="white")
+            for var in missing_optional_vars:
+                if var == "LLM_API_KEY":
+                    error_text.append("• ", style="white")
+                    error_text.append("LLM_API_KEY", style="bold cyan")
+                    error_text.append(
+                        " - API key for the LLM provider "
+                        "(not needed for local models, Vertex AI, AWS, etc.)\n",
+                        style="white",
+                    )
+                elif var == "LLM_API_BASE":
+                    error_text.append("• ", style="white")
+                    error_text.append("LLM_API_BASE", style="bold cyan")
+                    error_text.append(
+                        " - Custom API base URL if using local models (e.g., Ollama, LMStudio)\n",
+                        style="white",
+                    )
+                elif var == "PERPLEXITY_API_KEY":
+                    error_text.append("• ", style="white")
+                    error_text.append("PERPLEXITY_API_KEY", style="bold cyan")
+                    error_text.append(
+                        " - API key for Perplexity AI web search (enables real-time research)\n",
+                        style="white",
+                    )
+                elif var == "ESPRIT_REASONING_EFFORT":
+                    error_text.append("• ", style="white")
+                    error_text.append("ESPRIT_REASONING_EFFORT", style="bold cyan")
+                    error_text.append(
+                        " - Reasoning effort level: none, minimal, low, medium, high, xhigh "
+                        "(default: high)\n",
+                        style="white",
+                    )
+
+        error_text.append("\nExample setup:\n", style="white")
+        error_text.append("export ESPRIT_LLM='openai/gpt-5'\n", style="dim white")
+
+        if missing_optional_vars:
+            for var in missing_optional_vars:
+                if var == "LLM_API_KEY":
+                    error_text.append(
+                        "export LLM_API_KEY='your-api-key-here'  "
+                        "# not needed for local models, Vertex AI, AWS, etc.\n",
+                        style="dim white",
+                    )
+                elif var == "LLM_API_BASE":
+                    error_text.append(
+                        "export LLM_API_BASE='http://localhost:11434'  "
+                        "# needed for local models only\n",
+                        style="dim white",
+                    )
+                elif var == "PERPLEXITY_API_KEY":
+                    error_text.append(
+                        "export PERPLEXITY_API_KEY='your-perplexity-key-here'\n", style="dim white"
+                    )
+                elif var == "ESPRIT_REASONING_EFFORT":
+                    error_text.append(
+                        "export ESPRIT_REASONING_EFFORT='high'\n",
+                        style="dim white",
+                    )
+
+        panel = Panel(
+            error_text,
+            title="[bold white]ESPRIT",
+            title_align="left",
+            border_style="red",
+            padding=(1, 2),
+        )
+
+        console.print("\n")
+        console.print(panel)
+        console.print()
+        sys.exit(1)
+
+
+def check_docker_installed() -> None:
+    if shutil.which("docker") is None:
+        console = Console()
+        error_text = Text()
+        error_text.append("DOCKER NOT INSTALLED", style="bold red")
+        error_text.append("\n\n", style="white")
+        error_text.append("The 'docker' CLI was not found in your PATH.\n", style="white")
+        error_text.append(
+            "Please install Docker and ensure the 'docker' command is available.\n\n", style="white"
+        )
+        error_text.append("Install: https://docs.docker.com/get-docker/\n", style="dim white")
+
+        panel = Panel(
+            error_text,
+            title="[bold white]ESPRIT",
+            title_align="left",
+            border_style="red",
+            padding=(1, 2),
+        )
+        console.print("\n", panel, "\n")
+        sys.exit(1)
+
+
+def ensure_docker_running() -> None:
+    """Check if Docker daemon is running; auto-start on macOS if possible."""
+    import subprocess
+    import time
+
+    console = Console()
+
+    try:
+        import docker as docker_lib
+        docker_lib.from_env()
+        return  # Docker is running
+    except Exception:
+        pass
+
+    # Try to auto-start Docker on macOS
+    if sys.platform == "darwin":
+        console.print()
+        console.print("[dim]Docker daemon not running. Starting Docker Desktop...[/]")
+
+        try:
+            subprocess.Popen(
+                ["open", "-a", "Docker"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except Exception:
+            console.print("[red]Could not start Docker Desktop.[/]")
+            console.print("[dim]Please start Docker Desktop manually and try again.[/]")
+            console.print()
+            sys.exit(1)
+
+        # Wait for Docker to become available
+        with console.status("[bold cyan]Waiting for Docker to start...", spinner="dots"):
+            for _ in range(60):  # Wait up to 60 seconds
+                time.sleep(1)
+                try:
+                    import docker as docker_lib
+                    docker_lib.from_env()
+                    console.print("[green]Docker started.[/]")
+                    return
+                except Exception:
+                    continue
+
+        console.print("[red]Docker did not start in time.[/]")
+        console.print("[dim]Please start Docker Desktop manually and try again.[/]")
+        console.print()
+        sys.exit(1)
+    else:
+        console.print()
+        console.print("[yellow]Docker daemon is not running.[/]")
+        console.print("[dim]Please start Docker and try again.[/]")
+        console.print()
+        sys.exit(1)
+
+
+def ensure_provider_configured() -> bool:
+    """Check if at least one LLM provider is configured. Return True if ready."""
+    from esprit.providers.token_store import TokenStore
+
+    # Check for direct API key
+    if Config.get("llm_api_key"):
+        return True
+
+    # Check for OAuth providers
+    token_store = TokenStore()
+    for provider_id in ["openai", "anthropic", "google", "github-copilot"]:
+        if token_store.has_credentials(provider_id):
+            return True
+
+    return False
+
+
+async def warm_up_llm() -> None:
+    from esprit.llm.config import DEFAULT_MODEL
+    from esprit.providers.litellm_integration import (
+        get_provider_api_key,
+        get_provider_headers,
+        get_modified_url,
+        should_use_oauth,
+    )
+
+    console = Console()
+
+    try:
+        model_name = Config.get("esprit_llm") or DEFAULT_MODEL
+        api_key = Config.get("llm_api_key")
+        api_base = (
+            Config.get("llm_api_base")
+            or Config.get("openai_api_base")
+            or Config.get("litellm_base_url")
+            or Config.get("ollama_api_base")
+        )
+
+        # Codex OAuth models use a non-standard API — skip warm-up test
+        model_lower = model_name.lower() if model_name else ""
+        is_codex_oauth = "codex" in model_lower
+        if is_codex_oauth and should_use_oauth(model_name):
+            console.print("[dim]Codex OAuth configured — skipping warm-up test[/]")
+            return
+
+        # If no direct API key, check OAuth providers
+        if not api_key:
+            oauth_key = get_provider_api_key(model_name)
+            if oauth_key:
+                api_key = oauth_key
+
+        test_messages = [
+            {"role": "system", "content": "You are a helpful assistant."},
+            {"role": "user", "content": "Reply with just 'OK'."},
+        ]
+
+        llm_timeout = int(Config.get("llm_timeout") or "300")
+
+        completion_kwargs: dict[str, Any] = {
+            "model": model_name,
+            "messages": test_messages,
+            "timeout": llm_timeout,
+        }
+        if api_key:
+            completion_kwargs["api_key"] = api_key
+        if api_base:
+            completion_kwargs["api_base"] = api_base
+
+        # Add OAuth headers if applicable
+        if should_use_oauth(model_name):
+            extra_headers = get_provider_headers(model_name)
+            if extra_headers:
+                completion_kwargs["extra_headers"] = extra_headers
+
+        response = litellm.completion(**completion_kwargs)
+
+        validate_llm_response(response)
+
+    except Exception as e:  # noqa: BLE001
+        error_text = Text()
+        error_text.append("LLM CONNECTION FAILED", style="bold red")
+        error_text.append("\n\n", style="white")
+        error_text.append("Could not establish connection to the language model.\n", style="white")
+        error_text.append("Please check your configuration and try again.\n", style="white")
+        error_text.append(f"\nError: {e}", style="dim white")
+
+        panel = Panel(
+            error_text,
+            title="[bold white]ESPRIT",
+            title_align="left",
+            border_style="red",
+            padding=(1, 2),
+        )
+
+        console.print("\n")
+        console.print(panel)
+        console.print()
+        sys.exit(1)
+
+
+def get_version() -> str:
+    try:
+        from importlib.metadata import version
+
+        return version("esprit-agent")
+    except Exception:  # noqa: BLE001
+        try:
+            from esprit._version import __version__
+
+            return __version__
+        except Exception:  # noqa: BLE001
+            return "unknown"
+
+
+def cmd_uninstall() -> int:
+    """Uninstall Esprit CLI from this machine."""
+    import shutil
+
+    console = Console()
+    install_dir = Path.home() / ".esprit"
+    bin_path = install_dir / "bin" / "esprit"
+
+    console.print()
+    console.print("[bold]Uninstalling Esprit CLI[/]")
+    console.print()
+
+    # Show what will be removed
+    items = []
+    if bin_path.exists():
+        items.append(f"  Binary: {bin_path}")
+    if install_dir.exists():
+        items.append(f"  Config: {install_dir}")
+
+    if not items:
+        console.print("[yellow]Esprit does not appear to be installed.[/]")
+        return 0
+
+    for item in items:
+        console.print(f"[dim]{item}[/]")
+    console.print()
+
+    confirm = input("Remove Esprit and all configuration? [y/N] ").strip().lower()
+    if confirm != "y":
+        console.print("[dim]Cancelled.[/]")
+        return 0
+
+    # Remove binary
+    if bin_path.exists():
+        bin_path.unlink()
+        console.print("[green]✓[/] Removed binary")
+
+    # Remove bin directory if empty
+    bin_dir = install_dir / "bin"
+    if bin_dir.exists() and not any(bin_dir.iterdir()):
+        bin_dir.rmdir()
+
+    # Remove config directory
+    if install_dir.exists():
+        shutil.rmtree(install_dir)
+        console.print("[green]✓[/] Removed configuration")
+
+    # Clean PATH from shell configs
+    cleaned_shells = []
+    for rc_file in [Path.home() / ".zshrc", Path.home() / ".bashrc", Path.home() / ".bash_profile"]:
+        if rc_file.exists():
+            content = rc_file.read_text()
+            new_content = "\n".join(
+                line for line in content.splitlines()
+                if ".esprit/bin" not in line and line.strip() != "# esprit"
+            ) + "\n"
+            if new_content != content:
+                rc_file.write_text(new_content)
+                cleaned_shells.append(rc_file.name)
+
+    if cleaned_shells:
+        console.print(f"[green]✓[/] Cleaned PATH from {', '.join(cleaned_shells)}")
+
+    console.print()
+    console.print("[green]Esprit has been uninstalled.[/]")
+    console.print("[dim]Restart your shell to update PATH.[/]")
+    console.print()
+    return 0
+
+
+def parse_arguments() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Esprit - AI-Powered Penetration Testing",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Commands:
+  esprit scan <target>       Run a penetration test
+  esprit provider login      Login to an LLM provider (OAuth)
+  esprit provider status     Show provider authentication status
+
+Examples:
+  # Run a scan
+  esprit scan https://example.com
+  esprit scan github.com/user/repo
+  esprit scan ./my-project
+
+  # Provider authentication
+  esprit provider login              # Interactive provider selection
+  esprit provider login openai       # Login to OpenAI Codex
+  esprit provider login github-copilot
+  esprit provider login google       # Login to Google Gemini
+  esprit provider status             # Check auth status
+
+  # Legacy mode (--target still works)
+  esprit --target https://example.com
+        """,
+    )
+    
+    subparsers = parser.add_subparsers(dest="command", help="Available commands")
+    
+    # Provider subcommand
+    provider_parser = subparsers.add_parser(
+        "provider",
+        help="Manage LLM provider authentication",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Supported providers:
+  anthropic       Claude Pro/Max (OAuth) or API key
+  openai          ChatGPT Plus/Pro / Codex (OAuth) or API key
+  github-copilot  GitHub Copilot (OAuth)
+  google          Google Gemini (OAuth) or API key
+        """,
+    )
+    provider_subparsers = provider_parser.add_subparsers(dest="provider_command")
+    
+    provider_login = provider_subparsers.add_parser("login", help="Login to a provider via OAuth")
+    provider_login.add_argument("provider_id", nargs="?", help="Provider ID (anthropic, openai, github-copilot, google)")
+    
+    provider_logout = provider_subparsers.add_parser("logout", help="Logout from a provider")
+    provider_logout.add_argument("provider_id", nargs="?", help="Provider ID to logout from")
+    
+    provider_subparsers.add_parser("status", help="Show provider authentication status")
+    
+    provider_apikey = provider_subparsers.add_parser("api-key", help="Set API key for a provider")
+    provider_apikey.add_argument("provider_id", nargs="?", help="Provider ID")
+    
+    # Scan subcommand
+    scan_parser = subparsers.add_parser(
+        "scan",
+        help="Run a penetration test scan",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    scan_parser.add_argument(
+        "target",
+        nargs="+",
+        help="Target(s) to test (URL, repository, local directory)",
+    )
+    scan_parser.add_argument("--instruction", type=str, help="Custom instructions")
+    scan_parser.add_argument("--instruction-file", type=str, help="Path to instruction file")
+    scan_parser.add_argument("-n", "--non-interactive", action="store_true", help="Non-interactive mode")
+    scan_parser.add_argument("-m", "--scan-mode", choices=["quick", "standard", "deep"], default="deep")
+    scan_parser.add_argument("--config", type=str, help="Path to custom config file")
+
+    # Uninstall subcommand
+    subparsers.add_parser(
+        "uninstall",
+        help="Uninstall Esprit CLI from this machine",
+    )
+    parser.add_argument(
+        "-t",
+        "--target",
+        type=str,
+        action="append",
+        help="(Legacy) Target to test. Use 'esprit scan <target>' instead.",
+    )
+    parser.add_argument("--instruction", type=str, help="Custom instructions")
+    parser.add_argument("--instruction-file", type=str, help="Path to instruction file")
+    parser.add_argument("-n", "--non-interactive", action="store_true", help="Non-interactive mode")
+    parser.add_argument("-m", "--scan-mode", choices=["quick", "standard", "deep"], default="deep")
+    parser.add_argument("--config", type=str, help="Path to custom config file")
+    
+    parser.add_argument(
+        "-v",
+        "--version",
+        action="version",
+        version=f"esprit {get_version()}",
+    )
+
+    args = parser.parse_args()
+    
+    # Handle provider subcommand
+    if args.command == "provider":
+        from esprit.providers.commands import (
+            cmd_provider_login,
+            cmd_provider_logout,
+            cmd_provider_status,
+            cmd_provider_set_api_key,
+        )
+        
+        if args.provider_command == "login":
+            sys.exit(cmd_provider_login(getattr(args, "provider_id", None)))
+        elif args.provider_command == "logout":
+            sys.exit(cmd_provider_logout(getattr(args, "provider_id", None)))
+        elif args.provider_command == "status":
+            sys.exit(cmd_provider_status())
+        elif args.provider_command == "api-key":
+            sys.exit(cmd_provider_set_api_key(getattr(args, "provider_id", None)))
+        else:
+            parser.parse_args(["provider", "--help"])
+            sys.exit(0)
+    
+    # Handle uninstall subcommand
+    if args.command == "uninstall":
+        sys.exit(cmd_uninstall())
+
+    # Handle scan subcommand or legacy --target
+    targets = []
+    if args.command == "scan":
+        targets = args.target
+    elif args.target:
+        targets = args.target
+    else:
+        args.command = "launchpad"
+        args.targets_info = []
+        return args
+    
+    if hasattr(args, "instruction") and hasattr(args, "instruction_file"):
+        if args.instruction and args.instruction_file:
+            parser.error("Cannot specify both --instruction and --instruction-file.")
+
+    if hasattr(args, "instruction_file") and args.instruction_file:
+        instruction_path = Path(args.instruction_file)
+        try:
+            with instruction_path.open(encoding="utf-8") as f:
+                args.instruction = f.read().strip()
+        except Exception as e:
+            parser.error(f"Failed to read instruction file: {e}")
+
+    args.targets_info = _build_targets_info(targets, parser)
+
+    return args
+
+
+def _build_targets_info(
+    targets: list[str], parser: argparse.ArgumentParser | None = None
+) -> list[dict[str, Any]]:
+    targets_info: list[dict[str, Any]] = []
+
+    for target in targets:
+        try:
+            target_type, target_dict = infer_target_type(target)
+
+            if target_type == "local_code":
+                display_target = target_dict.get("target_path", target)
+            else:
+                display_target = target
+
+            targets_info.append(
+                {"type": target_type, "details": target_dict, "original": display_target}
+            )
+        except ValueError:
+            if parser is not None:
+                parser.error(f"Invalid target '{target}'")
+            raise
+
+    assign_workspace_subdirs(targets_info)
+    rewrite_localhost_targets(targets_info, HOST_GATEWAY_HOSTNAME)
+    return targets_info
+
+
+def _apply_launchpad_result(args: argparse.Namespace, launchpad_result: LaunchpadResult) -> bool:
+    if launchpad_result.action != "scan" or not launchpad_result.target:
+        return False
+
+    args.command = "scan"
+    args.non_interactive = False
+    args.scan_mode = launchpad_result.scan_mode
+    args.instruction = None
+    args.targets_info = _build_targets_info([launchpad_result.target])
+    return True
+
+
+def display_completion_message(args: argparse.Namespace, results_path: Path) -> None:
+    console = Console()
+    tracer = get_global_tracer()
+
+    scan_completed = False
+    if tracer and tracer.scan_results:
+        scan_completed = tracer.scan_results.get("scan_completed", False)
+
+    has_vulnerabilities = tracer and len(tracer.vulnerability_reports) > 0
+
+    completion_text = Text()
+    if scan_completed:
+        completion_text.append("Penetration test completed", style="bold #22c55e")
+    else:
+        completion_text.append("SESSION ENDED", style="bold #eab308")
+
+    target_text = Text()
+    target_text.append("Target", style="dim")
+    target_text.append("  ")
+    if len(args.targets_info) == 1:
+        target_text.append(args.targets_info[0]["original"], style="bold white")
+    else:
+        target_text.append(f"{len(args.targets_info)} targets", style="bold white")
+        for target_info in args.targets_info:
+            target_text.append("\n        ")
+            target_text.append(target_info["original"], style="white")
+
+    stats_text = build_final_stats_text(tracer)
+
+    panel_parts = [completion_text, "\n\n", target_text]
+
+    if stats_text.plain:
+        panel_parts.extend(["\n", stats_text])
+
+    if scan_completed or has_vulnerabilities:
+        results_text = Text()
+        results_text.append("\n")
+        results_text.append("Output", style="dim")
+        results_text.append("  ")
+        results_text.append(str(results_path), style="#60a5fa")
+        panel_parts.extend(["\n", results_text])
+
+    panel_content = Text.assemble(*panel_parts)
+
+    border_style = "#22c55e" if scan_completed else "#eab308"
+
+    panel = Panel(
+        panel_content,
+        title="[bold white]ESPRIT",
+        title_align="left",
+        border_style=border_style,
+        padding=(1, 2),
+    )
+
+    console.print("\n")
+    console.print(panel)
+    console.print()
+    console.print("[#60a5fa]esprit.dev[/]")
+    console.print()
+
+
+def pull_docker_image() -> None:
+    console = Console()
+    client = check_docker_connection()
+
+    if image_exists(client, Config.get("esprit_image")):  # type: ignore[arg-type]
+        return
+
+    console.print()
+    console.print(f"[dim]Pulling image[/] {Config.get('esprit_image')}")
+    console.print("[dim yellow]This only happens on first run and may take a few minutes...[/]")
+    console.print()
+
+    with console.status("[bold cyan]Downloading image layers...", spinner="dots") as status:
+        try:
+            layers_info: dict[str, str] = {}
+            last_update = ""
+
+            for line in client.api.pull(Config.get("esprit_image"), stream=True, decode=True):
+                last_update = process_pull_line(line, layers_info, status, last_update)
+
+        except DockerException as e:
+            console.print()
+            error_text = Text()
+            error_text.append("FAILED TO PULL IMAGE", style="bold red")
+            error_text.append("\n\n", style="white")
+            error_text.append(f"Could not download: {Config.get('esprit_image')}\n", style="white")
+            error_text.append(str(e), style="dim red")
+
+            panel = Panel(
+                error_text,
+                title="[bold white]ESPRIT",
+                title_align="left",
+                border_style="red",
+                padding=(1, 2),
+            )
+            console.print(panel, "\n")
+            sys.exit(1)
+
+    success_text = Text()
+    success_text.append("Docker image ready", style="#22c55e")
+    console.print(success_text)
+    console.print()
+
+
+def apply_config_override(config_path: str) -> None:
+    Config._config_file_override = validate_config_file(config_path)
+    apply_saved_config(force=True)
+
+
+def persist_config() -> None:
+    if Config._config_file_override is None:
+        save_current_config()
+
+
+def main() -> None:
+    if sys.platform == "win32":
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
+    args = parse_arguments()
+
+    if args.config:
+        apply_config_override(args.config)
+
+    if args.command == "launchpad":
+        launchpad_result = asyncio.run(run_launchpad())
+        if launchpad_result is None:
+            return
+        if not _apply_launchpad_result(args, launchpad_result):
+            return
+
+    check_docker_installed()
+    ensure_docker_running()
+    pull_docker_image()
+
+    # Check if a provider is configured before validating LLM
+    if not ensure_provider_configured():
+        console = Console()
+        console.print()
+        console.print("[yellow]No LLM provider configured.[/]")
+        console.print()
+        console.print("Set up a provider first:")
+        console.print("  [cyan]esprit provider login[/]        # OAuth (Codex, Copilot, Gemini)")
+        console.print("  [cyan]esprit provider api-key[/]      # Direct API key")
+        console.print()
+        console.print("Or set environment variables:")
+        console.print("  [dim]export ESPRIT_LLM='openai/gpt-5'[/]")
+        console.print("  [dim]export LLM_API_KEY='your-key'[/]")
+        console.print()
+        sys.exit(1)
+
+    validate_environment()
+    asyncio.run(warm_up_llm())
+
+    persist_config()
+
+    args.run_name = generate_run_name(args.targets_info)
+
+    for target_info in args.targets_info:
+        if target_info["type"] == "repository":
+            repo_url = target_info["details"]["target_repo"]
+            dest_name = target_info["details"].get("workspace_subdir")
+            cloned_path = clone_repository(repo_url, args.run_name, dest_name)
+            target_info["details"]["cloned_repo_path"] = cloned_path
+
+    args.local_sources = collect_local_sources(args.targets_info)
+
+    is_whitebox = bool(args.local_sources)
+
+    posthog.start(
+        model=Config.get("esprit_llm"),
+        scan_mode=args.scan_mode,
+        is_whitebox=is_whitebox,
+        interactive=not args.non_interactive,
+        has_instructions=bool(args.instruction),
+    )
+
+    exit_reason = "user_exit"
+    try:
+        if args.non_interactive:
+            asyncio.run(run_cli(args))
+        else:
+            asyncio.run(run_tui(args))
+    except KeyboardInterrupt:
+        exit_reason = "interrupted"
+    except Exception as e:
+        exit_reason = "error"
+        posthog.error("unhandled_exception", str(e))
+        raise
+    finally:
+        tracer = get_global_tracer()
+        if tracer:
+            posthog.end(tracer, exit_reason=exit_reason)
+
+    results_path = Path("esprit_runs") / args.run_name
+    display_completion_message(args, results_path)
+
+    if args.non_interactive:
+        tracer = get_global_tracer()
+        if tracer and tracer.vulnerability_reports:
+            sys.exit(2)
+
+
+if __name__ == "__main__":
+    main()
