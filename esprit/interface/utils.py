@@ -559,6 +559,29 @@ def build_tui_stats_text(
         stats_text.append("\n")
         stats_text.append("▸ Total ", style="dim")
         stats_text.append(f"{format_token_count(total_tokens):>5s}", style="white bold")
+
+        # Context window usage bar
+        context_limit = 128_000  # default
+        _CTX_LIMITS: dict[str, int] = {
+            "claude": 200_000,
+            "gemini-2.5-pro": 1_048_576,
+            "gemini-2.5-flash": 1_048_576,
+            "gemini-3": 1_048_576,
+        }
+        bare = model.split("/", 1)[-1] if model and "/" in model else (model or "")
+        for key, limit in _CTX_LIMITS.items():
+            if key in bare:
+                context_limit = limit
+                break
+        ctx_pct = min(100, (input_tokens / max(context_limit, 1)) * 100)
+        bar_width = 18
+        filled = int(bar_width * ctx_pct / 100)
+        bar_color = "#22c55e" if ctx_pct < 60 else "#eab308" if ctx_pct < 85 else "#ef4444"
+        stats_text.append("\n")
+        stats_text.append("▸ Ctx  ", style="dim")
+        stats_text.append("█" * filled, style=bar_color)
+        stats_text.append("░" * (bar_width - filled), style="dim #3f3f3f")
+        stats_text.append(f" {ctx_pct:.0f}%", style=bar_color)
     else:
         stats_text.append("\n")
         stats_text.append("▸ Tokens ", style="dim")

@@ -267,9 +267,24 @@ class LLM:
                 if e.response.status_code == 429:
                     # Mark rate-limited and let generate() handle rotation
                     raise
-                if e.response.status_code in (400, 401, 403):
-                    # Request-level errors — retrying another endpoint won't help
+                if e.response.status_code in (401, 403):
+                    # Auth errors — retrying won't help
                     raise
+                if e.response.status_code == 400:
+                    # Cloud Code 400s can be transient — retry on same endpoint
+                    retried = False
+                    for retry in range(2):
+                        await asyncio.sleep(2 * (retry + 1))
+                        try:
+                            async for response in self._do_antigravity_stream(url, headers, request_body):
+                                yield response
+                            retried = True
+                            return
+                        except httpx.HTTPStatusError as retry_e:
+                            if retry_e.response.status_code != 400:
+                                raise
+                    if not retried:
+                        raise
                 if e.response.status_code == 404:
                     # Model not found on this endpoint, try next
                     last_error = e
