@@ -453,6 +453,7 @@ def build_tui_stats_text(
     tracer: Any,
     agent_config: dict[str, Any] | None = None,
     scan_completed: bool = False,
+    scan_failed: bool = False,
     spinner_frame: int = 0,
 ) -> Text:
     stats_text = Text()
@@ -479,14 +480,22 @@ def build_tui_stats_text(
 
         try:
             start = datetime.fromisoformat(tracer.start_time)
-            elapsed = (datetime.now(timezone.utc) - start).total_seconds()
+            # Use frozen end_time when scan is done/failed, otherwise live clock
+            if (scan_completed or scan_failed) and hasattr(tracer, "end_time") and tracer.end_time:
+                end = datetime.fromisoformat(tracer.end_time)
+                elapsed = (end - start).total_seconds()
+            else:
+                elapsed = (datetime.now(timezone.utc) - start).total_seconds()
             elapsed_str = _format_elapsed(elapsed)
         except (ValueError, TypeError):
             pass
 
     if elapsed_str:
         stats_text.append("\n")
-        if scan_completed:
+        if scan_failed:
+            stats_text.append("✗ ", style="#ef4444 bold")
+            stats_text.append(f"Failed  {elapsed_str}", style="#ef4444")
+        elif scan_completed:
             stats_text.append("✓ ", style="#22c55e bold")
             stats_text.append(f"Completed  {elapsed_str}", style="#22c55e")
         else:

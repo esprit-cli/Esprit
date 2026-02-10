@@ -784,6 +784,7 @@ class EspritTUIApp(App):  # type: ignore[misc]
         self._scan_thread: threading.Thread | None = None
         self._scan_stop_event = threading.Event()
         self._scan_completed = threading.Event()
+        self._scan_failed = threading.Event()
         self._stats_spinner_frame: int = 0
 
         self._spinner_frame_index: int = 0  # Current animation frame index
@@ -1329,6 +1330,7 @@ class EspritTUIApp(App):  # type: ignore[misc]
 
         self._stats_spinner_frame += 1
         scan_done = self._scan_completed.is_set()
+        scan_failed = self._scan_failed.is_set()
 
         stats_content = Text()
 
@@ -1336,6 +1338,7 @@ class EspritTUIApp(App):  # type: ignore[misc]
             self.tracer,
             self.agent_config,
             scan_completed=scan_done,
+            scan_failed=scan_failed,
             spinner_frame=self._stats_spinner_frame,
         )
         if stats_text:
@@ -1350,7 +1353,7 @@ class EspritTUIApp(App):  # type: ignore[misc]
             stats_content,
             title="Session Stats",
             title_align="left",
-            border_style="#22c55e" if scan_done else "#22d3ee",
+            border_style="#ef4444" if scan_failed else "#22c55e" if scan_done else "#22d3ee",
             padding=(0, 1),
         )
 
@@ -1550,18 +1553,30 @@ class EspritTUIApp(App):  # type: ignore[misc]
 
                 except (KeyboardInterrupt, asyncio.CancelledError):
                     logging.info("Scan interrupted by user")
+                    self._scan_failed.set()
                 except (ConnectionError, TimeoutError):
                     logging.exception("Network error during scan")
+                    self._scan_failed.set()
                 except RuntimeError:
                     logging.exception("Runtime error during scan")
+                    self._scan_failed.set()
                 except Exception:
                     logging.exception("Unexpected error during scan")
+                    self._scan_failed.set()
                 finally:
+                    # Freeze elapsed time by setting end_time on the tracer
+                    if self.tracer and not self.tracer.end_time:
+                        from datetime import datetime, timezone
+                        self.tracer.end_time = datetime.now(timezone.utc).isoformat()
                     loop.close()
                     self._scan_completed.set()
 
             except Exception:
                 logging.exception("Error setting up scan thread")
+                self._scan_failed.set()
+                if self.tracer and not self.tracer.end_time:
+                    from datetime import datetime, timezone
+                    self.tracer.end_time = datetime.now(timezone.utc).isoformat()
                 self._scan_completed.set()
 
         self._scan_thread = threading.Thread(target=scan_target, daemon=True)

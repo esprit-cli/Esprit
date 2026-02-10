@@ -251,9 +251,13 @@ class LLM:
         )
         headers = build_request_headers(access_token, model)
 
-        # Try endpoints in order
+        # Try endpoints in order; skip production for Claude models
+        is_claude = "claude" in model
         last_error = None
         for endpoint in ENDPOINTS:
+            # Production endpoint doesn't support Claude — skip it
+            if is_claude and "sandbox" not in endpoint:
+                continue
             url = f"{endpoint}/v1internal:streamGenerateContent?alt=sse"
             try:
                 async for response in self._do_antigravity_stream(url, headers, request_body):
@@ -262,6 +266,9 @@ class LLM:
             except httpx.HTTPStatusError as e:
                 if e.response.status_code == 429:
                     # Mark rate-limited and let generate() handle rotation
+                    raise
+                if e.response.status_code in (400, 401, 403):
+                    # Request-level errors — retrying another endpoint won't help
                     raise
                 if e.response.status_code == 404:
                     # Model not found on this endpoint, try next
