@@ -360,33 +360,262 @@ def build_live_stats_text(tracer: Any, agent_config: dict[str, Any] | None = Non
     stats_text.append(format_token_count(total_stats["output_tokens"]), style="white")
 
     stats_text.append("  ·  ", style="dim white")
-    stats_text.append("Cost ", style="dim")
-    stats_text.append(f"${total_stats['cost']:.4f}", style="#fbbf24")
+
+    # Cost — use estimated cost for Antigravity (free) models
+    actual_cost = total_stats["cost"]
+    model = ""
+    if agent_config:
+        llm_config = agent_config["llm_config"]
+        model = getattr(llm_config, "model_name", "")
+    is_antigravity = model.startswith("antigravity/")
+    estimated = _estimate_cost(model, total_stats["input_tokens"], total_stats["output_tokens"]) if model else 0.0
+
+    if is_antigravity and estimated > 0:
+        stats_text.append("Savings ", style="dim")
+        stats_text.append(f"${estimated:.4f}", style="#22c55e")
+        stats_text.append(" (free)", style="dim #22c55e")
+    elif actual_cost > 0:
+        stats_text.append("Cost ", style="dim")
+        stats_text.append(f"${actual_cost:.4f}", style="#fbbf24")
+    else:
+        stats_text.append("Cost ", style="dim")
+        stats_text.append(f"${actual_cost:.4f}", style="#fbbf24")
 
     return stats_text
 
 
-def build_tui_stats_text(tracer: Any, agent_config: dict[str, Any] | None = None) -> Text:
+_SCAN_SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+
+_ACTIVITY_SPINNER = ["◐", "◓", "◑", "◒"]
+
+# Map Antigravity model names → litellm model_cost keys for pricing lookup
+_LITELLM_PRICING_MAP: dict[str, str] = {
+    "claude-opus-4-6-thinking": "claude-opus-4-6",
+    "claude-opus-4-5-thinking": "claude-opus-4-5",
+    "claude-sonnet-4-5-thinking": "claude-sonnet-4-5",
+    "claude-sonnet-4-5": "claude-sonnet-4-5",
+    "gemini-2.5-flash": "gemini-2.5-flash",
+    "gemini-2.5-flash-lite": "gemini-2.5-flash-lite",
+    "gemini-2.5-flash-thinking": "gemini-2.5-flash",
+    "gemini-2.5-pro": "gemini-2.5-pro",
+    "gemini-3-flash": "gemini-3-flash-preview",
+    "gemini-3-pro-high": "gemini-3-pro-preview",
+    "gemini-3-pro-image": "gemini-3-pro-image-preview",
+    "gemini-3-pro-low": "gemini-3-pro-preview",
+}
+
+
+def _estimate_cost(model: str, input_tokens: int, output_tokens: int) -> float:
+    """Estimate API cost using litellm's pricing data, with hardcoded fallback."""
+    bare = model.split("/", 1)[-1] if "/" in model else model
+    litellm_key = _LITELLM_PRICING_MAP.get(bare, bare)
+    try:
+        import litellm
+        cost_map = litellm.model_cost
+        info = cost_map.get(litellm_key)
+        if not info:
+            info = cost_map.get(f"gemini/{litellm_key}")
+        if info:
+            input_rate = info.get("input_cost_per_token", 0)
+            output_rate = info.get("output_cost_per_token", 0)
+            return input_tokens * input_rate + output_tokens * output_rate
+    except Exception:
+        pass
+    # Fallback pricing per million tokens (input, output)
+    _fallback: dict[str, tuple[float, float]] = {
+        "claude-opus-4-6": (5.0, 25.0),
+        "claude-opus-4-5": (5.0, 25.0),
+        "claude-sonnet-4-5": (3.0, 15.0),
+        "gemini-2.5-flash": (0.30, 2.50),
+        "gemini-2.5-flash-lite": (0.10, 0.40),
+        "gemini-2.5-pro": (1.25, 10.0),
+        "gemini-3-flash-preview": (0.50, 3.0),
+        "gemini-3-pro-preview": (2.0, 12.0),
+        "gemini-3-pro-image-preview": (2.0, 12.0),
+    }
+    fb = _fallback.get(litellm_key)
+    if fb:
+        return (input_tokens * fb[0] + output_tokens * fb[1]) / 1_000_000
+    return 0.0
+
+
+def _format_elapsed(seconds: float) -> str:
+    """Format elapsed seconds as H:MM:SS or M:SS."""
+    total = int(seconds)
+    h, remainder = divmod(total, 3600)
+    m, s = divmod(remainder, 60)
+    if h > 0:
+        return f"{h}:{m:02d}:{s:02d}"
+    return f"{m}:{s:02d}"
+
+
+def build_tui_stats_text(
+    tracer: Any,
+    agent_config: dict[str, Any] | None = None,
+    scan_completed: bool = False,
+    spinner_frame: int = 0,
+) -> Text:
     stats_text = Text()
     if not tracer:
         return stats_text
 
+    model = ""
+    # Model name with provider badge
     if agent_config:
         llm_config = agent_config["llm_config"]
         model = getattr(llm_config, "model_name", "Unknown")
-        stats_text.append(model, style="white")
+        bare_model = model.split("/", 1)[-1] if "/" in model else model
+        is_antigravity = model.startswith("antigravity/")
+
+        if is_antigravity:
+            stats_text.append("AG ", style="bold #a78bfa")
+        stats_text.append(bare_model, style="white")
+
+    # Elapsed time and scan status
+    elapsed = 0.0
+    elapsed_str = ""
+    if hasattr(tracer, "start_time") and tracer.start_time:
+        from datetime import datetime, timezone
+
+        try:
+            start = datetime.fromisoformat(tracer.start_time)
+            elapsed = (datetime.now(timezone.utc) - start).total_seconds()
+            elapsed_str = _format_elapsed(elapsed)
+        except (ValueError, TypeError):
+            pass
+
+    if elapsed_str:
+        stats_text.append("\n")
+        if scan_completed:
+            stats_text.append("✓ ", style="#22c55e bold")
+            stats_text.append(f"Completed  {elapsed_str}", style="#22c55e")
+        else:
+            char = _SCAN_SPINNER[spinner_frame % len(_SCAN_SPINNER)]
+            stats_text.append(f"{char} ", style="#22d3ee")
+            stats_text.append(f"Scanning  {elapsed_str}", style="#22d3ee")
+
+    # Divider
+    stats_text.append("\n")
+    stats_text.append("─" * 28, style="dim #3f3f3f")
+
+    # Activity metrics
+    agent_count = len(tracer.agents)
+    tool_count = (
+        tracer.get_real_tool_count()
+        if hasattr(tracer, "get_real_tool_count")
+        else len(tracer.tool_executions)
+    )
 
     llm_stats = tracer.get_total_llm_stats()
     total_stats = llm_stats["total"]
+    input_tokens = total_stats["input_tokens"]
+    output_tokens = total_stats["output_tokens"]
+    cached_tokens = total_stats["cached_tokens"]
+    total_tokens = input_tokens + output_tokens
+    requests = total_stats["requests"]
 
-    total_tokens = total_stats["input_tokens"] + total_stats["output_tokens"]
+    # Agents / Tools / Requests
+    stats_text.append("\n")
+    activity_char = _ACTIVITY_SPINNER[spinner_frame % len(_ACTIVITY_SPINNER)] if not scan_completed else "●"
+    activity_style = "#22d3ee" if not scan_completed else "#22c55e"
+    stats_text.append(f"{activity_char} ", style=activity_style)
+    stats_text.append(f"{agent_count}", style="white bold")
+    stats_text.append(" agents  ", style="dim")
+    stats_text.append(f"{tool_count}", style="white bold")
+    stats_text.append(" tools  ", style="dim")
+    stats_text.append(f"{requests}", style="white bold")
+    stats_text.append(" reqs", style="dim")
+
+    # Token breakdown
+    stats_text.append("\n")
+    stats_text.append("─" * 28, style="dim #3f3f3f")
+
     if total_tokens > 0:
         stats_text.append("\n")
-        stats_text.append(f"{format_token_count(total_tokens)} tokens", style="white")
+        stats_text.append("▸ In   ", style="dim")
+        stats_text.append(f"{format_token_count(input_tokens):>6s}", style="white")
+        if cached_tokens > 0:
+            cache_pct = (cached_tokens / max(input_tokens, 1)) * 100
+            stats_text.append(f"  ({cache_pct:.0f}% cached)", style="#a78bfa")
 
-    if total_stats["cost"] > 0:
-        stats_text.append(" · ", style="white")
-        stats_text.append(f"${total_stats['cost']:.2f}", style="white")
+        stats_text.append("\n")
+        stats_text.append("▸ Out  ", style="dim")
+        stats_text.append(f"{format_token_count(output_tokens):>6s}", style="white")
+
+        # Tokens per second
+        if elapsed > 0 and output_tokens > 0:
+            tps = output_tokens / elapsed
+            stats_text.append(f"  ({tps:.0f} tok/s)", style="dim #22d3ee")
+
+        stats_text.append("\n")
+        stats_text.append("▸ Total ", style="dim")
+        stats_text.append(f"{format_token_count(total_tokens):>5s}", style="white bold")
+    else:
+        stats_text.append("\n")
+        stats_text.append("▸ Tokens ", style="dim")
+        stats_text.append("0", style="dim white")
+
+    # Cost estimation — always show
+    stats_text.append("\n")
+    stats_text.append("─" * 28, style="dim #3f3f3f")
+
+    actual_cost = total_stats["cost"]
+    estimated = _estimate_cost(model, input_tokens, output_tokens) if model else 0.0
+    is_antigravity = model.startswith("antigravity/") if model else False
+
+    stats_text.append("\n")
+    if is_antigravity and estimated > 0:
+        stats_text.append("  Savings ", style="dim")
+        stats_text.append(f"${estimated:.4f}", style="#22c55e bold")
+        stats_text.append("\n")
+        stats_text.append("  You pay ", style="dim")
+        stats_text.append("$0.0000", style="#22c55e")
+        stats_text.append(" free", style="dim #22c55e")
+    elif is_antigravity:
+        stats_text.append("  Cost ", style="dim")
+        stats_text.append("$0.0000", style="#22c55e")
+        stats_text.append(" free", style="dim #22c55e")
+    elif actual_cost > 0:
+        stats_text.append("  Cost ", style="dim")
+        stats_text.append(f"${actual_cost:.4f}", style="#fbbf24 bold")
+    elif estimated > 0:
+        stats_text.append("  Est. cost ", style="dim")
+        stats_text.append(f"${estimated:.4f}", style="#fbbf24")
+    else:
+        stats_text.append("  Cost ", style="dim")
+        stats_text.append("$0.0000", style="dim white")
+
+    # Vulnerabilities
+    vuln_count = (
+        len(tracer.vulnerability_reports)
+        if hasattr(tracer, "vulnerability_reports")
+        else 0
+    )
+    if vuln_count > 0:
+        stats_text.append("\n")
+        stats_text.append("─" * 28, style="dim #3f3f3f")
+        stats_text.append("\n")
+        stats_text.append("⚠ ", style="#dc2626")
+        stats_text.append(f"{vuln_count} ", style="#dc2626 bold")
+        stats_text.append("vulns found", style="#dc2626")
+
+        # Severity mini-breakdown
+        severity_counts: dict[str, int] = {}
+        for report in tracer.vulnerability_reports:
+            sev = report.get("severity", "").lower()
+            severity_counts[sev] = severity_counts.get(sev, 0) + 1
+        sev_parts = []
+        sev_colors = {"critical": "#ef4444", "high": "#f97316", "medium": "#eab308", "low": "#22d3ee", "info": "#6b7280"}
+        for sev in ["critical", "high", "medium", "low", "info"]:
+            c = severity_counts.get(sev, 0)
+            if c > 0:
+                sev_parts.append((c, sev, sev_colors.get(sev, "white")))
+        if sev_parts:
+            stats_text.append("\n  ")
+            for i, (c, label, color) in enumerate(sev_parts):
+                if i > 0:
+                    stats_text.append(" ", style="dim")
+                stats_text.append(f"{c}{label[0].upper()}", style=f"bold {color}")
 
     return stats_text
 

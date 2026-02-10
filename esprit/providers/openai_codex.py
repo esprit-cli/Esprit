@@ -14,7 +14,6 @@ import platform
 import secrets
 import threading
 import time
-import webbrowser
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from typing import Any
 from urllib.parse import parse_qs, urlencode, urlparse
@@ -47,11 +46,16 @@ OAUTH_TIMEOUT = 300  # 5 minutes
 
 # Allowed models for Codex OAuth
 ALLOWED_CODEX_MODELS = {
-    "gpt-5.1-codex-max",
-    "gpt-5.1-codex-mini",
-    "gpt-5.2",
+    "gpt-5.3-codex",
     "gpt-5.2-codex",
+    "gpt-5.2",
+    "gpt-5.1-codex-max",
     "gpt-5.1-codex",
+    "gpt-5.1-codex-mini",
+    "gpt-5.1",
+    "gpt-5-codex",
+    "gpt-5",
+    "gpt-5-codex-mini",
 }
 
 # Polling safety margin
@@ -376,11 +380,7 @@ class OpenAICodexProvider(ProviderAuth):
         server_thread = threading.Thread(target=server.handle_request)
         server_thread.start()
 
-        # Open browser
-        try:
-            webbrowser.open(auth_result.url)
-        except Exception:
-            pass  # Browser opening handled by caller
+        # Browser is already opened by the caller (commands.py)
 
         # Wait for callback (with timeout)
         server_thread.join(timeout=OAUTH_TIMEOUT)
@@ -596,12 +596,8 @@ class OpenAICodexProvider(ProviderAuth):
         arch = platform.machine()
         modified_headers["User-Agent"] = f"esprit/1.0 ({system} {release}; {arch})"
 
-        # Rewrite URL to Codex endpoint for responses/completions
-        modified_url = url
-        if "/v1/responses" in url or "/chat/completions" in url:
-            modified_url = CODEX_API_URL
-
-        return modified_url, modified_headers, body
+        # Use the standard OpenAI API endpoint (no URL rewriting needed)
+        return url, modified_headers, body
 
     def get_auth_methods(self) -> list[dict[str, str]]:
         """Get available authentication methods."""

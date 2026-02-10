@@ -36,8 +36,8 @@ Screen {
 }
 
 #left_panel {
-    width: 34;
-    min-width: 26;
+    width: 38;
+    min-width: 30;
     height: 100%;
     background: #160606 70%;
     border-right: solid #2f0f0f;
@@ -85,7 +85,7 @@ Screen {
 
 #stats_display {
     height: auto;
-    max-height: 15;
+    max-height: 22;
     background: transparent;
     padding: 0 1 1 1;
     margin: 0;

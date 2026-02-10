@@ -12,6 +12,7 @@ Commands:
 import argparse
 import asyncio
 import logging
+import os
 import shutil
 import sys
 from pathlib import Path
@@ -266,18 +267,213 @@ def ensure_docker_running() -> None:
 def ensure_provider_configured() -> bool:
     """Check if at least one LLM provider is configured. Return True if ready."""
     from esprit.providers.token_store import TokenStore
+    from esprit.providers.account_pool import get_account_pool
 
     # Check for direct API key
     if Config.get("llm_api_key"):
         return True
 
-    # Check for OAuth providers
+    # Check for OAuth providers (single-credential)
     token_store = TokenStore()
-    for provider_id in ["openai", "anthropic", "google", "github-copilot"]:
+    for provider_id in ["anthropic", "google", "github-copilot"]:
+        if token_store.has_credentials(provider_id):
+            return True
+
+    # Check for multi-account providers
+    pool = get_account_pool()
+    for provider_id in ["openai", "antigravity"]:
+        if pool.has_accounts(provider_id):
+            return True
+        # Also check token_store as fallback (TUI may have saved there)
         if token_store.has_credentials(provider_id):
             return True
 
     return False
+
+
+def _get_configured_providers() -> list[tuple[str, str]]:
+    """Return list of (provider_id, detail) for all configured providers."""
+    from esprit.providers.token_store import TokenStore
+    from esprit.providers.account_pool import get_account_pool
+
+    token_store = TokenStore()
+    pool = get_account_pool()
+    result = []
+
+    _multi_account = {"openai", "antigravity"}
+
+    for provider_id in ["antigravity", "openai", "anthropic", "google", "github-copilot"]:
+        if provider_id in _multi_account:
+            if pool.has_accounts(provider_id):
+                count = pool.account_count(provider_id)
+                acct = pool.get_best_account(provider_id)
+                email = acct.email if acct else "unknown"
+                detail = f"{email}" + (f" (+{count - 1} more)" if count > 1 else "")
+                result.append((provider_id, detail))
+            elif token_store.has_credentials(provider_id):
+                result.append((provider_id, "API key"))
+        else:
+            if token_store.has_credentials(provider_id):
+                creds = token_store.get(provider_id)
+                detail = creds.type.upper() if creds else "configured"
+                result.append((provider_id, detail))
+
+    # Direct API key (provider-agnostic)
+    if Config.get("llm_api_key"):
+        result.append(("direct", "LLM_API_KEY env"))
+
+    return result
+
+
+def _get_available_models(configured_providers: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    """Return list of (model_id, display_name) available from configured providers."""
+    from esprit.providers.config import AVAILABLE_MODELS
+
+    provider_ids = {p[0] for p in configured_providers}
+    models = []
+
+    for provider_id, model_list in AVAILABLE_MODELS.items():
+        if provider_id in provider_ids:
+            for model_id, display_name in model_list:
+                full_id = f"{provider_id}/{model_id}"
+                models.append((full_id, f"{display_name} [{provider_id}]"))
+
+    # If direct API key is configured, any model might work
+    if "direct" in provider_ids:
+        current = Config.get("esprit_llm")
+        if current and not any(m[0] == current for m in models):
+            models.append((current, f"{current} [direct API key]"))
+
+    return models
+
+
+def pre_scan_setup(non_interactive: bool = False) -> bool:
+    """Interactive pre-scan checks. Returns True if ready to scan, False to abort."""
+    from rich.prompt import Prompt, Confirm
+    from rich.table import Table
+    from esprit.llm.config import DEFAULT_MODEL
+
+    console = Console()
+    console.print()
+
+    # --- Step 1: Check providers ---
+    providers = _get_configured_providers()
+    if not providers:
+        console.print("[bold red]No LLM provider configured.[/]")
+        console.print()
+        console.print("Set up a provider first:")
+        console.print("  [cyan]esprit provider login[/]          # OAuth (Codex, Copilot, Antigravity)")
+        console.print("  [cyan]esprit provider api-key[/]        # Direct API key")
+        console.print()
+        return False
+
+    # Show configured providers
+    console.print("[bold]Pre-scan checks[/]")
+    console.print()
+
+    table = Table(show_header=True, header_style="bold", show_lines=False, pad_edge=False)
+    table.add_column("Provider", style="cyan")
+    table.add_column("Type", style="dim")
+    table.add_column("Account", style="white")
+    for pid, detail in providers:
+        display_name = {
+            "antigravity": "[bold #a78bfa]Antigravity[/] [dim](Free)[/]",
+            "openai": "OpenAI",
+            "anthropic": "Anthropic",
+            "google": "Google",
+            "github-copilot": "GitHub Copilot",
+            "direct": "Direct",
+        }.get(pid, pid)
+        auth_type = {
+            "antigravity": "[green]OAuth[/]",
+            "openai": "[green]OAuth[/]" if "@" in detail else "[yellow]API Key[/]",
+            "anthropic": "[yellow]API Key[/]",
+            "google": "[green]OAuth[/]",
+            "github-copilot": "[green]OAuth[/]",
+            "direct": "[yellow]Env Var[/]",
+        }.get(pid, "")
+        table.add_row(display_name, auth_type, detail)
+    console.print(table)
+    console.print()
+
+    # --- Step 2: Check/select model ---
+    current_model = Config.get("esprit_llm")
+    available_models = _get_available_models(providers)
+
+    if current_model:
+        bare = current_model.split("/", 1)[-1] if "/" in current_model else current_model
+        provider_prefix = current_model.split("/", 1)[0] if "/" in current_model else ""
+        provider_badge = {
+            "antigravity": "[bold #a78bfa]AG[/]",
+            "openai": "[bold #74aa9c]OAI[/]",
+            "anthropic": "[bold #d4a27f]ANT[/]",
+            "google": "[bold #4285f4]GCP[/]",
+            "github-copilot": "[bold white]GH[/]",
+        }.get(provider_prefix, "")
+        if provider_badge:
+            console.print(f"[bold]Model:[/] {provider_badge} {bare}")
+        else:
+            console.print(f"[bold]Model:[/] {current_model}")
+    elif available_models:
+        console.print("[yellow]No model selected.[/]")
+    else:
+        console.print("[yellow]No model selected and no models available from configured providers.[/]")
+        console.print("[dim]Set ESPRIT_LLM environment variable or run 'esprit config model'[/]")
+        console.print()
+        return False
+
+    if not current_model and available_models:
+        console.print()
+        console.print("[bold]Select a model:[/]")
+        for i, (model_id, display) in enumerate(available_models, 1):
+            console.print(f"  {i}. {display} [dim]({model_id})[/]")
+        console.print()
+        choice = Prompt.ask(
+            "Enter number",
+            choices=[str(i) for i in range(1, len(available_models) + 1)],
+        )
+        selected_model = available_models[int(choice) - 1][0]
+        os.environ["ESPRIT_LLM"] = selected_model
+        Config.save_current()
+        current_model = selected_model
+        console.print(f"[green]Model set to: {current_model}[/]")
+
+    # --- Step 3: Show active account for multi-account providers ---
+    from esprit.providers.account_pool import get_account_pool
+    from esprit.providers.antigravity import ANTIGRAVITY_MODELS
+
+    pool = get_account_pool()
+    model_lower = (current_model or "").lower()
+    bare_model = model_lower.split("/", 1)[-1] if "/" in model_lower else model_lower
+
+    # Determine which provider this model routes through
+    routing = None
+    if model_lower.startswith("antigravity/") or (
+        bare_model in ANTIGRAVITY_MODELS and pool.has_accounts("antigravity")
+    ):
+        routing = "antigravity"
+    elif model_lower.startswith("openai/") and pool.has_accounts("openai"):
+        routing = "openai"
+
+    if routing:
+        acct = pool.get_best_account(routing)
+        if acct:
+            count = pool.account_count(routing)
+            console.print(
+                f"[bold]Account:[/] {acct.email}"
+                + (f" [dim](+{count - 1} available for rotation)[/]" if count > 1 else "")
+            )
+
+    console.print()
+
+    # --- Step 4: Confirm ---
+    if not non_interactive:
+        if not Confirm.ask("[bold]Proceed with scan?[/]", default=True):
+            console.print("[dim]Scan cancelled.[/]")
+            return False
+
+    console.print()
+    return True
 
 
 async def warm_up_llm() -> None:
@@ -308,6 +504,20 @@ async def warm_up_llm() -> None:
             console.print("[dim]Codex OAuth configured — skipping warm-up test[/]")
             return
 
+        # Antigravity models bypass litellm entirely — skip warm-up test
+        if model_lower.startswith("antigravity/"):
+            console.print("[dim]Antigravity configured — skipping warm-up test[/]")
+            return
+
+        # Also skip for google/ or bare models that route through Antigravity
+        from esprit.providers.antigravity import ANTIGRAVITY_MODELS
+        from esprit.providers.account_pool import get_account_pool
+
+        bare_model = model_lower.split("/", 1)[-1] if "/" in model_lower else model_lower
+        if bare_model in ANTIGRAVITY_MODELS and get_account_pool().has_accounts("antigravity"):
+            console.print("[dim]Antigravity configured — skipping warm-up test[/]")
+            return
+
         # If no direct API key, check OAuth providers
         if not api_key:
             oauth_key = get_provider_api_key(model_name)
@@ -326,6 +536,10 @@ async def warm_up_llm() -> None:
             "messages": test_messages,
             "timeout": llm_timeout,
         }
+
+        # Translate google/ → gemini/ for litellm compatibility
+        if model_name and model_name.lower().startswith("google/"):
+            completion_kwargs["model"] = "gemini/" + model_name.split("/", 1)[1]
         if api_key:
             completion_kwargs["api_key"] = api_key
         if api_base:
@@ -774,20 +988,8 @@ def main() -> None:
     ensure_docker_running()
     pull_docker_image()
 
-    # Check if a provider is configured before validating LLM
-    if not ensure_provider_configured():
-        console = Console()
-        console.print()
-        console.print("[yellow]No LLM provider configured.[/]")
-        console.print()
-        console.print("Set up a provider first:")
-        console.print("  [cyan]esprit provider login[/]        # OAuth (Codex, Copilot, Gemini)")
-        console.print("  [cyan]esprit provider api-key[/]      # Direct API key")
-        console.print()
-        console.print("Or set environment variables:")
-        console.print("  [dim]export ESPRIT_LLM='openai/gpt-5'[/]")
-        console.print("  [dim]export LLM_API_KEY='your-key'[/]")
-        console.print()
+    # Interactive pre-scan checks: provider, model, account selection
+    if not pre_scan_setup(non_interactive=args.non_interactive):
         sys.exit(1)
 
     validate_environment()

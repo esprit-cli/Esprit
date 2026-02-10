@@ -33,7 +33,7 @@ from esprit.interface.streaming_parser import parse_streaming_content
 from esprit.interface.tool_components.agent_message_renderer import AgentMessageRenderer
 from esprit.interface.tool_components.registry import get_tool_renderer
 from esprit.interface.tool_components.user_message_renderer import UserMessageRenderer
-from esprit.interface.utils import build_tui_stats_text
+from esprit.interface.utils import build_tui_stats_text, _ACTIVITY_SPINNER
 from esprit.llm.config import LLMConfig
 from esprit.telemetry.tracer import Tracer, set_global_tracer
 
@@ -784,6 +784,7 @@ class EspritTUIApp(App):  # type: ignore[misc]
         self._scan_thread: threading.Thread | None = None
         self._scan_stop_event = threading.Event()
         self._scan_completed = threading.Event()
+        self._stats_spinner_frame: int = 0
 
         self._spinner_frame_index: int = 0  # Current animation frame index
         self._sweep_num_squares: int = 6  # Number of squares in sweep animation
@@ -1008,13 +1009,23 @@ class EspritTUIApp(App):  # type: ignore[misc]
             status = agent_data.get("status", "running")
 
             status_indicators = {
-                "running": "⚪",
+                "running": _ACTIVITY_SPINNER[self._stats_spinner_frame % len(_ACTIVITY_SPINNER)],
                 "waiting": "⏸",
-                "completed": "🟢",
-                "failed": "🔴",
+                "completed": "✓",
+                "failed": "✗",
                 "stopped": "■",
                 "stopping": "○",
-                "llm_failed": "🔴",
+                "llm_failed": "✗",
+            }
+
+            status_colors = {
+                "running": "#22d3ee",
+                "waiting": "#eab308",
+                "completed": "#22c55e",
+                "failed": "#ef4444",
+                "stopped": "#6b7280",
+                "stopping": "#6b7280",
+                "llm_failed": "#ef4444",
             }
 
             status_icon = status_indicators.get(status, "○")
@@ -1316,14 +1327,22 @@ class EspritTUIApp(App):  # type: ignore[misc]
         if not self._is_widget_safe(stats_display):
             return
 
+        self._stats_spinner_frame += 1
+        scan_done = self._scan_completed.is_set()
+
         stats_content = Text()
 
-        stats_text = build_tui_stats_text(self.tracer, self.agent_config)
+        stats_text = build_tui_stats_text(
+            self.tracer,
+            self.agent_config,
+            scan_completed=scan_done,
+            spinner_frame=self._stats_spinner_frame,
+        )
         if stats_text:
             stats_content.append(stats_text)
 
         version = get_package_version()
-        stats_content.append(f"\nv{version}", style="white")
+        stats_content.append(f"\nv{version}", style="dim white")
 
         from rich.panel import Panel
 
@@ -1331,7 +1350,7 @@ class EspritTUIApp(App):  # type: ignore[misc]
             stats_content,
             title="Session Stats",
             title_align="left",
-            border_style="#22d3ee",
+            border_style="#22c55e" if scan_done else "#22d3ee",
             padding=(0, 1),
         )
 
@@ -1567,13 +1586,13 @@ class EspritTUIApp(App):  # type: ignore[misc]
         agent_name_raw = agent_data.get("name", "Agent")
 
         status_indicators = {
-            "running": "⚪",
+            "running": "◐",
             "waiting": "⏸",
-            "completed": "🟢",
-            "failed": "🔴",
+            "completed": "✓",
+            "failed": "✗",
             "stopped": "■",
             "stopping": "○",
-            "llm_failed": "🔴",
+            "llm_failed": "✗",
         }
 
         status_icon = status_indicators.get(status, "○")

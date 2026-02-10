@@ -15,6 +15,7 @@ from esprit.providers.anthropic_oauth import AnthropicOAuthProvider
 from esprit.providers.openai_codex import OpenAICodexProvider
 from esprit.providers.copilot import CopilotProvider
 from esprit.providers.google_gemini import GoogleGeminiProvider
+from esprit.providers.antigravity import AntigravityProvider
 from esprit.providers.token_store import TokenStore
 
 # Provider registry
@@ -23,6 +24,7 @@ PROVIDERS: dict[str, type[ProviderAuth]] = {
     "openai": OpenAICodexProvider,
     "github-copilot": CopilotProvider,
     "google": GoogleGeminiProvider,
+    "antigravity": AntigravityProvider,
 }
 
 # Provider display names
@@ -31,6 +33,7 @@ PROVIDER_NAMES: dict[str, str] = {
     "openai": "OpenAI (ChatGPT Plus/Pro)",
     "github-copilot": "GitHub Copilot",
     "google": "Google (Gemini)",
+    "antigravity": "Antigravity (Free Claude/Gemini)",
 }
 
 
@@ -60,4 +63,5 @@ __all__ = [
     "OpenAICodexProvider",
     "CopilotProvider",
     "GoogleGeminiProvider",
+    "AntigravityProvider",
 ]

@@ -21,6 +21,10 @@ from esprit.providers import PROVIDER_NAMES, get_provider_auth
 from esprit.providers.base import AuthMethod, OAuthCredentials
 from esprit.providers.config import AVAILABLE_MODELS
 from esprit.providers.token_store import TokenStore
+from esprit.providers.account_pool import get_account_pool
+
+# Providers that use the multi-account pool
+_MULTI_ACCOUNT_PROVIDERS = {"openai", "antigravity"}
 
 # Files that indicate a project root (ordered by priority)
 _PROJECT_MARKERS: list[tuple[str, str]] = [
@@ -179,7 +183,7 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
     MAIN_OPTIONS: ClassVar[list[_MenuEntry]] = [
         _MenuEntry("scan", "Scan", ""),  # hint filled dynamically with CWD info
         _MenuEntry("model", "Model Config", "Choose default model"),
-        _MenuEntry("provider", "Provider Config", "Connect OpenAI, Anthropic, Gemini, Copilot"),
+        _MenuEntry("provider", "Provider Config", "Connect providers (incl. free Antigravity)"),
         _MenuEntry("scan_mode", "Scan Mode", "Set quick, standard, or deep"),
         _MenuEntry("exit", "Exit", "Close launchpad"),
     ]
@@ -189,6 +193,7 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
     def __init__(self) -> None:
         super().__init__()
         self._token_store = TokenStore()
+        self._account_pool = get_account_pool()
         self._current_entries: list[_MenuEntry] = []
         self._current_title = ""
         self._current_hint = ""
@@ -385,13 +390,21 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
         return entries
 
     def _build_provider_entries(self) -> list[_MenuEntry]:
-        provider_order = ["anthropic", "openai", "google", "github-copilot"]
+        provider_order = ["antigravity", "anthropic", "openai", "google", "github-copilot"]
         entries: list[_MenuEntry] = []
 
         for provider_id in provider_order:
             provider_name = PROVIDER_NAMES.get(provider_id, provider_id)
-            connected = self._token_store.has_credentials(provider_id)
-            status = "connected" if connected else "not connected"
+            if provider_id in _MULTI_ACCOUNT_PROVIDERS:
+                count = self._account_pool.account_count(provider_id)
+                connected = count > 0
+                if connected:
+                    status = f"{count} account{'s' if count != 1 else ''}"
+                else:
+                    status = "not connected"
+            else:
+                connected = self._token_store.has_credentials(provider_id)
+                status = "connected" if connected else "not connected"
             marker = "\u25cf" if connected else "\u25cb"
             entries.append(
                 _MenuEntry(f"provider:{provider_id}", f"{marker} {provider_name}", hint=status)
@@ -600,7 +613,15 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
             provider_id = self._selected_provider_id
             if not provider_id:
                 return
-            if self._token_store.delete(provider_id):
+            if provider_id in _MULTI_ACCOUNT_PROVIDERS:
+                accounts = self._account_pool.list_accounts(provider_id)
+                for acct in accounts:
+                    self._account_pool.remove_account(provider_id, acct.email)
+                if accounts:
+                    self._set_status(f"Removed {len(accounts)} account(s) from {PROVIDER_NAMES.get(provider_id, provider_id)}")
+                else:
+                    self._set_status("No credentials to remove")
+            elif self._token_store.delete(provider_id):
                 self._set_status(f"Logged out from {PROVIDER_NAMES.get(provider_id, provider_id)}")
             else:
                 self._set_status("No credentials to remove")
@@ -658,7 +679,13 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
             return
 
         if callback_result.credentials:
-            self._token_store.set(provider_id, callback_result.credentials)
+            if provider_id in _MULTI_ACCOUNT_PROVIDERS:
+                email = callback_result.credentials.extra.get("email", "unknown")
+                if not email or email == "unknown":
+                    email = callback_result.credentials.account_id or f"account-{self._account_pool.account_count(provider_id) + 1}"
+                self._account_pool.add_account(provider_id, callback_result.credentials, email)
+            else:
+                self._token_store.set(provider_id, callback_result.credentials)
         self._set_status(f"Connected {PROVIDER_NAMES.get(provider_id, provider_id)}")
         self._set_view("provider", push=False)
 
@@ -695,7 +722,11 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
                 self._set_status("API key cannot be empty")
                 return
 
-            self._token_store.set(provider_id, OAuthCredentials(type="api", access_token=value))
+            creds = OAuthCredentials(type="api", access_token=value)
+            if provider_id in _MULTI_ACCOUNT_PROVIDERS:
+                self._account_pool.add_account(provider_id, creds, f"api-key-{self._account_pool.account_count(provider_id) + 1}")
+            else:
+                self._token_store.set(provider_id, creds)
             self._set_status(f"Saved API key for {PROVIDER_NAMES.get(provider_id, provider_id)}")
             self._set_view("provider", push=False)
             return

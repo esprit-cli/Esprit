@@ -159,6 +159,10 @@ export POETRY_VIRTUALENVS_CREATE=false
 export TOOL_SERVER_TIMEOUT="${ESPRIT_SANDBOX_EXECUTION_TIMEOUT:-120}"
 TOOL_SERVER_LOG="/tmp/tool_server.log"
 
+# Tool server and its health check must bypass the Caido proxy
+export no_proxy="127.0.0.1,localhost"
+export NO_PROXY="127.0.0.1,localhost"
+
 sudo -E -u pentester \
   poetry run python -m esprit.runtime.tool_server \
   --token="$TOOL_SERVER_TOKEN" \
@@ -166,13 +170,21 @@ sudo -E -u pentester \
   --port="$TOOL_SERVER_PORT" \
   --timeout="$TOOL_SERVER_TIMEOUT" > "$TOOL_SERVER_LOG" 2>&1 &
 
-for i in {1..10}; do
-  if curl -s "http://127.0.0.1:$TOOL_SERVER_PORT/health" | grep -q '"status":"healthy"'; then
+TOOL_SERVER_PID=$!
+
+for i in {1..15}; do
+  if ! kill -0 $TOOL_SERVER_PID 2>/dev/null; then
+    echo "ERROR: Tool server process died (PID $TOOL_SERVER_PID)"
+    echo "=== Tool server log ==="
+    cat "$TOOL_SERVER_LOG" 2>/dev/null || echo "(no log)"
+    exit 1
+  fi
+  if curl --noproxy '*' -s "http://127.0.0.1:$TOOL_SERVER_PORT/health" | grep -q '"status":"healthy"'; then
     echo "✅ Tool server healthy on port $TOOL_SERVER_PORT"
     break
   fi
-  if [ $i -eq 10 ]; then
-    echo "ERROR: Tool server failed to become healthy"
+  if [ $i -eq 15 ]; then
+    echo "ERROR: Tool server failed to become healthy after 15 attempts"
     echo "=== Tool server log ==="
     cat "$TOOL_SERVER_LOG" 2>/dev/null || echo "(no log)"
     exit 1

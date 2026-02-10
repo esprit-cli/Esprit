@@ -78,6 +78,14 @@ class DockerRuntime(AbstractRuntime):
         if port_bindings.get(port_key):
             self._tool_server_port = int(port_bindings[port_key][0]["HostPort"])
 
+    def _get_container_logs(self, tail: int = 50) -> str:
+        if self._scan_container is None:
+            return "(no container)"
+        try:
+            return self._scan_container.logs(tail=tail).decode("utf-8", errors="replace")
+        except Exception:  # noqa: BLE001
+            return "(unable to retrieve logs)"
+
     def _wait_for_tool_server(self, max_retries: int = 30, timeout: int = 5) -> None:
         host = self._resolve_docker_host()
         health_url = f"http://{host}:{self._tool_server_port}/health"
@@ -85,6 +93,27 @@ class DockerRuntime(AbstractRuntime):
         time.sleep(5)
 
         for attempt in range(max_retries):
+            # Check if the container is still running before polling
+            if self._scan_container is not None:
+                try:
+                    self._scan_container.reload()
+                    status = self._scan_container.status
+                    if status in ("exited", "dead", "removing"):
+                        exit_code = self._scan_container.attrs.get("State", {}).get(
+                            "ExitCode", "unknown"
+                        )
+                        logs = self._get_container_logs()
+                        raise SandboxInitializationError(
+                            "Tool server failed to start",
+                            f"Container exited with code {exit_code} during initialization.\n"
+                            f"Container logs:\n{logs}",
+                        )
+                except (NotFound, DockerException):
+                    raise SandboxInitializationError(
+                        "Tool server failed to start",
+                        "Container was removed during initialization.",
+                    ) from None
+
             try:
                 with httpx.Client(trust_env=False, timeout=timeout) as client:
                     response = client.get(health_url)
@@ -97,9 +126,12 @@ class DockerRuntime(AbstractRuntime):
 
             time.sleep(min(2**attempt * 0.5, 5))
 
+        # Final timeout — include container logs for diagnostics
+        logs = self._get_container_logs()
         raise SandboxInitializationError(
             "Tool server failed to start",
-            "Container initialization timed out. Please try again.",
+            f"Container initialization timed out after {max_retries} attempts.\n"
+            f"Container logs:\n{logs}",
         )
 
     def _create_container(self, scan_id: str, max_retries: int = 2) -> Container:
