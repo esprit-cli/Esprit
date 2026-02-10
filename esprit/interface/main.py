@@ -406,9 +406,9 @@ def pre_scan_setup(non_interactive: bool = False) -> bool:
         provider_badge = {
             "antigravity": "[bold #a78bfa]AG[/]",
             "openai": "[bold #74aa9c]OAI[/]",
-            "anthropic": "[bold #d4a27f]ANT[/]",
-            "google": "[bold #4285f4]GCP[/]",
-            "github-copilot": "[bold white]GH[/]",
+            "anthropic": "[bold #d4a27f]CC[/]",
+            "google": "[bold #4285f4]GG[/]",
+            "github-copilot": "[bold white]CO[/]",
         }.get(provider_prefix, "")
         if provider_badge:
             console.print(f"[bold]Model:[/] {provider_badge} {bare}")

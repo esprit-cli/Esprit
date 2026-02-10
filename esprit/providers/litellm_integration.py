@@ -135,8 +135,23 @@ class ProviderAuthClient:
             # Save refreshed tokens to the correct store
             if provider_id in _MULTI_ACCOUNT_PROVIDERS:
                 pool = get_account_pool()
-                email = credentials.extra.get("email", "unknown")
-                pool.update_credentials(provider_id, email, new_credentials)
+                email = credentials.extra.get("email", "") if credentials.extra else ""
+                if email:
+                    pool.update_credentials(provider_id, email, new_credentials)
+                else:
+                    # Fallback: find account by matching refresh_token or account_id
+                    accounts = pool.list_accounts(provider_id)
+                    matched = False
+                    for acct in accounts:
+                        if (
+                            (credentials.refresh_token and acct.credentials.refresh_token == credentials.refresh_token)
+                            or (credentials.account_id and acct.account_id == credentials.account_id)
+                        ):
+                            pool.update_credentials(provider_id, acct.email, new_credentials)
+                            matched = True
+                            break
+                    if not matched:
+                        logger.warning("Could not find account to update for %s", provider_id)
             else:
                 self.token_store.set(provider_id, new_credentials)
             return new_credentials

@@ -136,9 +136,13 @@ async def _provider_login(provider_id: str | None = None) -> int:
         # Save credentials
         if callback_result.credentials:
             if is_multi:
-                email = callback_result.credentials.extra.get("email", "unknown")
+                email = callback_result.credentials.extra.get("email", "unknown") if callback_result.credentials.extra else "unknown"
                 if not email or email == "unknown":
                     email = callback_result.credentials.account_id or f"account-{pool.account_count(provider_id) + 1}"
+                # Ensure email is stored in credentials.extra for token refresh lookup
+                if callback_result.credentials.extra is None:
+                    callback_result.credentials.extra = {}
+                callback_result.credentials.extra["email"] = email
                 pool.add_account(provider_id, callback_result.credentials, email)
                 console.print()
                 console.print(f"[green]✓ Added {email} to {display_name}[/]")

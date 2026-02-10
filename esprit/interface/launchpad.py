@@ -206,6 +206,7 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
         self._status = ""
         self._animation_step = 0
         self._ghost_timer: Any | None = None
+        self._model_filter = ""
 
         # Detect current project
         self._cwd = os.getcwd()
@@ -322,9 +323,14 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
             self._current_title = "Scan Target"
             self._current_hint = "select target type  esc to go back"
         elif view == "model":
+            self._model_filter = ""
             self._current_entries = self._build_model_entries()
             self._current_title = "Model Config"
-            self._current_hint = "select a default model  esc to go back"
+            self._current_hint = "type to search  up/down to navigate  enter to select  esc to go back"
+            self._input_mode = "model_search"
+            input_widget.placeholder = "search models..."
+            input_widget.display = True
+            input_widget.focus()
         elif view == "provider":
             self._current_entries = self._build_provider_entries()
             self._current_title = "Provider Config"
@@ -376,15 +382,76 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
 
         self._render_panel()
 
-    def _build_model_entries(self) -> list[_MenuEntry]:
+    def _build_model_entries(self, filter_text: str = "") -> list[_MenuEntry]:
         current = Config.get("esprit_llm") or DEFAULT_MODEL
         entries: list[_MenuEntry] = []
+        query = filter_text.lower().strip()
 
-        for provider_id, models in AVAILABLE_MODELS.items():
+        # Provider badges and display info
+        _BADGES: dict[str, str] = {
+            "antigravity": "AG",
+            "openai": "OAI",
+            "anthropic": "CC",
+            "google": "GG",
+            "github-copilot": "CO",
+        }
+        _PROVIDER_LABELS: dict[str, str] = {
+            "antigravity": "ANTIGRAVITY",
+            "openai": "OPENAI",
+            "anthropic": "ANTHROPIC",
+            "google": "GOOGLE",
+            "github-copilot": "COPILOT",
+        }
+
+        # Check which providers are connected
+        connected: dict[str, bool] = {}
+        for provider_id in AVAILABLE_MODELS:
+            if provider_id in _MULTI_ACCOUNT_PROVIDERS:
+                connected[provider_id] = self._account_pool.has_accounts(provider_id)
+            else:
+                connected[provider_id] = self._token_store.has_credentials(provider_id)
+
+        # Sort: connected providers first
+        providers_sorted = sorted(
+            AVAILABLE_MODELS.keys(),
+            key=lambda p: (0 if connected.get(p) else 1, p),
+        )
+
+        for provider_id in providers_sorted:
+            models = AVAILABLE_MODELS[provider_id]
+            badge = _BADGES.get(provider_id, provider_id[:3].upper())
+            label = _PROVIDER_LABELS.get(provider_id, provider_id.upper())
+            is_connected = connected.get(provider_id, False)
+
+            # Filter models
+            matching_models = []
             for model_id, model_name in models:
                 full_model = f"{provider_id}/{model_id}"
+                if query and query not in model_name.lower() and query not in model_id.lower() and query not in badge.lower() and query not in label.lower():
+                    continue
+                matching_models.append((model_id, model_name, full_model))
+
+            if not matching_models:
+                continue
+
+            # Provider section header
+            conn_indicator = "\u2713" if is_connected else "\u00b7"
+            conn_label = "connected" if is_connected else "not connected"
+            entries.append(_MenuEntry(
+                f"separator:{provider_id}",
+                f"  {conn_indicator} {label}",
+                f"[{badge}] {conn_label}",
+            ))
+
+            # Model entries
+            for model_id, model_name, full_model in matching_models:
                 marker = "\u25cf" if full_model == current else "\u25cb"
-                entries.append(_MenuEntry(f"model:{full_model}", f"{marker} {model_name}"))
+                dim = "" if is_connected else "\u2022 "
+                entries.append(_MenuEntry(
+                    f"model:{full_model}",
+                    f"    {marker} {dim}{model_name}",
+                    badge,
+                ))
 
         entries.append(_MenuEntry("back", "\u2190 Back"))
         return entries
@@ -490,20 +557,30 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
         menu_text = Text()
         for idx, entry in enumerate(self._current_entries):
             is_selected = idx == self.selected_index
+            is_separator = entry.key.startswith("separator:")
 
-            if is_selected:
+            if is_separator:
+                # Provider group header — not selectable
+                menu_text.append(entry.label, style=Style(color="#67e8f9", bold=True))
+                if entry.hint:
+                    menu_text.append(f"  {entry.hint}", style=Style(color="#555555"))
+            elif is_selected:
                 prefix = "\u276f "
                 label_style = Style(color="#22d3ee", bold=True)
                 hint_style = Style(color="#0e7490")
+                menu_text.append(prefix, style=label_style)
+                menu_text.append(entry.label, style=label_style)
+                if entry.hint:
+                    menu_text.append(f"  {entry.hint}", style=hint_style)
             else:
                 prefix = "  "
                 label_style = Style(color="#8a8a8a")
                 hint_style = Style(color="#555555")
+                menu_text.append(prefix, style=label_style)
+                menu_text.append(entry.label, style=label_style)
+                if entry.hint:
+                    menu_text.append(f"  {entry.hint}", style=hint_style)
 
-            menu_text.append(prefix, style=label_style)
-            menu_text.append(entry.label, style=label_style)
-            if entry.hint:
-                menu_text.append(f"  {entry.hint}", style=hint_style)
             if idx < len(self._current_entries) - 1:
                 menu_text.append("\n")
 
@@ -512,20 +589,37 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
     # ── Actions (bound to keys via BINDINGS) ──────────────────────────
 
     def action_cursor_up(self) -> None:
-        if self._input_mode:
+        if self._input_mode and self._input_mode != "model_search":
             return
         if self._current_entries:
-            self.selected_index = (self.selected_index - 1) % len(self._current_entries)
+            new_idx = (self.selected_index - 1) % len(self._current_entries)
+            # Skip separator entries
+            attempts = len(self._current_entries)
+            while self._current_entries[new_idx].key.startswith("separator:") and attempts > 0:
+                new_idx = (new_idx - 1) % len(self._current_entries)
+                attempts -= 1
+            self.selected_index = new_idx
             self._render_menu()
 
     def action_cursor_down(self) -> None:
-        if self._input_mode:
+        if self._input_mode and self._input_mode != "model_search":
             return
         if self._current_entries:
-            self.selected_index = (self.selected_index + 1) % len(self._current_entries)
+            new_idx = (self.selected_index + 1) % len(self._current_entries)
+            # Skip separator entries
+            attempts = len(self._current_entries)
+            while self._current_entries[new_idx].key.startswith("separator:") and attempts > 0:
+                new_idx = (new_idx + 1) % len(self._current_entries)
+                attempts -= 1
+            self.selected_index = new_idx
             self._render_menu()
 
     async def action_select_entry(self) -> None:
+        if self._input_mode == "model_search":
+            # In model search: enter selects the highlighted model, not the input
+            if self._current_entries and not self._current_entries[self.selected_index].key.startswith("separator:"):
+                await self._activate_entry(self._current_entries[self.selected_index])
+            return
         if self._input_mode:
             # Priority binding intercepted enter; forward it to the Input widget
             input_widget = self.query_one("#launchpad_input", Input)
@@ -680,14 +774,33 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
 
         if callback_result.credentials:
             if provider_id in _MULTI_ACCOUNT_PROVIDERS:
-                email = callback_result.credentials.extra.get("email", "unknown")
+                email = callback_result.credentials.extra.get("email", "unknown") if callback_result.credentials.extra else "unknown"
                 if not email or email == "unknown":
                     email = callback_result.credentials.account_id or f"account-{self._account_pool.account_count(provider_id) + 1}"
+                # Ensure email stored in extra for token refresh lookup
+                if callback_result.credentials.extra is None:
+                    callback_result.credentials.extra = {}
+                callback_result.credentials.extra["email"] = email
                 self._account_pool.add_account(provider_id, callback_result.credentials, email)
             else:
                 self._token_store.set(provider_id, callback_result.credentials)
         self._set_status(f"Connected {PROVIDER_NAMES.get(provider_id, provider_id)}")
         self._set_view("provider", push=False)
+
+    # ── Input change (live search) ─────────────────────────────────────
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        if self._input_mode == "model_search":
+            self._model_filter = event.value
+            self._current_entries = self._build_model_entries(self._model_filter)
+            self.selected_index = 0
+            # Skip separator to first selectable entry
+            while (
+                self.selected_index < len(self._current_entries)
+                and self._current_entries[self.selected_index].key.startswith("separator:")
+            ):
+                self.selected_index += 1
+            self._render_menu()
 
     # ── Input submission ──────────────────────────────────────────────
 

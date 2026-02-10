@@ -242,6 +242,21 @@ def _extract_account_id(tokens: dict[str, Any]) -> str | None:
     return None
 
 
+def _extract_email(tokens: dict[str, Any]) -> str | None:
+    """Extract email from JWT id_token or access_token claims."""
+    for token_key in ["id_token", "access_token"]:
+        token = tokens.get(token_key)
+        if not token:
+            continue
+        claims = _decode_jwt_payload(token)
+        if not claims:
+            continue
+        email = claims.get("email")
+        if email:
+            return email
+    return None
+
+
 class OpenAICodexProvider(ProviderAuth):
     """OpenAI ChatGPT Plus/Pro (Codex) OAuth provider.
 
@@ -421,6 +436,11 @@ class OpenAICodexProvider(ProviderAuth):
 
                 tokens = response.json()
                 account_id = _extract_account_id(tokens)
+                email = _extract_email(tokens)
+
+                extra: dict[str, Any] = {}
+                if email:
+                    extra["email"] = email
 
                 credentials = OAuthCredentials(
                     type="oauth",
@@ -428,6 +448,7 @@ class OpenAICodexProvider(ProviderAuth):
                     refresh_token=tokens.get("refresh_token"),
                     expires_at=int(time.time() * 1000) + (tokens.get("expires_in", 3600) * 1000),
                     account_id=account_id,
+                    extra=extra,
                 )
 
                 return AuthCallbackResult(
@@ -499,6 +520,11 @@ class OpenAICodexProvider(ProviderAuth):
 
                         tokens = token_response.json()
                         account_id = _extract_account_id(tokens)
+                        email = _extract_email(tokens)
+
+                        extra: dict[str, Any] = {}
+                        if email:
+                            extra["email"] = email
 
                         credentials = OAuthCredentials(
                             type="oauth",
@@ -506,6 +532,7 @@ class OpenAICodexProvider(ProviderAuth):
                             refresh_token=tokens.get("refresh_token"),
                             expires_at=int(time.time() * 1000) + (tokens.get("expires_in", 3600) * 1000),
                             account_id=account_id,
+                            extra=extra,
                         )
 
                         return AuthCallbackResult(
