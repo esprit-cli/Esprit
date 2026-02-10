@@ -12,6 +12,27 @@ logger = logging.getLogger(__name__)
 MAX_TOTAL_TOKENS = 100_000
 MIN_RECENT_MESSAGES = 15
 
+# Map Antigravity model names to litellm-compatible names for token counting
+_TOKEN_COUNTER_MAP: dict[str, str] = {
+    "antigravity/claude-opus-4-6-thinking": "claude-opus-4-5-20250514",
+    "antigravity/claude-opus-4-5-thinking": "claude-opus-4-5-20250514",
+    "antigravity/claude-sonnet-4-5-thinking": "claude-sonnet-4-5-20250514",
+    "antigravity/claude-sonnet-4-5": "claude-sonnet-4-5-20250514",
+    "antigravity/gemini-2.5-flash": "gemini/gemini-2.5-flash-preview-04-17",
+    "antigravity/gemini-2.5-flash-lite": "gemini/gemini-2.5-flash-preview-04-17",
+    "antigravity/gemini-2.5-flash-thinking": "gemini/gemini-2.5-flash-preview-04-17",
+    "antigravity/gemini-2.5-pro": "gemini/gemini-2.5-pro-preview-03-25",
+    "antigravity/gemini-3-flash": "gemini/gemini-2.5-flash-preview-04-17",
+    "antigravity/gemini-3-pro-high": "gemini/gemini-2.5-pro-preview-03-25",
+    "antigravity/gemini-3-pro-image": "gemini/gemini-2.5-pro-preview-03-25",
+    "antigravity/gemini-3-pro-low": "gemini/gemini-2.5-pro-preview-03-25",
+}
+
+
+def _resolve_model_for_counting(model: str) -> str:
+    """Resolve Antigravity model names to litellm-compatible names for token counting."""
+    return _TOKEN_COUNTER_MAP.get(model, model)
+
 SUMMARY_PROMPT_TEMPLATE = """You are an agent performing context
 condensation for a security agent. Your job is to compress scan data while preserving
 ALL operationally critical information for continuing the security assessment.
@@ -45,7 +66,8 @@ keeping the summary concise and to the point."""
 
 def _count_tokens(text: str, model: str) -> int:
     try:
-        count = litellm.token_counter(model=model, text=text)
+        resolved = _resolve_model_for_counting(model)
+        count = litellm.token_counter(model=resolved, text=text)
         return int(count)
     except Exception:
         logger.exception("Failed to count tokens")

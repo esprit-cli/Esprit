@@ -6,6 +6,7 @@ authentication with LiteLLM's completion calls.
 """
 
 import asyncio
+import json
 import logging
 import os
 from typing import Any
@@ -15,8 +16,13 @@ import httpx
 from esprit.providers import get_provider_auth, PROVIDERS
 from esprit.providers.base import OAuthCredentials
 from esprit.providers.token_store import TokenStore
+from esprit.providers.account_pool import AccountPool, get_account_pool
+from esprit.providers.constants import MULTI_ACCOUNT_PROVIDERS
 
 logger = logging.getLogger(__name__)
+
+# Providers that use the multi-account pool
+_MULTI_ACCOUNT_PROVIDERS = MULTI_ACCOUNT_PROVIDERS
 
 
 class ProviderAuthClient:
@@ -52,6 +58,7 @@ class ProviderAuthClient:
         Examples:
             - "anthropic/claude-sonnet-4" -> "anthropic"
             - "openai/gpt-5" -> "openai"
+            - "antigravity/claude-opus-4-6-thinking" -> "antigravity"
             - "github-copilot/gpt-5" -> "github-copilot"
             - "google/gemini-2.5-pro" -> "google"
         """
@@ -67,6 +74,15 @@ class ProviderAuthClient:
                 return prefix
 
         # Detect from model name
+        # Check if bare model name is an Antigravity model with active accounts
+        try:
+            from esprit.providers.antigravity import ANTIGRAVITY_MODELS
+            bare = model_lower.split("/", 1)[-1]
+            if bare in ANTIGRAVITY_MODELS and get_account_pool().has_accounts("antigravity"):
+                return "antigravity"
+        except ImportError:
+            pass
+
         if "claude" in model_lower:
             return "anthropic"
         if "gemini" in model_lower:
@@ -80,12 +96,21 @@ class ProviderAuthClient:
         return None
 
     def get_credentials(self, provider_id: str) -> OAuthCredentials | None:
-        """Get credentials for a provider."""
+        """Get credentials for a provider, checking pool first for multi-account."""
+        if provider_id in _MULTI_ACCOUNT_PROVIDERS:
+            pool = get_account_pool()
+            acct = pool.get_best_account(provider_id)
+            if acct:
+                return acct.credentials
         return self.token_store.get(provider_id)
 
     def has_oauth_credentials(self, provider_id: str) -> bool:
         """Check if OAuth credentials exist for a provider."""
-        creds = self.get_credentials(provider_id)
+        if provider_id in _MULTI_ACCOUNT_PROVIDERS:
+            pool = get_account_pool()
+            if pool.has_accounts(provider_id):
+                return True
+        creds = self.token_store.get(provider_id)
         return creds is not None and creds.type == "oauth"
 
     async def ensure_valid_credentials(
@@ -96,18 +121,39 @@ class ProviderAuthClient:
         """Ensure credentials are valid, refreshing if needed."""
         if credentials.type != "oauth":
             return credentials
-        
+
         if not credentials.is_expired():
             return credentials
-        
+
         # Refresh token
         provider = get_provider_auth(provider_id)
         if not provider:
             return credentials
-        
+
         try:
             new_credentials = await provider.refresh_token(credentials)
-            self.token_store.set(provider_id, new_credentials)
+            # Save refreshed tokens to the correct store
+            if provider_id in _MULTI_ACCOUNT_PROVIDERS:
+                pool = get_account_pool()
+                email = credentials.extra.get("email", "") if credentials.extra else ""
+                if email:
+                    pool.update_credentials(provider_id, email, new_credentials)
+                else:
+                    # Fallback: find account by matching refresh_token or account_id
+                    accounts = pool.list_accounts(provider_id)
+                    matched = False
+                    for acct in accounts:
+                        if (
+                            (credentials.refresh_token and acct.credentials.refresh_token == credentials.refresh_token)
+                            or (credentials.account_id and acct.account_id == credentials.account_id)
+                        ):
+                            pool.update_credentials(provider_id, acct.email, new_credentials)
+                            matched = True
+                            break
+                    if not matched:
+                        logger.warning("Could not find account to update for %s", provider_id)
+            else:
+                self.token_store.set(provider_id, new_credentials)
             return new_credentials
         except Exception as e:
             logger.warning(f"Token refresh failed for {provider_id}: {e}")
@@ -192,10 +238,9 @@ def get_provider_api_key(model_name: str) -> str | None:
         return credentials.access_token
     
     if credentials.type == "oauth":
-        # For OAuth, we need to use the access token
-        # But LiteLLM expects this in headers, not as api_key
-        # Return a dummy key to prevent LiteLLM from erroring
-        return "oauth-authenticated"
+        # Return the actual access token so litellm sets the correct
+        # Authorization header instead of a dummy value.
+        return credentials.access_token
     
     return None
 
@@ -220,8 +265,9 @@ def get_provider_headers(model_name: str) -> dict[str, str]:
     if not provider:
         return {}
     
-    # Get modified headers
+    # Get modified headers (exclude Authorization since litellm sets it via api_key)
     _, headers, _ = provider.modify_request("", {}, None, credentials)
+    headers.pop("Authorization", None)
     return headers
 
 
@@ -229,11 +275,57 @@ def should_use_oauth(model_name: str) -> bool:
     """Check if OAuth should be used for a model."""
     client = get_auth_client()
     provider_id = client.detect_provider(model_name)
-    
+
     if not provider_id:
         return False
-    
+
     return client.has_oauth_credentials(provider_id)
+
+
+def sync_codex_credentials_to_litellm(model_name: str) -> None:
+    """Sync esprit's OAuth credentials to litellm's ChatGPT auth file.
+
+    litellm's built-in ``chatgpt/`` provider reads tokens from
+    ``~/.config/litellm/chatgpt/auth.json``.  This function copies esprit's
+    stored OAuth credentials into that file so litellm can authenticate
+    without a separate login.
+
+    For multi-account providers, syncs the current active account.
+    """
+    client = get_auth_client()
+    provider_id = client.detect_provider(model_name)
+    if not provider_id:
+        return
+
+    credentials = client.get_credentials(provider_id)
+    if not credentials or credentials.type != "oauth":
+        return
+
+    token_dir = os.environ.get(
+        "CHATGPT_TOKEN_DIR",
+        os.path.expanduser("~/.config/litellm/chatgpt"),
+    )
+    auth_file = os.path.join(
+        token_dir,
+        os.environ.get("CHATGPT_AUTH_FILE", "auth.json"),
+    )
+
+    os.makedirs(token_dir, exist_ok=True)
+
+    auth_data = {
+        "access_token": credentials.access_token,
+        "refresh_token": credentials.refresh_token,
+        "id_token": credentials.access_token,
+        "expires_at": credentials.expires_at // 1000 if credentials.expires_at else None,
+        "account_id": credentials.account_id,
+    }
+    try:
+        with open(auth_file, "w") as f:
+            json.dump(auth_data, f)
+        if os.name != "nt":
+            os.chmod(auth_file, 0o600)
+    except OSError:
+        logger.warning("Failed to sync credentials to litellm auth file")
 
 
 def get_modified_url(model_name: str, url: str) -> str:

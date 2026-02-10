@@ -35,7 +35,7 @@ poetry run esprit
 This opens the interactive launchpad where you can:
 
 - **Model Config** — pick your default LLM (GPT-5, Claude Sonnet, Gemini, etc.)
-- **Provider Config** — connect to OpenAI, Anthropic, Google, or GitHub Copilot via OAuth or your own API key
+- **Provider Config** — connect to OpenAI, Anthropic, Google, GitHub Copilot, or Antigravity (free Claude/Gemini) via OAuth or API key
 - **Scan Mode** — choose quick, standard, or deep
 - **Scan** — enter a target and start a penetration test
 
@@ -69,6 +69,7 @@ Configuration is stored in `~/.esprit/`:
 | File | Purpose |
 |------|---------|
 | `providers.json` | OAuth tokens and API keys per provider |
+| `accounts.json` | Multi-account credential pools (Antigravity, OpenAI) |
 | `config.json` | Default model selection |
 | `cli-config.json` | Saved environment variables |
 | `credentials.json` | Esprit platform account |
@@ -84,10 +85,11 @@ export PERPLEXITY_API_KEY="pplx-..."       # optional, for search capabilities
 
 ### Supported Models
 
-- **OpenAI** — `openai/gpt-5`, `openai/o3`, `openai/gpt-4.1`
-- **Anthropic** — `anthropic/claude-sonnet-4-5`, `anthropic/claude-sonnet-4-20250514`
-- **Google** — `vertex_ai/gemini-3-pro-preview`
-- **GitHub Copilot** — `github-copilot/gpt-5`
+- **Antigravity (Free)** — `antigravity/claude-opus-4-6-thinking`, `antigravity/gemini-3-flash`, `antigravity/gemini-2.5-pro`, and [10 more](docs/antigravity.md)
+- **OpenAI** — `openai/gpt-5.3-codex`, `openai/gpt-5.2-codex`, `openai/codex-mini-latest`
+- **Anthropic** — `anthropic/claude-sonnet-4-5`, `anthropic/claude-opus-4-5`
+- **Google** — `google/gemini-3-pro`, `google/gemini-3-flash`
+- **GitHub Copilot** — `github-copilot/gpt-5`, `github-copilot/claude-sonnet-4-5`
 - **Local** — Any model via Ollama/LMStudio using `LLM_API_BASE`
 
 ### Advanced Usage

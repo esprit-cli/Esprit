@@ -14,7 +14,6 @@ import platform
 import secrets
 import threading
 import time
-import webbrowser
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from typing import Any
 from urllib.parse import parse_qs, urlencode, urlparse
@@ -47,11 +46,16 @@ OAUTH_TIMEOUT = 300  # 5 minutes
 
 # Allowed models for Codex OAuth
 ALLOWED_CODEX_MODELS = {
-    "gpt-5.1-codex-max",
-    "gpt-5.1-codex-mini",
-    "gpt-5.2",
+    "gpt-5.3-codex",
     "gpt-5.2-codex",
+    "gpt-5.2",
+    "gpt-5.1-codex-max",
     "gpt-5.1-codex",
+    "gpt-5.1-codex-mini",
+    "gpt-5.1",
+    "gpt-5-codex",
+    "gpt-5",
+    "gpt-5-codex-mini",
 }
 
 # Polling safety margin
@@ -238,6 +242,21 @@ def _extract_account_id(tokens: dict[str, Any]) -> str | None:
     return None
 
 
+def _extract_email(tokens: dict[str, Any]) -> str | None:
+    """Extract email from JWT id_token or access_token claims."""
+    for token_key in ["id_token", "access_token"]:
+        token = tokens.get(token_key)
+        if not token:
+            continue
+        claims = _decode_jwt_payload(token)
+        if not claims:
+            continue
+        email = claims.get("email")
+        if email:
+            return email
+    return None
+
+
 class OpenAICodexProvider(ProviderAuth):
     """OpenAI ChatGPT Plus/Pro (Codex) OAuth provider.
 
@@ -376,11 +395,7 @@ class OpenAICodexProvider(ProviderAuth):
         server_thread = threading.Thread(target=server.handle_request)
         server_thread.start()
 
-        # Open browser
-        try:
-            webbrowser.open(auth_result.url)
-        except Exception:
-            pass  # Browser opening handled by caller
+        # Browser is already opened by the caller (commands.py)
 
         # Wait for callback (with timeout)
         server_thread.join(timeout=OAUTH_TIMEOUT)
@@ -421,6 +436,11 @@ class OpenAICodexProvider(ProviderAuth):
 
                 tokens = response.json()
                 account_id = _extract_account_id(tokens)
+                email = _extract_email(tokens)
+
+                extra: dict[str, Any] = {}
+                if email:
+                    extra["email"] = email
 
                 credentials = OAuthCredentials(
                     type="oauth",
@@ -428,6 +448,7 @@ class OpenAICodexProvider(ProviderAuth):
                     refresh_token=tokens.get("refresh_token"),
                     expires_at=int(time.time() * 1000) + (tokens.get("expires_in", 3600) * 1000),
                     account_id=account_id,
+                    extra=extra,
                 )
 
                 return AuthCallbackResult(
@@ -499,6 +520,11 @@ class OpenAICodexProvider(ProviderAuth):
 
                         tokens = token_response.json()
                         account_id = _extract_account_id(tokens)
+                        email = _extract_email(tokens)
+
+                        extra: dict[str, Any] = {}
+                        if email:
+                            extra["email"] = email
 
                         credentials = OAuthCredentials(
                             type="oauth",
@@ -506,6 +532,7 @@ class OpenAICodexProvider(ProviderAuth):
                             refresh_token=tokens.get("refresh_token"),
                             expires_at=int(time.time() * 1000) + (tokens.get("expires_in", 3600) * 1000),
                             account_id=account_id,
+                            extra=extra,
                         )
 
                         return AuthCallbackResult(
@@ -596,12 +623,8 @@ class OpenAICodexProvider(ProviderAuth):
         arch = platform.machine()
         modified_headers["User-Agent"] = f"esprit/1.0 ({system} {release}; {arch})"
 
-        # Rewrite URL to Codex endpoint for responses/completions
-        modified_url = url
-        if "/v1/responses" in url or "/chat/completions" in url:
-            modified_url = CODEX_API_URL
-
-        return modified_url, modified_headers, body
+        # Use the standard OpenAI API endpoint (no URL rewriting needed)
+        return url, modified_headers, body
 
     def get_auth_methods(self) -> list[dict[str, str]]:
         """Get available authentication methods."""

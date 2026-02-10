@@ -40,6 +40,20 @@ AVAILABLE_MODELS = {
         ("gemini-3-flash", "Gemini 3 Flash (faster)"),
         ("gemini-2.5-flash", "Gemini 2.5 Flash"),
     ],
+    "antigravity": [
+        ("claude-opus-4-6-thinking", "Claude Opus 4.6 Thinking (free)"),
+        ("claude-opus-4-5-thinking", "Claude Opus 4.5 Thinking (free)"),
+        ("claude-sonnet-4-5-thinking", "Claude Sonnet 4.5 Thinking (free)"),
+        ("claude-sonnet-4-5", "Claude Sonnet 4.5 (free)"),
+        ("gemini-2.5-flash", "Gemini 2.5 Flash (free)"),
+        ("gemini-2.5-flash-lite", "Gemini 2.5 Flash Lite (free)"),
+        ("gemini-2.5-flash-thinking", "Gemini 2.5 Flash Thinking (free)"),
+        ("gemini-2.5-pro", "Gemini 2.5 Pro (free)"),
+        ("gemini-3-flash", "Gemini 3 Flash (free)"),
+        ("gemini-3-pro-high", "Gemini 3 Pro High (free)"),
+        ("gemini-3-pro-image", "Gemini 3 Pro Image (free)"),
+        ("gemini-3-pro-low", "Gemini 3 Pro Low (free)"),
+    ],
 }
 
 
@@ -102,9 +116,13 @@ def get_config() -> Config:
 def cmd_config_model(model: str | None = None) -> int:
     """Configure the default LLM model."""
     from esprit.providers.token_store import TokenStore
+    from esprit.providers.account_pool import get_account_pool
 
     token_store = TokenStore()
+    pool = get_account_pool()
     config = Config()
+
+    from esprit.providers.constants import MULTI_ACCOUNT_PROVIDERS as _multi_account
 
     # If no model specified, show interactive menu
     if not model:
@@ -112,22 +130,55 @@ def cmd_config_model(model: str | None = None) -> int:
         console.print("[bold]Select a model to use:[/]")
         console.print()
 
-        # Group by provider, only show providers with credentials
+        # Group by provider — show connected first, then disconnected
         available_options = []
         option_num = 1
+        connected_providers = []
+        disconnected_providers = []
 
         for provider_id, models in AVAILABLE_MODELS.items():
-            has_creds = token_store.has_credentials(provider_id)
+            if provider_id in _multi_account:
+                has_creds = pool.has_accounts(provider_id)
+            else:
+                has_creds = token_store.has_credentials(provider_id)
             if has_creds:
-                creds = token_store.get(provider_id)
-                auth_type = creds.type.upper() if creds else "API"
-                console.print(f"[bold cyan]{provider_id.upper()}[/] [dim]({auth_type})[/]")
+                connected_providers.append((provider_id, models))
+            else:
+                disconnected_providers.append((provider_id, models))
+
+        # Show connected providers first
+        for provider_id, models in connected_providers:
+            creds = token_store.get(provider_id)
+            auth_type = creds.type.upper() if creds else "OAUTH"
+            provider_label = {
+                "antigravity": "ANTIGRAVITY",
+                "openai": "OPENAI",
+                "anthropic": "ANTHROPIC",
+                "google": "GOOGLE",
+                "github-copilot": "GITHUB COPILOT",
+            }.get(provider_id, provider_id.upper())
+            console.print(f"  [bold green]●[/] [bold cyan]{provider_label}[/] [dim]({auth_type} connected)[/]")
+            for model_id, model_name in models:
+                full_model = f"{provider_id}/{model_id}"
+                available_options.append(full_model)
+                console.print(f"    [bold]{option_num}.[/] {model_name} [dim]({model_id})[/]")
+                option_num += 1
+            console.print()
+
+        # Show disconnected providers (greyed out)
+        if disconnected_providers:
+            for provider_id, models in disconnected_providers:
+                provider_label = {
+                    "antigravity": "ANTIGRAVITY",
+                    "openai": "OPENAI",
+                    "anthropic": "ANTHROPIC",
+                    "google": "GOOGLE",
+                    "github-copilot": "GITHUB COPILOT",
+                }.get(provider_id, provider_id.upper())
+                console.print(f"  [dim]○ {provider_label} (not connected)[/]")
                 for model_id, model_name in models:
-                    full_model = f"{provider_id}/{model_id}"
-                    available_options.append(full_model)
-                    console.print(f"  {option_num}. {model_name} [dim]({model_id})[/]")
-                    option_num += 1
-                console.print()
+                    console.print(f"    [dim]  {model_name}[/]")
+            console.print()
 
         if not available_options:
             console.print("[yellow]No providers configured.[/]")

@@ -1,8 +1,11 @@
 import asyncio
+import json
+import logging
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Any
 
+import httpx
 import litellm
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 from litellm import acompletion, completion_cost, stream_chunk_builder, supports_reasoning
@@ -20,20 +23,56 @@ from esprit.skills import load_skills
 from esprit.tools import get_tools_prompt
 from esprit.utils.resource_paths import get_esprit_resource_path
 
-# Provider OAuth integration (Codex, Copilot, Gemini, Anthropic)
+# Provider OAuth integration (Codex, Copilot, Gemini, Anthropic, Antigravity)
 try:
     from esprit.providers.litellm_integration import (
         get_provider_headers,
         should_use_oauth,
         get_provider_api_key,
+        sync_codex_credentials_to_litellm,
+        get_auth_client,
+    )
+    from esprit.providers.account_pool import get_account_pool
+    from esprit.providers.antigravity import ANTIGRAVITY_MODELS, ENDPOINTS
+    from esprit.providers.antigravity_format import (
+        build_cloudcode_request,
+        build_request_headers,
+        parse_sse_chunk,
     )
     PROVIDERS_AVAILABLE = True
 except ImportError:
     PROVIDERS_AVAILABLE = False
 
+logger = logging.getLogger(__name__)
+
+
+def _mask_email(email: str) -> str:
+    """Mask email for logging to avoid PII exposure."""
+    if "@" in email:
+        local, domain = email.rsplit("@", 1)
+        return f"{local[:3]}***@{domain[:3]}***"
+    return email[:3] + "***"
+
 
 litellm.drop_params = True
 litellm.modify_params = True
+
+# Register Codex models that may not yet be in litellm's model cost map.
+# litellm needs mode=responses so it routes to /responses instead of /chat/completions.
+_CODEX_BASE_INFO = {
+    "mode": "responses",
+    "max_input_tokens": 272000,
+    "max_output_tokens": 128000,
+    "supports_function_calling": True,
+    "supports_vision": True,
+    "supports_reasoning": True,
+    "supports_native_streaming": True,
+}
+for _prefix, _provider in [("", "openai"), ("chatgpt/", "chatgpt")]:
+    for _base in ["gpt-5.3-codex", "gpt-5.2-codex"]:
+        _key = f"{_prefix}{_base}"
+        if _key not in litellm.model_cost:
+            litellm.model_cost[_key] = {**_CODEX_BASE_INFO, "litellm_provider": _provider}
 
 
 class LLMRequestFailedError(Exception):
@@ -125,16 +164,31 @@ class LLM:
         messages = self._prepare_messages(conversation_history)
         max_retries = int(Config.get("esprit_llm_max_retries") or "5")
 
-        for attempt in range(max_retries + 1):
+        attempt = 0
+        while attempt <= max_retries:
             try:
-                async for response in self._stream(messages):
-                    yield response
+                if self._is_antigravity():
+                    async for response in self._stream_antigravity(messages):
+                        yield response
+                else:
+                    async for response in self._stream(messages):
+                        yield response
                 return  # noqa: TRY300
             except Exception as e:  # noqa: BLE001
+                # Try account rotation on rate limit (429)
+                if self._try_rotate_on_rate_limit(e):
+                    # Rotated to a new account — retry immediately (don't increment)
+                    continue
                 if attempt >= max_retries or not self._should_retry(e):
+                    # Before giving up, try auto model fallback for Antigravity
+                    if self._is_antigravity() and self._try_model_fallback(e):
+                        # Switched to fallback model — restart retry loop
+                        attempt = 0
+                        continue
                     self._raise_error(e)
                 wait = min(10, 2 * (2**attempt))
                 await asyncio.sleep(wait)
+                attempt += 1
 
     async def _stream(self, messages: list[dict[str, Any]]) -> AsyncIterator[LLMResponse]:
         accumulated = ""
@@ -171,6 +225,155 @@ class LLM:
             content=accumulated,
             tool_invocations=parse_tool_invocations(accumulated),
             thinking_blocks=self._extract_thinking(chunks),
+        )
+
+    async def _stream_antigravity(self, messages: list[dict[str, Any]]) -> AsyncIterator[LLMResponse]:
+        """Stream responses from the Antigravity Cloud Code API directly."""
+        self._total_stats.requests += 1
+
+        # Get credentials and project info
+        client = get_auth_client()
+        credentials = client.get_credentials("antigravity")
+        if not credentials or credentials.type != "oauth":
+            raise LLMRequestFailedError("No Antigravity credentials. Run 'esprit provider login' first.")
+
+        credentials = await client.ensure_valid_credentials("antigravity", credentials)
+        access_token = credentials.access_token
+        project_id = credentials.extra.get("project_id")
+
+        # Handle project_id stored as dict (older credential format)
+        if isinstance(project_id, dict):
+            project_id = project_id.get("id")
+
+        # Re-discover project if missing
+        if not project_id:
+            from esprit.providers.antigravity import _discover_project
+            project_id, _ = await _discover_project(access_token)
+            if not project_id:
+                raise LLMRequestFailedError("No Antigravity project ID. Re-login with 'esprit provider login'.")
+
+        # Extract bare model name (strip any provider prefix like "antigravity/", "google/")
+        model = self.config.model_name
+        if "/" in model:
+            model = model.split("/", 1)[1]
+
+        # Build Cloud Code request
+        request_body = build_cloudcode_request(
+            messages=messages,
+            model=model,
+            project_id=project_id,
+            max_tokens=int(Config.get("esprit_max_tokens") or "16384"),
+        )
+        headers = build_request_headers(access_token, model)
+
+        # Try endpoints in order; skip production for Claude models
+        is_claude = "claude" in model
+        last_error = None
+        for endpoint in ENDPOINTS:
+            # Production endpoint doesn't support Claude — skip it
+            if is_claude and "sandbox" not in endpoint:
+                continue
+            url = f"{endpoint}/v1internal:streamGenerateContent?alt=sse"
+            try:
+                async for response in self._do_antigravity_stream(url, headers, request_body):
+                    yield response
+                return
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code == 429:
+                    # Mark rate-limited and let generate() handle rotation
+                    raise
+                if e.response.status_code in (401, 403):
+                    # Auth errors — retrying won't help
+                    raise
+                if e.response.status_code == 400:
+                    # Cloud Code 400s can be transient — retry on same endpoint
+                    retried = False
+                    last_retry_error = e
+                    for retry in range(2):
+                        await asyncio.sleep(2 * (retry + 1))
+                        try:
+                            async for response in self._do_antigravity_stream(url, headers, request_body):
+                                yield response
+                            retried = True
+                            return
+                        except httpx.HTTPStatusError as retry_e:
+                            last_retry_error = retry_e
+                            if retry_e.response.status_code != 400:
+                                raise
+                    if not retried:
+                        raise last_retry_error
+                if e.response.status_code == 404:
+                    # Model not found on this endpoint, try next
+                    last_error = e
+                    continue
+                last_error = e
+            except httpx.ConnectError:
+                # Don't overwrite a more informative error from a previous endpoint
+                continue
+
+        if last_error:
+            raise last_error
+        raise LLMRequestFailedError("All Antigravity endpoints unreachable.")
+
+    async def _do_antigravity_stream(
+        self,
+        url: str,
+        headers: dict[str, str],
+        body: dict[str, Any],
+    ) -> AsyncIterator[LLMResponse]:
+        """Execute a single SSE stream against the Cloud Code API."""
+        accumulated = ""
+        all_thinking: list[dict[str, Any]] = []
+        all_tool_calls: list[dict[str, Any]] = []
+        total_usage: dict[str, int] = {}
+        done_streaming = False
+
+        async with httpx.AsyncClient(timeout=120) as http:
+            async with http.stream("POST", url, headers=headers, json=body) as resp:
+                resp.raise_for_status()
+                async for line in resp.aiter_lines():
+                    if done_streaming:
+                        break
+
+                    if line.startswith("data: "):
+                        data_str = line[6:]
+                        if data_str.strip() == "[DONE]":
+                            break
+                        try:
+                            chunk = json.loads(data_str)
+                        except json.JSONDecodeError:
+                            continue
+
+                        text, thinking, tool_calls, usage = parse_sse_chunk(chunk)
+                        if thinking:
+                            all_thinking.extend(thinking)
+                        if tool_calls:
+                            all_tool_calls.extend(tool_calls)
+                        if usage:
+                            total_usage = usage
+
+                        if text:
+                            accumulated += text
+                            if "</function>" in accumulated:
+                                accumulated = accumulated[
+                                    : accumulated.find("</function>") + len("</function>")
+                                ]
+                                yield LLMResponse(content=accumulated)
+                                done_streaming = True
+                                continue
+                            yield LLMResponse(content=accumulated)
+
+        # Update usage stats
+        if total_usage:
+            self._total_stats.input_tokens += total_usage.get("input_tokens", 0)
+            self._total_stats.output_tokens += total_usage.get("output_tokens", 0)
+            self._total_stats.cached_tokens += total_usage.get("cached_tokens", 0)
+
+        accumulated = fix_incomplete_tool_call(_truncate_to_first_function(accumulated))
+        yield LLMResponse(
+            content=accumulated,
+            tool_invocations=parse_tool_invocations(accumulated),
+            thinking_blocks=all_thinking or None,
         )
 
     def _prepare_messages(self, conversation_history: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -211,21 +414,30 @@ class LLM:
             "stream_options": {"include_usage": True},
         }
 
+        # Translate google/ → gemini/ for litellm compatibility
+        if self.config.model_name and self.config.model_name.lower().startswith("google/"):
+            args["model"] = "gemini/" + self.config.model_name.split("/", 1)[1]
+
         # Check for provider OAuth authentication first (Codex, Copilot, Gemini, etc.)
         use_oauth = False
         if PROVIDERS_AVAILABLE and self.config.model_name:
             use_oauth = should_use_oauth(self.config.model_name)
             if use_oauth:
-                provider_headers = get_provider_headers(self.config.model_name)
-                if provider_headers:
-                    args["extra_headers"] = provider_headers
-                args["api_key"] = get_provider_api_key(self.config.model_name) or "oauth-auth"
-
-                # Codex models use a custom API base
                 model_lower = self.config.model_name.lower()
+
+                # Codex models use litellm's built-in chatgpt/ provider which
+                # handles the correct endpoint, headers, auth, and required
+                # 'instructions' field for the Responses API.
                 if "codex" in model_lower:
-                    args["api_base"] = "https://chatgpt.com/backend-api/codex"
-                    args["store"] = False
+                    sync_codex_credentials_to_litellm(self.config.model_name)
+                    # Extract bare model name (e.g. "gpt-5.2-codex")
+                    bare_model = self.config.model_name.split("/", 1)[-1]
+                    args["model"] = f"chatgpt/{bare_model}"
+                else:
+                    provider_headers = get_provider_headers(self.config.model_name)
+                    if provider_headers:
+                        args["extra_headers"] = provider_headers
+                    args["api_key"] = get_provider_api_key(self.config.model_name) or "oauth-auth"
 
         # Fall back to environment variables if not using OAuth
         if not use_oauth:
@@ -307,6 +519,121 @@ class LLM:
         if not self.config.model_name:
             return False
         return any(p in self.config.model_name.lower() for p in ["anthropic/", "claude"])
+
+    def _is_antigravity(self) -> bool:
+        if not PROVIDERS_AVAILABLE or not self.config.model_name:
+            return False
+        model = self.config.model_name.lower()
+        if model.startswith("antigravity/"):
+            return True
+        # If an explicit non-antigravity provider prefix is given, respect it
+        if "/" in model:
+            prefix = model.split("/", 1)[0]
+            _NON_AG_PREFIXES = {"anthropic", "google", "openai", "bedrock",
+                                "github-copilot", "gemini", "azure", "vertex_ai"}
+            if prefix in _NON_AG_PREFIXES:
+                return False
+        # Check if the bare model name is an antigravity model and oauth is configured
+        bare = model.split("/", 1)[-1]
+        if bare in ANTIGRAVITY_MODELS and should_use_oauth(f"antigravity/{bare}"):
+            return True
+        return False
+
+    def _try_rotate_on_rate_limit(self, e: Exception) -> bool:
+        """Try to rotate accounts on a 429 rate limit error. Returns True if rotated."""
+        if not PROVIDERS_AVAILABLE:
+            return False
+        code = getattr(e, "status_code", None) or getattr(
+            getattr(e, "response", None), "status_code", None
+        )
+        if code != 429:
+            return False
+
+        model = self.config.model_name or ""
+        # Check Antigravity routing first (mirrors _is_antigravity logic)
+        if self._is_antigravity():
+            provider_id = "antigravity"
+        else:
+            client = get_auth_client()
+            provider_id = client.detect_provider(model)
+        if not provider_id:
+            return False
+
+        pool = get_account_pool()
+        # Read-only peek to get the current account's email (no disk write)
+        current = pool.peek_best_account(provider_id)
+        if not current:
+            return False
+
+        bare_model = model.split("/", 1)[-1]
+        # Parse retry-after header if available
+        retry_after = 60.0
+        resp = getattr(e, "response", None)
+        if resp is not None:
+            ra = getattr(resp, "headers", {}).get("retry-after")
+            if ra:
+                try:
+                    retry_after = float(ra)
+                except ValueError:
+                    pass
+
+        pool.mark_rate_limited(provider_id, current.email, bare_model, retry_after)
+        rotated = pool.rotate(provider_id, bare_model)
+        if rotated:
+            logger.info("Rate limited on %s, rotated to %s",
+                        _mask_email(current.email), _mask_email(rotated.email))
+            return True
+        logger.warning("Rate limited on %s, no other accounts available",
+                       _mask_email(current.email))
+        return False
+
+    def _try_model_fallback(self, e: Exception) -> bool:
+        """Try switching to the next fallback model when the current one fails persistently.
+
+        Only activates for Antigravity models when ESPRIT_AUTO_FALLBACK is not disabled.
+        Returns True if successfully switched to a fallback model.
+        """
+        if str(Config.get("esprit_auto_fallback") or "").lower() in ("false", "0", "no"):
+            return False
+
+        if not PROVIDERS_AVAILABLE:
+            return False
+
+        from esprit.providers.antigravity import get_fallback_models
+
+        current_model = self.config.model_name or ""
+        fallbacks = get_fallback_models(current_model)
+
+        if not fallbacks:
+            return False
+
+        # Track original model and which models have been tried this session
+        if not hasattr(self, "_original_model"):
+            self._original_model = current_model
+        if not hasattr(self, "_tried_models"):
+            self._tried_models: set[str] = set()
+        self._tried_models.add(current_model.split("/", 1)[-1] if "/" in current_model else current_model)
+
+        for fallback in fallbacks:
+            if fallback in self._tried_models:
+                continue
+
+            # Switch model — intentionally sticky: the fallback becomes the
+            # active model for the remainder of this LLM instance's lifetime
+            # to avoid repeated failures on the original model.
+            old_model = current_model
+            prefix = current_model.split("/", 1)[0] + "/" if "/" in current_model else "antigravity/"
+            new_model = f"{prefix}{fallback}"
+            self.config.model_name = new_model
+            self._tried_models.add(fallback)
+
+            logger.warning(
+                "Model %s failed (%s), falling back to %s",
+                old_model, type(e).__name__, new_model,
+            )
+            return True
+
+        return False
 
     def _supports_vision(self) -> bool:
         try:

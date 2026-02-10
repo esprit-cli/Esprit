@@ -33,7 +33,7 @@ from esprit.interface.streaming_parser import parse_streaming_content
 from esprit.interface.tool_components.agent_message_renderer import AgentMessageRenderer
 from esprit.interface.tool_components.registry import get_tool_renderer
 from esprit.interface.tool_components.user_message_renderer import UserMessageRenderer
-from esprit.interface.utils import build_tui_stats_text
+from esprit.interface.utils import build_tui_stats_text, _ACTIVITY_SPINNER
 from esprit.llm.config import LLMConfig
 from esprit.telemetry.tracer import Tracer, set_global_tracer
 
@@ -784,6 +784,8 @@ class EspritTUIApp(App):  # type: ignore[misc]
         self._scan_thread: threading.Thread | None = None
         self._scan_stop_event = threading.Event()
         self._scan_completed = threading.Event()
+        self._scan_failed = threading.Event()
+        self._stats_spinner_frame: int = 0
 
         self._spinner_frame_index: int = 0  # Current animation frame index
         self._sweep_num_squares: int = 6  # Number of squares in sweep animation
@@ -1008,13 +1010,13 @@ class EspritTUIApp(App):  # type: ignore[misc]
             status = agent_data.get("status", "running")
 
             status_indicators = {
-                "running": "⚪",
+                "running": _ACTIVITY_SPINNER[self._stats_spinner_frame % len(_ACTIVITY_SPINNER)],
                 "waiting": "⏸",
-                "completed": "🟢",
-                "failed": "🔴",
+                "completed": "✓",
+                "failed": "✗",
                 "stopped": "■",
                 "stopping": "○",
-                "llm_failed": "🔴",
+                "llm_failed": "✗",
             }
 
             status_icon = status_indicators.get(status, "○")
@@ -1316,14 +1318,44 @@ class EspritTUIApp(App):  # type: ignore[misc]
         if not self._is_widget_safe(stats_display):
             return
 
+        self._stats_spinner_frame += 1
+        scan_done = self._scan_completed.is_set()
+        scan_failed = self._scan_failed.is_set()
+
+        # Detect agent-level failures even if the scan thread is still alive
+        # (e.g. LLM 400 error caught inside the agent loop)
+        if not scan_failed and not scan_done and self.tracer and self.tracer.agents:
+            _FAIL_STATUSES = {"failed", "llm_failed"}
+            _DONE_STATUSES = _FAIL_STATUSES | {"completed", "stopped"}
+            all_agents_done = all(
+                a.get("status") in _DONE_STATUSES
+                for a in self.tracer.agents.values()
+            )
+            any_failed = any(
+                a.get("status") in _FAIL_STATUSES
+                for a in self.tracer.agents.values()
+            )
+            if all_agents_done and any_failed:
+                scan_failed = True
+                self._scan_failed.set()
+                if not self.tracer.end_time:
+                    from datetime import datetime, timezone
+                    self.tracer.end_time = datetime.now(timezone.utc).isoformat()
+
         stats_content = Text()
 
-        stats_text = build_tui_stats_text(self.tracer, self.agent_config)
+        stats_text = build_tui_stats_text(
+            self.tracer,
+            self.agent_config,
+            scan_completed=scan_done,
+            scan_failed=scan_failed,
+            spinner_frame=self._stats_spinner_frame,
+        )
         if stats_text:
             stats_content.append(stats_text)
 
         version = get_package_version()
-        stats_content.append(f"\nv{version}", style="white")
+        stats_content.append(f"\nv{version}", style="dim white")
 
         from rich.panel import Panel
 
@@ -1331,7 +1363,7 @@ class EspritTUIApp(App):  # type: ignore[misc]
             stats_content,
             title="Session Stats",
             title_align="left",
-            border_style="#22d3ee",
+            border_style="#ef4444" if scan_failed else "#22c55e" if scan_done else "#22d3ee",
             padding=(0, 1),
         )
 
@@ -1531,18 +1563,30 @@ class EspritTUIApp(App):  # type: ignore[misc]
 
                 except (KeyboardInterrupt, asyncio.CancelledError):
                     logging.info("Scan interrupted by user")
+                    self._scan_failed.set()
                 except (ConnectionError, TimeoutError):
                     logging.exception("Network error during scan")
+                    self._scan_failed.set()
                 except RuntimeError:
                     logging.exception("Runtime error during scan")
+                    self._scan_failed.set()
                 except Exception:
                     logging.exception("Unexpected error during scan")
+                    self._scan_failed.set()
                 finally:
+                    # Freeze elapsed time by setting end_time on the tracer
+                    if self.tracer and not self.tracer.end_time:
+                        from datetime import datetime, timezone
+                        self.tracer.end_time = datetime.now(timezone.utc).isoformat()
                     loop.close()
                     self._scan_completed.set()
 
             except Exception:
                 logging.exception("Error setting up scan thread")
+                self._scan_failed.set()
+                if self.tracer and not self.tracer.end_time:
+                    from datetime import datetime, timezone
+                    self.tracer.end_time = datetime.now(timezone.utc).isoformat()
                 self._scan_completed.set()
 
         self._scan_thread = threading.Thread(target=scan_target, daemon=True)
@@ -1567,13 +1611,13 @@ class EspritTUIApp(App):  # type: ignore[misc]
         agent_name_raw = agent_data.get("name", "Agent")
 
         status_indicators = {
-            "running": "⚪",
+            "running": "◐",
             "waiting": "⏸",
-            "completed": "🟢",
-            "failed": "🔴",
+            "completed": "✓",
+            "failed": "✗",
             "stopped": "■",
             "stopping": "○",
-            "llm_failed": "🔴",
+            "llm_failed": "✗",
         }
 
         status_icon = status_indicators.get(status, "○")
@@ -1642,13 +1686,13 @@ class EspritTUIApp(App):  # type: ignore[misc]
         status = agent_data.get("status", "running")
 
         status_indicators = {
-            "running": "⚪",
+            "running": "◐",
             "waiting": "⏸",
-            "completed": "🟢",
-            "failed": "🔴",
+            "completed": "✓",
+            "failed": "✗",
             "stopped": "■",
             "stopping": "○",
-            "llm_failed": "🔴",
+            "llm_failed": "✗",
         }
 
         status_icon = status_indicators.get(status, "○")
