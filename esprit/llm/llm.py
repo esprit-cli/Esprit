@@ -393,7 +393,7 @@ class LLM:
                 }
             )
 
-        compressed = list(self.memory_compressor.compress_history(conversation_history))
+        compressed = list(self._compress_with_tracer_signal(conversation_history))
         conversation_history.clear()
         conversation_history.extend(compressed)
         messages.extend(compressed)
@@ -402,6 +402,22 @@ class LLM:
             messages = self._add_cache_control(messages)
 
         return messages
+
+    def _compress_with_tracer_signal(
+        self, conversation_history: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        """Run memory compression, signalling the tracer so the TUI can show progress."""
+        from esprit.telemetry.tracer import get_global_tracer
+
+        tracer = get_global_tracer()
+        agent_id = self.agent_id
+        if tracer and agent_id:
+            tracer.compacting_agents.add(agent_id)
+        try:
+            return self.memory_compressor.compress_history(conversation_history)
+        finally:
+            if tracer and agent_id:
+                tracer.compacting_agents.discard(agent_id)
 
     def _build_completion_args(self, messages: list[dict[str, Any]]) -> dict[str, Any]:
         if not self._supports_vision():

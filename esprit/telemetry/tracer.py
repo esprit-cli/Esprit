@@ -40,6 +40,7 @@ class Tracer:
 
         self.vulnerability_reports: list[dict[str, Any]] = []
         self.final_scan_result: str | None = None
+        self.compacting_agents: set[str] = set()
 
         self.scan_results: dict[str, Any] | None = None
         self.scan_config: dict[str, Any] | None = None

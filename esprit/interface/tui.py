@@ -799,6 +799,16 @@ class EspritTUIApp(App):  # type: ignore[misc]
             "#22d3ee",
             "#67e8f9",  # Brightest
         ]
+        self._compact_sweep_colors: list[str] = [
+            "#000000",
+            "#1a0f00",
+            "#3d2400",
+            "#5c3a00",
+            "#7a5200",
+            "#a36e00",
+            "#e09b00",
+            "#fbbf24",  # Amber brightest
+        ]
         self._dot_animation_timer: Any | None = None
 
         self._setup_cleanup_handlers()
@@ -1129,6 +1139,13 @@ class EspritTUIApp(App):  # type: ignore[misc]
                         renderables.append(Text(""))
                     renderables.append(streaming_text)
 
+            # Show compacting memory indicator in the chat stream
+            if self.selected_agent_id in self.tracer.compacting_agents:
+                compact_indicator = self._render_compacting_indicator()
+                if renderables:
+                    renderables.append(Text(""))
+                renderables.append(compact_indicator)
+
         if not renderables:
             return Text()
 
@@ -1136,6 +1153,18 @@ class EspritTUIApp(App):  # type: ignore[misc]
             return renderables[0]
 
         return Group(*renderables)
+
+    def _render_compacting_indicator(self) -> Text:
+        """Render an inline compacting-memory indicator for the chat stream."""
+        text = Text()
+        # Animated spinner using the stats spinner frame
+        frames = ["◐", "◓", "◑", "◒"]
+        frame = frames[self._stats_spinner_frame % len(frames)]
+        text.append(f" {frame} ", style="#fbbf24")
+        text.append("Compacting memory", style="#d97706 bold")
+        text.append("  ·  ", style="dim")
+        text.append("summarizing older messages to free context", style="dim")
+        return text
 
     def _render_streaming_content(self, content: str, agent_id: str | None = None) -> Any:
         cache_key = agent_id or self.selected_agent_id or ""
@@ -1261,6 +1290,15 @@ class EspritTUIApp(App):  # type: ignore[misc]
             return (Text(" "), keymap, False)
 
         if status == "running":
+            # Check if this agent is compacting memory
+            if agent_id in self.tracer.compacting_agents:
+                animated_text = Text()
+                animated_text.append_text(
+                    self._get_sweep_animation(self._compact_sweep_colors)
+                )
+                animated_text.append("Compacting", style="#fbbf24")
+                animated_text.append(" memory", style="#d97706")
+                return (animated_text, keymap_styled([("ctrl-q", "quit")]), True)
             if self._agent_has_real_activity(agent_id):
                 animated_text = Text()
                 animated_text.append_text(self._get_sweep_animation(self._sweep_colors))

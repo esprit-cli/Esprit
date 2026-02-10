@@ -655,6 +655,28 @@ def build_tui_stats_text(
                     stats_text.append(" ", style="dim")
                 stats_text.append(f"{c}{label[0].upper()}", style=f"bold {color}")
 
+    # Rotating tips
+    _TIPS = [
+        ("💬", "Send a message", "during a scan to interrupt and redirect the agent"),
+        ("🔄", "Context at 100%?", "Esprit auto-compacts memory, summarizing older messages"),
+        ("🔑", "esprit provider login", "to add OAuth accounts for free model access"),
+        ("📊", "esprit provider status", "to see which providers are connected"),
+        ("🔀", "esprit config model", "to switch between AI models mid-session"),
+        ("⌨️", "Press Esc", "to stop the current agent, Ctrl-Q to quit"),
+        ("🔍", "Quick scan mode", "is faster but less thorough than deep scan"),
+        ("💰", "Antigravity models", "are free — no API key or billing needed"),
+        ("📁", "Results are saved", "in esprit_runs/ after each scan completes"),
+        ("👥", "Add multiple accounts", "for OpenAI or Antigravity for rate-limit rotation"),
+    ]
+    tip_index = (spinner_frame // 30) % len(_TIPS)  # rotate every ~10 seconds
+    icon, title, desc = _TIPS[tip_index]
+    stats_text.append("\n")
+    stats_text.append("─" * 28, style="dim #3f3f3f")
+    stats_text.append("\n")
+    stats_text.append(f"{icon} ", style="dim")
+    stats_text.append(title, style="white")
+    stats_text.append(f"\n  {desc}", style="dim")
+
     return stats_text
 
 
