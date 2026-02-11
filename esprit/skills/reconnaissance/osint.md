@@ -62,7 +62,7 @@ Open-source intelligence transforms publicly available data into actionable targ
 - **Error pages**: `site:target.com intext:"error" OR intext:"exception" OR intext:"stack trace"`
 - **Sensitive paths**: `site:target.com inurl:backup OR inurl:dump OR inurl:export OR inurl:temp`
 - **Cloud storage**: `site:s3.amazonaws.com "target" OR site:blob.core.windows.net "target"`
-- **Paste leaks**: `site:pastebin.com "target.com" OR site:ghostbin.com "target.com"`
+- **Paste leaks**: `site:pastebin.com "target.com" OR site:paste.ee "target.com"`
 - Use Google Cache (`cache:target.com/page`) to access recently removed content
 
 ### Shodan and Censys Reconnaissance
@@ -86,7 +86,7 @@ Open-source intelligence transforms publicly available data into actionable targ
 - `git log --all -p --diff-filter=D -- "*.env"` in cloned repos to find deleted secret files
 - Docker Hub: `docker pull target/app && docker history target/app` reveals build-time secrets in layers
 - Check GitHub Actions workflows for hardcoded secrets and overly permissive OIDC configurations
-- `shhgit` for real-time monitoring of GitHub commits containing secrets
+- `gitleaks` or `trufflehog` for real-time monitoring of GitHub commits containing secrets
 
 ### Document Metadata Extraction
 
@@ -176,7 +176,7 @@ Open-source intelligence transforms publicly available data into actionable targ
 6. Docker Hub image layers frequently contain environment variables, API keys, and internal hostnames
 7. Build a timeline: domain registration, infrastructure changes, employee transitions reveal organizational patterns
 8. Use Shodan CLI filters to find specific vulnerable services: `shodan search "product:Apache httpd" "vuln:CVE-2021-41773"`
-9. Pastebin alternatives (Ghostbin, dpaste, PrivateBin) are often overlooked; automate monitoring with `psbdmp`
+9. Pastebin alternatives (dpaste, PrivateBin, paste.ee) are often overlooked; automate monitoring with `psbdmp`
 10. Keep OSINT findings organized in a structured format (Maltego, SpiderFoot, or custom databases) for correlation
 
 ## Summary

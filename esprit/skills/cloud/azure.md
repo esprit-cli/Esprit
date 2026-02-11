@@ -66,7 +66,7 @@ Key architectural elements for security testers:
 - Storage account setting `allowBlobPublicAccess` must be true for container-level settings to take effect
 - SAS tokens: check for overly permissive tokens (full permissions, no IP restriction, long expiry)
 - Account-level SAS vs service-level SAS vs user delegation SAS have different revocation capabilities
-- Storage account keys provide full unrestricted access; key rotation does not invalidate existing SAS tokens derived from them
+- Storage account keys provide full unrestricted access; key rotation invalidates all SAS tokens signed with the rotated key, but there is no way to revoke individual SAS tokens without rotating the key
 - Enumerate blobs: `https://ACCOUNT.blob.core.windows.net/CONTAINER?restype=container&comp=list`
 - Shared key authorization can be disabled per storage account forcing Entra ID auth only
 - Check for storage accounts with `minimumTlsVersion` below 1.2
@@ -95,7 +95,7 @@ Key architectural elements for security testers:
 - Tokens are bearer tokens valid for the resource specified; request tokens for multiple resources
 - Common resources: `https://management.azure.com/`, `https://vault.azure.net/`, `https://graph.microsoft.com/`
 - App Service exposes identity tokens via `IDENTITY_ENDPOINT` and `IDENTITY_HEADER` environment variables
-- Managed identities with Contributor on the subscription can escalate to Owner through role assignment
+- Managed identities with Contributor on the subscription can escalate privileges through indirect paths (custom script extensions, automation runbooks, or deploying resources that grant further access)
 - Token lifetime is typically 24 hours for management plane tokens
 
 ### Key Vault Access

@@ -152,7 +152,7 @@ Web content discovery identifies hidden files, directories, endpoints, and funct
 2. Use `cewl` to create target-specific wordlists from page content for parameter and directory fuzzing
 3. Check Wayback Machine for historical paths: `waybackurls target.com | sort -u` reveals removed content
 4. Source maps are goldmines: `/static/js/main.chunk.js.map` often contains complete React/Angular source
-5. Monitor `robots.txt` and `sitemap.xml` for paths the application explicitly wants hidden from crawlers
+5. Monitor `robots.txt` and `sitemap.xml` for paths the application explicitly wants to keep hidden from crawlers
 6. Test for common debug endpoints: `/debug`, `/trace`, `/actuator` (Spring Boot), `/__debug__` (Django)
 7. Use `gau` (GetAllURLs) to aggregate URLs from multiple archive sources before targeted scanning
 8. Run `nuclei -t exposures/` for automated detection of common misconfigurations and exposed files

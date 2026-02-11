@@ -12,7 +12,7 @@ Google Cloud Platform's security model revolves around projects, IAM bindings, a
 GCP organizes resources within a hierarchy: organization, folders, and projects. IAM policies inherit downward through this hierarchy, so a binding at the organization level applies to all projects beneath it. Service accounts are the primary machine identity, each associated with a unique email address and optionally long-lived JSON key files. The metadata service on GCE instances provides OAuth2 access tokens for the attached service account. Cloud Functions execute in managed environments with default or custom service accounts. Firebase operates as a layer on top of GCP, sharing the same project and IAM infrastructure but exposing client-accessible APIs for Firestore, Realtime Database, Storage, and Authentication.
 
 Key architectural elements for security testers:
-- IAM bindings are additive only; there is no explicit deny (unlike AWS), so any allow binding grants access
+- IAM bindings are additive; deny policies exist but are opt-in and rarely deployed, so any allow binding typically grants access unless an explicit deny policy overrides it
 - Predefined roles bundle permissions but custom roles can include arbitrary permission sets
 - Organization policies set guardrails that cannot be overridden by IAM bindings at lower levels
 - Workload Identity Federation enables external identities to impersonate service accounts without keys
@@ -141,7 +141,7 @@ Key architectural elements for security testers:
 - **gcloud CLI**: primary tool for all GCP enumeration and exploitation
 - **ScoutSuite**: multi-cloud security auditing with GCP-specific modules
 - **GCPBucketBrute**: discover and test Cloud Storage bucket permissions
-- **Hayat**: GCP IAM privilege escalation path finder
+- **Hayat**: GCP cloud security auditing and hardening script with IAM checks
 - **Cartography**: infrastructure mapping including GCP resources and relationships
 - **gcp-firewall-enum**: enumerate firewall rules and identify exposed services
 - **firebase-tools CLI**: interact with Firebase services for security testing

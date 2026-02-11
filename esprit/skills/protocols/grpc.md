@@ -14,7 +14,7 @@ Security testing for gRPC services. Focus on service reflection exploitation, au
 - gRPC-Web (HTTP/1.1 + HTTP/2 via Envoy proxy), Unix domain sockets for local IPC
 
 **Service Definition**
-- Protobuf service contracts (`.proto` files), server reflection (`grpc.reflection.v1alpha`)
+- Protobuf service contracts (`.proto` files), server reflection (`grpc.reflection.v1` and legacy `grpc.reflection.v1alpha`)
 - Health checking protocol (`grpc.health.v1`), Channelz for runtime introspection
 
 **RPC Patterns**
@@ -38,7 +38,7 @@ grpcurl -plaintext target:50051 describe my.service.v1.UserService
 **Without Reflection**
 - Recover `.proto` files from client applications, mobile APKs, WASM bundles
 - Decompile protobuf descriptors embedded in binaries
-- Probe known paths: `/grpc.health.v1.Health/Check`, `/grpc.reflection.v1alpha.ServerReflection/ServerReflectionInfo`
+- Probe known paths: `/grpc.health.v1.Health/Check`, `/grpc.reflection.v1.ServerReflection/ServerReflectionInfo` (or legacy `/grpc.reflection.v1alpha.ServerReflection/ServerReflectionInfo`)
 - Use `protoc --decode_raw` on captured binary payloads to infer field structure
 
 **Fingerprinting**
