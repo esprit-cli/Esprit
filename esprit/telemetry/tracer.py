@@ -42,6 +42,9 @@ class Tracer:
         self.final_scan_result: str | None = None
         self.compacting_agents: set[str] = set()
 
+        # Track only the latest browser screenshot per agent for memory efficiency
+        self.latest_browser_screenshots: dict[str, int] = {}
+
         self.scan_results: dict[str, Any] | None = None
         self.scan_config: dict[str, Any] | None = None
         self.run_metadata: dict[str, Any] = {
@@ -434,6 +437,7 @@ class Tracer:
             "cost": 0.0,
             "requests": 0,
         }
+        max_context = 0
 
         for agent_instance in _agent_instances.values():
             if hasattr(agent_instance, "llm") and hasattr(agent_instance.llm, "_total_stats"):
@@ -443,12 +447,16 @@ class Tracer:
                 total_stats["cached_tokens"] += agent_stats.cached_tokens
                 total_stats["cost"] += agent_stats.cost
                 total_stats["requests"] += agent_stats.requests
+                last = getattr(agent_stats, "last_input_tokens", 0)
+                if last > max_context:
+                    max_context = last
 
         total_stats["cost"] = round(total_stats["cost"], 4)
 
         return {
             "total": total_stats,
             "total_tokens": total_stats["input_tokens"] + total_stats["output_tokens"],
+            "max_context_tokens": max_context,
         }
 
     def update_streaming_content(self, agent_id: str, content: str) -> None:
@@ -476,3 +484,13 @@ class Tracer:
 
     def cleanup(self) -> None:
         self.save_run_data(mark_complete=True)
+        # Persist session cost to lifetime total
+        try:
+            stats = self.get_total_llm_stats()
+            session_cost = stats["total"].get("cost", 0.0)
+            if session_cost > 0:
+                from esprit.llm.pricing import add_session_cost
+
+                add_session_cost(session_cost)
+        except Exception:
+            logger.debug("Failed to persist session cost")

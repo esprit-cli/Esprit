@@ -1028,10 +1028,19 @@ def main() -> None:
 
     exit_reason = "user_exit"
     try:
+        # Create GUI server (always available — serves live dashboard on localhost:7860)
+        gui_server = None
+        try:
+            from esprit.gui import GUIServer
+
+            gui_server = GUIServer(port=7860)
+        except ImportError:
+            pass
+
         if args.non_interactive:
             asyncio.run(run_cli(args))
         else:
-            asyncio.run(run_tui(args))
+            asyncio.run(run_tui(args, gui_server=gui_server))
     except KeyboardInterrupt:
         exit_reason = "interrupted"
     except Exception as e:

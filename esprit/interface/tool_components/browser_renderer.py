@@ -3,6 +3,7 @@ from typing import Any, ClassVar
 
 from pygments.lexers import get_lexer_by_name
 from pygments.styles import get_style_by_name
+from rich.console import Group
 from rich.text import Text
 from textual.widgets import Static
 
@@ -68,7 +69,35 @@ class BrowserRenderer(BaseToolRenderer):
         content = cls._build_content(action, args)
 
         css_classes = cls.get_css_classes(status)
+
+        # Show screenshot preview when the action is completed
+        if status == "completed":
+            preview = cls._build_screenshot_preview(tool_data, args)
+            if preview is not None:
+                return Static(Group(content, Text(""), preview), classes=css_classes)
+
         return Static(content, classes=css_classes)
+
+    @classmethod
+    def _build_screenshot_preview(
+        cls, tool_data: dict[str, Any], args: dict[str, Any]
+    ) -> Text | None:
+        """Try to render a screenshot preview from the tool result."""
+        result = tool_data.get("result")
+        if not isinstance(result, dict):
+            return None
+
+        screenshot_b64 = result.get("screenshot")
+        if not screenshot_b64 or not isinstance(screenshot_b64, str) or screenshot_b64 == "[rendered]":
+            return None
+
+        try:
+            from esprit.interface.image_renderer import screenshot_to_rich_text
+
+            url_label = result.get("url") or args.get("url") or ""
+            return screenshot_to_rich_text(screenshot_b64, max_width=0, url_label=url_label)
+        except Exception:
+            return None
 
     @classmethod
     def _build_url_action(cls, text: Text, label: str, url: str | None, suffix: str = "") -> None:

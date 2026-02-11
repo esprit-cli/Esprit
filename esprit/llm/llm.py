@@ -8,7 +8,7 @@ from typing import Any
 import httpx
 import litellm
 from jinja2 import Environment, FileSystemLoader, select_autoescape
-from litellm import acompletion, completion_cost, stream_chunk_builder, supports_reasoning
+from litellm import acompletion, stream_chunk_builder, supports_reasoning
 from litellm.utils import supports_prompt_caching, supports_vision
 
 from esprit.config import Config
@@ -29,7 +29,6 @@ try:
         get_provider_headers,
         should_use_oauth,
         get_provider_api_key,
-        sync_codex_credentials_to_litellm,
         get_auth_client,
     )
     from esprit.providers.account_pool import get_account_pool
@@ -68,11 +67,9 @@ _CODEX_BASE_INFO = {
     "supports_reasoning": True,
     "supports_native_streaming": True,
 }
-for _prefix, _provider in [("", "openai"), ("chatgpt/", "chatgpt")]:
-    for _base in ["gpt-5.3-codex", "gpt-5.2-codex"]:
-        _key = f"{_prefix}{_base}"
-        if _key not in litellm.model_cost:
-            litellm.model_cost[_key] = {**_CODEX_BASE_INFO, "litellm_provider": _provider}
+for _base in ["gpt-5.3-codex", "gpt-5.2-codex"]:
+    if _base not in litellm.model_cost:
+        litellm.model_cost[_base] = {**_CODEX_BASE_INFO, "litellm_provider": "openai"}
 
 
 class LLMRequestFailedError(Exception):
@@ -96,6 +93,7 @@ class RequestStats:
     cached_tokens: int = 0
     cost: float = 0.0
     requests: int = 0
+    last_input_tokens: int = 0  # most recent request's input tokens (= context window usage)
 
     def to_dict(self) -> dict[str, int | float]:
         return {
@@ -365,9 +363,20 @@ class LLM:
 
         # Update usage stats
         if total_usage:
-            self._total_stats.input_tokens += total_usage.get("input_tokens", 0)
-            self._total_stats.output_tokens += total_usage.get("output_tokens", 0)
-            self._total_stats.cached_tokens += total_usage.get("cached_tokens", 0)
+            req_input = total_usage.get("input_tokens", 0)
+            req_output = total_usage.get("output_tokens", 0)
+            req_cached = total_usage.get("cached_tokens", 0)
+            self._total_stats.input_tokens += req_input
+            self._total_stats.output_tokens += req_output
+            self._total_stats.cached_tokens += req_cached
+            self._total_stats.last_input_tokens = req_input
+
+            # Calculate cost via pricing DB
+            from esprit.llm.pricing import get_pricing_db
+
+            self._total_stats.cost += get_pricing_db().get_cost(
+                self.config.model_name or "", req_input, req_output, req_cached,
+            )
 
         accumulated = fix_incomplete_tool_call(_truncate_to_first_function(accumulated))
         yield LLMResponse(
@@ -441,14 +450,14 @@ class LLM:
             if use_oauth:
                 model_lower = self.config.model_name.lower()
 
-                # Codex models use litellm's built-in chatgpt/ provider which
-                # handles the correct endpoint, headers, auth, and required
-                # 'instructions' field for the Responses API.
+                # Codex models use OpenAI's Responses API (mode=responses
+                # in model_cost).  Route through the standard openai provider
+                # with Esprit's OAuth token — avoids litellm's chatgpt/
+                # provider which has auth-file bugs with external tokens.
                 if "codex" in model_lower:
-                    sync_codex_credentials_to_litellm(self.config.model_name)
-                    # Extract bare model name (e.g. "gpt-5.2-codex")
                     bare_model = self.config.model_name.split("/", 1)[-1]
-                    args["model"] = f"chatgpt/{bare_model}"
+                    args["model"] = bare_model
+                    args["api_key"] = get_provider_api_key(self.config.model_name) or "oauth-auth"
                 else:
                     provider_headers = get_provider_headers(self.config.model_name)
                     if provider_headers:
@@ -506,15 +515,21 @@ class LLM:
                 output_tokens = 0
                 cached_tokens = 0
 
-            try:
-                cost = completion_cost(response) or 0.0
-            except Exception:  # noqa: BLE001
-                cost = 0.0
+            # Calculate cost via our pricing DB (covers all providers)
+            from esprit.llm.pricing import get_pricing_db
+
+            cost = get_pricing_db().get_cost(
+                self.config.model_name or "",
+                input_tokens,
+                output_tokens,
+                cached_tokens,
+            )
 
             self._total_stats.input_tokens += input_tokens
             self._total_stats.output_tokens += output_tokens
             self._total_stats.cached_tokens += cached_tokens
             self._total_stats.cost += cost
+            self._total_stats.last_input_tokens = input_tokens
 
         except Exception:  # noqa: BLE001, S110  # nosec B110
             pass

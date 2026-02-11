@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Esprit Dashboard</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="https://unpkg.com/lucide@0.460.0/dist/umd/lucide.min.js" defer></script>
+</head>
+<body>
+  <!-- Header -->
+  <header id="header">
+    <div class="header-left">
+      <span class="logo shimmer-text">ESPRIT</span>
+      <span class="status-badge glow-pulse" id="scan-status">
+        <i data-lucide="wifi" class="icon-xs"></i>
+        <span>connecting...</span>
+      </span>
+    </div>
+    <div class="header-stats" id="header-stats">
+      <div class="stat-card" id="stat-agents" title="Active agents">
+        <i data-lucide="bot" class="icon-stat"></i>
+        <span class="stat-value">0</span>
+        <span class="stat-label">agents</span>
+      </div>
+      <div class="stat-card" id="stat-tools" title="Tool executions">
+        <i data-lucide="wrench" class="icon-stat"></i>
+        <span class="stat-value">0</span>
+        <span class="stat-label">tools</span>
+      </div>
+      <div class="stat-card" id="stat-tokens" title="Total tokens">
+        <i data-lucide="coins" class="icon-stat"></i>
+        <span class="stat-value">0</span>
+        <span class="stat-label">tokens</span>
+      </div>
+      <div class="stat-card" id="stat-cost" title="Estimated cost">
+        <i data-lucide="dollar-sign" class="icon-stat"></i>
+        <span class="stat-value">$0.00</span>
+        <span class="stat-label">cost</span>
+      </div>
+      <div class="stat-card" id="stat-tps" title="Tokens per second">
+        <i data-lucide="zap" class="icon-stat"></i>
+        <span class="stat-value">0</span>
+        <span class="stat-label">tok/s</span>
+      </div>
+      <div class="stat-card" id="stat-time" title="Elapsed time">
+        <i data-lucide="clock" class="icon-stat"></i>
+        <span class="stat-value">0:00</span>
+        <span class="stat-label">elapsed</span>
+      </div>
+    </div>
+  </header>
+
+  <!-- Context usage bar -->
+  <div id="context-bar">
+    <div id="context-bar-fill"></div>
+    <span id="context-bar-label"></span>
+  </div>
+
+  <!-- Scan config bar -->
+  <div id="scan-config-bar" style="display:none">
+    <span id="scan-config-target" class="config-item"></span>
+    <span id="scan-config-mode" class="config-item"></span>
+    <span id="scan-config-name" class="config-item"></span>
+  </div>
+
+  <!-- Ghost loader -->
+  <div id="ghost-loader">
+    <div class="ghost-icon-wrap">
+      <i data-lucide="ghost" class="ghost-lucide-icon"></i>
+    </div>
+    <div class="ghost-text">Waiting for agents to connect...</div>
+    <div class="ghost-subtext">
+      <i data-lucide="loader" class="icon-xs spin-icon"></i>
+      Establishing WebSocket connection
+    </div>
+  </div>
+
+  <!-- Main 3-panel layout -->
+  <main id="main">
+    <!-- Left: Agents tree -->
+    <aside id="agents-panel">
+      <div class="panel-header sweep-anim">
+        <i data-lucide="git-branch" class="icon-sm"></i>
+        Agents
+      </div>
+      <div id="agents-tree" class="panel-body"></div>
+    </aside>
+
+    <!-- Center: Browser + Tabs -->
+    <section id="center-panel">
+      <!-- Browser viewer -->
+      <div id="browser-viewer">
+        <div class="panel-header">
+          <span class="browser-header-left">
+            <i data-lucide="monitor" class="icon-sm"></i>
+            Browser
+          </span>
+          <div id="browser-tabs"></div>
+          <span id="browser-url" class="browser-url-bar"></span>
+          <span id="browser-refresh-indicator" class="refresh-spinner" style="display:none">
+            <i data-lucide="loader" class="icon-xs spin-icon"></i>
+          </span>
+        </div>
+        <div id="browser-container">
+          <div id="browser-placeholder">
+            <i data-lucide="monitor" class="icon-lg ghost-icon"></i>
+            <div>No browser screenshot yet</div>
+          </div>
+          <img id="browser-img" style="display:none" alt="Browser screenshot">
+        </div>
+      </div>
+
+      <!-- Tab bar -->
+      <div id="center-tabs">
+        <button class="center-tab active" data-tab="terminal">
+          <i data-lucide="terminal" class="icon-xs"></i> Terminal
+        </button>
+        <button class="center-tab" data-tab="tools">
+          <i data-lucide="wrench" class="icon-xs"></i> Tools
+        </button>
+        <button class="center-tab" data-tab="report" id="report-tab-btn" style="display:none">
+          <i data-lucide="file-text" class="icon-xs"></i> Report
+        </button>
+      </div>
+
+      <!-- Terminal (unified chronological feed) -->
+      <div id="terminal-panel" class="center-tab-content active" data-tab="terminal">
+        <div class="terminal-chrome">
+          <span class="terminal-dot red"></span>
+          <span class="terminal-dot yellow"></span>
+          <span class="terminal-dot green"></span>
+          <span class="terminal-title" id="terminal-title">esprit-cli</span>
+        </div>
+        <div id="terminal-feed" class="terminal-body"></div>
+      </div>
+
+      <!-- Tools Timeline -->
+      <div id="tools-panel" class="center-tab-content" data-tab="tools">
+        <div id="tools-timeline" class="panel-body"></div>
+      </div>
+
+      <!-- Report -->
+      <div id="report-panel" class="center-tab-content" data-tab="report">
+        <div id="report-content" class="panel-body"></div>
+      </div>
+    </section>
+
+    <!-- Right: Vulnerabilities -->
+    <aside id="vulns-panel">
+      <div class="panel-header sweep-anim">
+        <i data-lucide="shield-alert" class="icon-sm"></i>
+        Vulnerabilities
+        <span id="vuln-count" class="vuln-count">0</span>
+      </div>
+      <div id="vulns-list" class="panel-body">
+        <div class="empty-state">
+          <i data-lucide="shield" class="icon-lg ghost-icon"></i>
+          <div>No vulnerabilities found yet</div>
+        </div>
+      </div>
+    </aside>
+  </main>
+
+  <!-- Status bar footer -->
+  <footer id="status-bar">
+    <span class="status-bar-item" id="status-run-id">
+      <i data-lucide="hash" class="icon-xs"></i>
+    </span>
+    <span class="status-bar-item" id="status-duration">
+      <i data-lucide="timer" class="icon-xs"></i>
+    </span>
+    <span class="status-bar-item" id="status-results-path">
+      <i data-lucide="folder" class="icon-xs"></i>
+    </span>
+  </footer>
+
+  <!-- Vulnerability detail modal -->
+  <div id="vuln-modal" class="modal" style="display:none">
+    <div class="modal-backdrop"></div>
+    <div class="modal-content">
+      <div class="modal-header">
+        <span id="vuln-modal-title"></span>
+        <button class="modal-close" onclick="closeVulnModal()">
+          <i data-lucide="x" class="icon-sm"></i>
+        </button>
+      </div>
+      <div id="vuln-modal-body" class="modal-body"></div>
+    </div>
+  </div>
+
+  <!-- Screenshot zoom modal -->
+  <div id="screenshot-modal" class="modal" style="display:none">
+    <div class="modal-backdrop"></div>
+    <div class="screenshot-modal-content">
+      <button class="modal-close screenshot-modal-close" onclick="closeScreenshotModal()">
+        <i data-lucide="x" class="icon-sm"></i>
+      </button>
+      <img id="screenshot-modal-img" alt="Full resolution screenshot">
+    </div>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

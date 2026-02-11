@@ -38,6 +38,10 @@ from esprit.llm.config import LLMConfig
 from esprit.telemetry.tracer import Tracer, set_global_tracer
 
 
+# Type alias for the optional GUI server
+_GUIServerType = Any
+
+
 def get_package_version() -> str:
     try:
         return pkg_version("esprit-agent")
@@ -269,7 +273,8 @@ class HelpScreen(ModalScreen):  # type: ignore[misc]
             Label("Esprit Help", id="help_title"),
             Label(
                 "F1        Help\nCtrl+Q/C  Quit\nESC       Stop Agent\n"
-                "Enter     Send message to agent\nTab       Switch panels\n↑/↓       Navigate tree",
+                "Enter     Send message to agent\nTab       Switch panels\n↑/↓       Navigate tree\n"
+                "b         Browser preview",
                 id="help_content",
             ),
             id="dialog",
@@ -636,6 +641,93 @@ class VulnerabilityDetailScreen(ModalScreen):  # type: ignore[misc]
             self.app.pop_screen()
 
 
+class BrowserPreviewScreen(ModalScreen):  # type: ignore[misc]
+    """Modal screen showing an enlarged browser screenshot preview with auto-refresh."""
+
+    def __init__(self, screenshot_b64: str, url: str = "", agent_id: str = "") -> None:
+        super().__init__()
+        self._screenshot_b64 = screenshot_b64
+        self._url = url
+        self._agent_id = agent_id
+        self._refresh_timer: Timer | None = None
+
+    def compose(self) -> ComposeResult:
+        from esprit.interface.image_widget import BrowserScreenshotWidget
+
+        yield Grid(
+            VerticalScroll(
+                BrowserScreenshotWidget(
+                    screenshot_b64=self._screenshot_b64,
+                    url=self._url,
+                    id="browser_preview_widget",
+                ),
+                id="browser_preview_scroll",
+            ),
+            Horizontal(
+                Button("Close", variant="default", id="close_browser_preview"),
+                id="browser_preview_buttons",
+            ),
+            id="browser_preview_dialog",
+        )
+
+    def on_mount(self) -> None:
+        close_button = self.query_one("#close_browser_preview", Button)
+        close_button.focus()
+        # Start auto-refresh if we have an agent_id
+        if self._agent_id:
+            self._refresh_timer = self.set_interval(1.0, self._check_for_new_screenshot)
+
+    def _check_for_new_screenshot(self) -> None:
+        """Poll for new screenshots and update the widget if changed."""
+        if not self._agent_id:
+            return
+        try:
+            app = self.app
+            if not isinstance(app, EspritTUIApp):
+                return
+            new_b64, new_url = app._get_latest_browser_screenshot(self._agent_id)
+            if new_b64 and new_b64 != self._screenshot_b64:
+                self._screenshot_b64 = new_b64
+                self._url = new_url
+                try:
+                    from esprit.interface.image_widget import BrowserScreenshotWidget
+
+                    widget = self.query_one("#browser_preview_widget", BrowserScreenshotWidget)
+                    widget.update_screenshot(new_b64, new_url)
+                except (ValueError, Exception):
+                    pass
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _render_preview(self) -> Text:
+        try:
+            from esprit.interface.image_renderer import screenshot_to_rich_text
+
+            result = screenshot_to_rich_text(
+                self._screenshot_b64, max_width=0, url_label=self._url
+            )
+            if result is not None:
+                return result
+        except Exception:
+            pass
+        text = Text()
+        text.append("Unable to render browser preview", style="dim")
+        return text
+
+    def on_key(self, event: events.Key) -> None:
+        if event.key in ("escape", "b"):
+            if self._refresh_timer:
+                self._refresh_timer.stop()
+            self.app.pop_screen()
+            event.prevent_default()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "close_browser_preview":
+            if self._refresh_timer:
+                self._refresh_timer.stop()
+            self.app.pop_screen()
+
+
 class VulnerabilityItem(Static):  # type: ignore[misc]
     """A clickable vulnerability item."""
 
@@ -761,11 +853,13 @@ class EspritTUIApp(App):  # type: ignore[misc]
         Binding("ctrl+q", "request_quit", "Quit", priority=True),
         Binding("ctrl+c", "request_quit", "Quit", priority=True),
         Binding("escape", "stop_selected_agent", "Stop Agent", priority=True),
+        Binding("b", "show_browser_preview", "Browser Preview", priority=False),
     ]
 
-    def __init__(self, args: argparse.Namespace):
+    def __init__(self, args: argparse.Namespace, gui_server: _GUIServerType = None):
         super().__init__()
         self.args = args
+        self._gui_server = gui_server
         self.scan_config = self._build_scan_config(args)
         self.agent_config = self._build_agent_config(args)
 
@@ -969,6 +1063,13 @@ class EspritTUIApp(App):  # type: ignore[misc]
 
         self._start_scan_thread()
 
+        # Start GUI server (always available for live dashboard)
+        if self._gui_server is not None:
+            try:
+                self._gui_server.start(self.tracer)
+            except Exception:  # noqa: BLE001
+                logging.debug("Failed to start GUI server", exc_info=True)
+
         self.set_interval(0.35, self._update_ui_from_tracer)
 
     def _update_ui_from_tracer(self) -> None:
@@ -1009,6 +1110,46 @@ class EspritTUIApp(App):  # type: ignore[misc]
         self._update_stats_display()
 
         self._update_vulnerabilities_panel()
+
+        self._cleanup_browser_screenshots()
+
+    def _cleanup_browser_screenshots(self) -> None:
+        """Free memory by replacing older browser screenshots with a placeholder.
+
+        Keeps only the latest screenshot per agent in the tracer's tool_executions.
+        """
+        # Group browser_action executions by agent_id
+        agent_screenshot_ids: dict[str, list[int]] = {}
+        for exec_id, tool_data in list(self.tracer.tool_executions.items()):
+            if tool_data.get("tool_name") != "browser_action":
+                continue
+            result = tool_data.get("result")
+            if not isinstance(result, dict):
+                continue
+            screenshot = result.get("screenshot")
+            if not screenshot or not isinstance(screenshot, str) or screenshot == "[rendered]":
+                continue
+            agent_id = tool_data.get("agent_id", "")
+            agent_screenshot_ids.setdefault(agent_id, []).append(exec_id)
+
+        # For each agent, keep only the latest screenshot
+        for agent_id, exec_ids in agent_screenshot_ids.items():
+            if len(exec_ids) <= 1:
+                # Track the latest one
+                if exec_ids:
+                    self.tracer.latest_browser_screenshots[agent_id] = exec_ids[0]
+                continue
+
+            # Sort by execution id (higher = newer)
+            exec_ids.sort()
+            latest_id = exec_ids[-1]
+            self.tracer.latest_browser_screenshots[agent_id] = latest_id
+
+            # Replace older screenshots with placeholder
+            for eid in exec_ids[:-1]:
+                result = self.tracer.tool_executions[eid].get("result")
+                if isinstance(result, dict) and result.get("screenshot"):
+                    result["screenshot"] = "[rendered]"
 
     def _update_agent_node(self, agent_id: str, agent_data: dict[str, Any]) -> bool:
         if agent_id not in self.agent_nodes:
@@ -1056,7 +1197,13 @@ class EspritTUIApp(App):  # type: ignore[misc]
         events = self._gather_agent_events(self.selected_agent_id)
         streaming = self.tracer.get_streaming_content(self.selected_agent_id)
 
-        if not events and not streaming:
+        # Check if this is the root agent with children
+        is_root = (
+            self.selected_agent_id == self._get_root_agent_id()
+            and len(self._get_child_agents(self.selected_agent_id)) > 0
+        )
+
+        if not events and not streaming and not is_root:
             return self._get_chat_placeholder_content(
                 "Starting agent...", "placeholder-no-activity"
             )
@@ -1065,15 +1212,33 @@ class EspritTUIApp(App):  # type: ignore[misc]
         current_streaming_len = len(streaming) if streaming else 0
         last_streaming_len = self._last_streaming_len.get(self.selected_agent_id, 0)
 
+        # Skip cache when root has running children (shimmer animation needs refresh)
+        has_running = is_root and self._has_running_children(self.selected_agent_id)
+
         if (
-            current_event_ids == self._displayed_events
+            not has_running
+            and current_event_ids == self._displayed_events
             and current_streaming_len == last_streaming_len
         ):
             return None, None
 
         self._displayed_events = current_event_ids
         self._last_streaming_len[self.selected_agent_id] = current_streaming_len
-        return self._get_rendered_events_content(events), "chat-content"
+
+        rendered = self._get_rendered_events_content(events)
+
+        # Append subagent dashboard for the root agent
+        if is_root:
+            dashboard = self._build_subagent_dashboard(self.selected_agent_id)
+            if dashboard:
+                parts: list[Any] = []
+                if rendered and not isinstance(rendered, Text) or (isinstance(rendered, Text) and rendered.plain.strip()):
+                    parts.append(rendered)
+                    parts.append(Text(""))
+                parts.append(dashboard)
+                rendered = Group(*parts) if len(parts) > 1 else parts[0]
+
+        return rendered, "chat-content"
 
     def _update_chat_view(self) -> None:
         if len(self.screen_stack) > 1 or self.show_splash or not self.is_mounted:
@@ -1166,6 +1331,178 @@ class EspritTUIApp(App):  # type: ignore[misc]
         text.append("summarizing older messages to free context", style="dim")
         return text
 
+    # ------------------------------------------------------------------
+    # Shimmer text + subagent dashboard
+    # ------------------------------------------------------------------
+
+    _SHIMMER_COLORS: ClassVar[list[str]] = [
+        "#3f3f46",  # zinc-700 (base)
+        "#52525b",  # zinc-600
+        "#71717a",  # zinc-500
+        "#a1a1aa",  # zinc-400
+        "#d4d4d8",  # zinc-300
+        "#f4f4f5",  # zinc-100
+        "#ffffff",  # white (peak)
+        "#f4f4f5",
+        "#d4d4d8",
+        "#a1a1aa",
+        "#71717a",
+        "#52525b",
+        "#3f3f46",
+    ]
+
+    def _shimmer_text(self, content: str, max_len: int = 120) -> Text:
+        """Create text with a sweeping shimmer gradient animation."""
+        if len(content) > max_len:
+            content = content[: max_len - 1] + "…"
+        text = Text()
+        if not content:
+            return text
+
+        colors = self._SHIMMER_COLORS
+        half_w = len(colors) // 2  # radius of the bright region
+        text_len = len(content)
+
+        # Sweep position advances each frame; cycle across the full text
+        cycle = text_len + len(colors)
+        sweep_center = (self._stats_spinner_frame * 3) % cycle - half_w
+
+        for i, char in enumerate(content):
+            dist = abs(i - sweep_center)
+            if dist <= half_w:
+                color = colors[half_w - dist]
+            else:
+                color = colors[0]
+            text.append(char, style=Style(color=color))
+
+        return text
+
+    def _get_root_agent_id(self) -> str | None:
+        """Return the root agent id (the agent with no parent)."""
+        for agent_id, data in self.tracer.agents.items():
+            if data.get("parent_id") is None:
+                return agent_id
+        return None
+
+    def _get_child_agents(self, parent_id: str) -> list[dict[str, Any]]:
+        """Return child agent data dicts for the given parent."""
+        return [
+            data
+            for data in self.tracer.agents.values()
+            if data.get("parent_id") == parent_id
+        ]
+
+    def _get_agent_snippet(self, agent_id: str) -> str | None:
+        """Get the latest activity snippet for an agent (streaming or last message)."""
+        # Prefer current streaming content
+        streaming = self.tracer.get_streaming_content(agent_id)
+        if streaming and streaming.strip():
+            # Take the last non-empty line(s)
+            lines = [ln for ln in streaming.strip().splitlines() if ln.strip()]
+            if lines:
+                return lines[-1].strip()
+
+        # Fall back to the most recent chat message
+        agent_msgs = [
+            m for m in reversed(self.tracer.chat_messages)
+            if m.get("agent_id") == agent_id and m.get("role") == "assistant"
+        ]
+        if agent_msgs:
+            content = agent_msgs[0].get("content", "")
+            lines = [ln for ln in content.strip().splitlines() if ln.strip()]
+            if lines:
+                return lines[-1].strip()
+
+        # Fall back to last tool being used
+        agent_tools = [
+            t for t in self.tracer.tool_executions.values()
+            if t.get("agent_id") == agent_id
+        ]
+        if agent_tools:
+            last_tool = max(agent_tools, key=lambda t: t.get("timestamp", ""))
+            tool_name = last_tool.get("tool_name", "")
+            if tool_name and tool_name not in ("scan_start_info", "subagent_start_info"):
+                status = last_tool.get("status", "running")
+                prefix = "Using" if status == "running" else "Used"
+                return f"{prefix} {tool_name}"
+
+        return None
+
+    def _build_subagent_dashboard(self, root_agent_id: str) -> Any:
+        """Build a renderable dashboard showing snippets of all child agents."""
+        children = self._get_child_agents(root_agent_id)
+        if not children:
+            return None
+
+        renderables: list[Any] = []
+
+        # Section header
+        header = Text()
+        header.append("─" * 3, style="dim #22d3ee")
+        header.append("  Subagent Activity  ", style="bold #22d3ee")
+        header.append("─" * 40, style="dim #22d3ee")
+        renderables.append(header)
+
+        spinner_frames = _ACTIVITY_SPINNER
+        spinner = spinner_frames[self._stats_spinner_frame % len(spinner_frames)]
+
+        status_styles: dict[str, tuple[str, str]] = {
+            "running": (spinner, "#22d3ee"),
+            "waiting": ("⏸", "#fbbf24"),
+            "completed": ("✓", "#22c55e"),
+            "failed": ("✗", "#ef4444"),
+            "stopped": ("■", "#a1a1aa"),
+            "stopping": ("○", "#a1a1aa"),
+            "llm_failed": ("✗", "#ef4444"),
+        }
+
+        for child in children:
+            agent_id = child["id"]
+            agent_name = child.get("name", "Agent")
+            status = child.get("status", "running")
+            icon, color = status_styles.get(status, ("○", "#a1a1aa"))
+            is_active = status in ("running", "waiting")
+
+            card = Text()
+            # Agent name line with status icon
+            card.append(f"  {icon} ", style=color)
+            card.append(agent_name, style=f"bold {color}")
+
+            vuln_count = self._agent_vulnerability_count(agent_id)
+            if vuln_count > 0:
+                card.append(f"  ⚡{vuln_count}", style="bold #ef4444")
+
+            snippet = self._get_agent_snippet(agent_id)
+            if snippet:
+                card.append("\n")
+                if is_active:
+                    # Shimmer effect for running agents
+                    card.append("    ")
+                    shimmer = self._shimmer_text(snippet, max_len=90)
+                    card.append_text(shimmer)
+                else:
+                    card.append("    ", style="dim")
+                    display = snippet if len(snippet) <= 90 else snippet[:89] + "…"
+                    card.append(display, style="dim")
+            elif is_active:
+                card.append("\n    ", style="dim")
+                card.append_text(self._shimmer_text("Initializing…", max_len=90))
+
+            renderables.append(card)
+
+        if len(renderables) <= 1:
+            return None
+
+        return Group(*renderables)
+
+    def _has_running_children(self, agent_id: str) -> bool:
+        """Check if any child agents are currently running."""
+        return any(
+            data.get("status") in ("running", "waiting")
+            for data in self.tracer.agents.values()
+            if data.get("parent_id") == agent_id
+        )
+
     def _render_streaming_content(self, content: str, agent_id: str | None = None) -> Any:
         cache_key = agent_id or self.selected_agent_id or ""
         content_len = len(content)
@@ -1215,12 +1552,39 @@ class EspritTUIApp(App):  # type: ignore[misc]
             "result": None,
         }
 
+        # For completed browser actions, try to find the actual result from the tracer
+        # so that screenshot previews can render
+        if is_complete and tool_name == "browser_action" and self.selected_agent_id:
+            tracer_result = self._find_browser_result_from_tracer(args)
+            if tracer_result is not None:
+                tool_data["result"] = tracer_result
+
         renderer = get_tool_renderer(tool_name)
         if renderer:
             widget = renderer.render(tool_data)
             return widget.renderable
 
         return self._render_default_streaming_tool(tool_name, args, is_complete)
+
+    def _find_browser_result_from_tracer(self, args: dict[str, str]) -> dict[str, Any] | None:
+        """Find the matching browser action result from the tracer for a streaming tool."""
+        action = args.get("action", "")
+        url = args.get("url", "")
+
+        # Search backwards (latest first) for a matching completed browser_action
+        for tool_data in reversed(list(self.tracer.tool_executions.values())):
+            if tool_data.get("tool_name") != "browser_action":
+                continue
+            if tool_data.get("status") != "completed":
+                continue
+            if tool_data.get("agent_id") != self.selected_agent_id:
+                continue
+            t_args = tool_data.get("args", {})
+            if t_args.get("action") == action and t_args.get("url", "") == url:
+                result = tool_data.get("result")
+                if isinstance(result, dict):
+                    return result
+        return None
 
     def _render_default_streaming_tool(
         self, tool_name: str, args: dict[str, str], is_complete: bool
@@ -1980,6 +2344,69 @@ class EspritTUIApp(App):  # type: ignore[misc]
 
         self.push_screen(HelpScreen())
 
+    def action_show_browser_preview(self) -> None:
+        """Show enlarged browser preview for the selected agent."""
+        if self.show_splash or not self.is_mounted:
+            return
+
+        if len(self.screen_stack) > 1:
+            return
+
+        # Don't open when chat input is focused (user might be typing 'b')
+        try:
+            chat_input = self.query_one("#chat_input", ChatTextArea)
+            if self.focused == chat_input:
+                return
+        except (ValueError, Exception):
+            pass
+
+        if not self.selected_agent_id:
+            return
+
+        # Find the latest browser screenshot for the selected agent
+        screenshot_b64, url = self._get_latest_browser_screenshot(self.selected_agent_id)
+        if not screenshot_b64:
+            return
+
+        self.push_screen(BrowserPreviewScreen(screenshot_b64, url, agent_id=self.selected_agent_id))
+
+    def _get_latest_browser_screenshot(self, agent_id: str) -> tuple[str | None, str]:
+        """Find the latest browser screenshot for an agent."""
+        latest_exec_id = self.tracer.latest_browser_screenshots.get(agent_id)
+
+        # If we have a tracked latest, try that first
+        if latest_exec_id and latest_exec_id in self.tracer.tool_executions:
+            tool_data = self.tracer.tool_executions[latest_exec_id]
+            result = tool_data.get("result")
+            if isinstance(result, dict):
+                screenshot = result.get("screenshot")
+                if screenshot and isinstance(screenshot, str) and screenshot != "[rendered]":
+                    url = result.get("url") or tool_data.get("args", {}).get("url") or ""
+                    return screenshot, url
+
+        # Fallback: search all browser actions for this agent
+        best_exec_id = -1
+        best_screenshot = None
+        best_url = ""
+
+        for exec_id, tool_data in list(self.tracer.tool_executions.items()):
+            if tool_data.get("tool_name") != "browser_action":
+                continue
+            if tool_data.get("agent_id") != agent_id:
+                continue
+            result = tool_data.get("result")
+            if not isinstance(result, dict):
+                continue
+            screenshot = result.get("screenshot")
+            if not screenshot or not isinstance(screenshot, str) or screenshot == "[rendered]":
+                continue
+            if exec_id > best_exec_id:
+                best_exec_id = exec_id
+                best_screenshot = screenshot
+                best_url = result.get("url") or tool_data.get("args", {}).get("url") or ""
+
+        return best_screenshot, best_url
+
     def action_request_quit(self) -> None:
         if self.show_splash or not self.is_mounted:
             self.action_custom_quit()
@@ -2069,6 +2496,13 @@ class EspritTUIApp(App):  # type: ignore[misc]
 
             self._scan_thread.join(timeout=1.0)
 
+        # Stop GUI server if running
+        if self._gui_server is not None:
+            try:
+                self._gui_server.stop()
+            except Exception:  # noqa: BLE001
+                pass
+
         self.tracer.cleanup()
 
         self.exit()
@@ -2103,6 +2537,15 @@ class EspritTUIApp(App):  # type: ignore[misc]
             left_panel.add_class("-hidden")
             right_panel.add_class("-hidden")
             chat_area.add_class("-full-width")
+
+            # Show hint about GUI dashboard for small terminals
+            if self._gui_server is not None:
+                try:
+                    keymap = self.query_one("#keymap_indicator", Static)
+                    keymap.update(Text("Dashboard: http://localhost:7860", style="dim"))
+                except (ValueError, Exception):
+                    pass
+
             return
 
         chat_area.remove_class("-full-width")
@@ -2120,7 +2563,7 @@ class EspritTUIApp(App):  # type: ignore[misc]
         self._apply_responsive_layout(event.size.width)
 
 
-async def run_tui(args: argparse.Namespace) -> None:
+async def run_tui(args: argparse.Namespace, gui_server: Any = None) -> None:
     """Run esprit in interactive TUI mode with textual."""
-    app = EspritTUIApp(args)
+    app = EspritTUIApp(args, gui_server=gui_server)
     await app.run_async()

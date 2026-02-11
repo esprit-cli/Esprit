@@ -699,3 +699,64 @@ HelpScreen {
     background: transparent;
     text-style: none;
 }
+
+BrowserPreviewScreen {
+    align: center middle;
+    background: #0a0202 84%;
+}
+
+#browser_preview_dialog {
+    grid-size: 1;
+    grid-gutter: 1;
+    grid-rows: 1fr auto;
+    padding: 1 2;
+    width: 95%;
+    max-width: 200;
+    height: 90%;
+    max-height: 60;
+    border: solid #2f0f0f;
+    background: #160606;
+}
+
+#browser_preview_scroll {
+    height: 1fr;
+    background: transparent;
+    scrollbar-background: #160606;
+    scrollbar-color: #2f0f0f;
+    scrollbar-corner-color: #160606;
+    scrollbar-size: 1 1;
+    padding-right: 1;
+}
+
+#browser_preview_content {
+    width: 100%;
+    background: transparent;
+    padding: 0;
+}
+
+#browser_preview_buttons {
+    width: 100%;
+    height: auto;
+    align: right middle;
+    padding-top: 1;
+    margin: 0;
+    border-top: solid #2f0f0f;
+}
+
+#close_browser_preview {
+    width: auto;
+    min-width: 10;
+    height: auto;
+    background: transparent;
+    color: #e8d5d5;
+    border: none;
+    text-style: none;
+    margin: 0;
+    padding: 0 2;
+}
+
+#close_browser_preview:hover, #close_browser_preview:focus {
+    background: transparent;
+    color: #22d3ee;
+    border: none;
+}

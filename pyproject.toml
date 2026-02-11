@@ -38,7 +38,8 @@ include = [
   "esprit/agents/**/*.jinja",
   "esprit/skills/**/*.md",
   "esprit/**/*.xml",
-  "esprit/**/*.tcss"
+  "esprit/**/*.tcss",
+  "esprit/gui/static/**/*"
 ]
 
 [tool.poetry.scripts]
@@ -56,6 +57,7 @@ textual = "^4.0.0"
 xmltodict = "^0.13.0"
 requests = "^2.32.0"
 cvss = "^3.2"
+Pillow = ">=10.0.0"
 
 # Optional LLM provider dependencies
 google-cloud-aiplatform = { version = ">=1.38", optional = true }
@@ -72,9 +74,17 @@ libtmux = { version = "^0.46.2", optional = true }
 numpydoc = { version = "^1.8.0", optional = true }
 defusedxml = "^0.7.1"
 
+# GUI dashboard dependencies (host-side, not sandbox)
+websockets = { version = "*", optional = true }
+
+# Enhanced TUI preview dependencies
+textual-image = { version = "*", optional = true }
+
 [tool.poetry.extras]
 vertex = ["google-cloud-aiplatform"]
 sandbox = ["fastapi", "uvicorn", "ipython", "openhands-aci", "playwright", "gql", "pyte", "libtmux", "numpydoc"]
+gui = ["fastapi", "uvicorn", "websockets"]
+enhanced-preview = ["textual-image"]
 
 [tool.poetry.group.dev.dependencies]
 # Type checking and static analysis
@@ -144,10 +154,12 @@ module = [
     "httpx.*",
     "gql.*",
     "textual.*",
+    "textual_image.*",
     "pyte.*",
     "libtmux.*",
     "pytest.*",
     "cvss.*",
+    "PIL.*",
 ]
 ignore_missing_imports = true
 

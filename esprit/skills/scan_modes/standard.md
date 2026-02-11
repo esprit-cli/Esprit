@@ -41,7 +41,18 @@ Before testing for vulnerabilities, understand the application:
 
 ## Phase 3: Systematic Testing
 
-Test each attack surface methodically. Spawn focused subagents for different areas.
+Test each attack surface methodically.
+
+**Agent Strategy — MANDATORY PARALLELIZATION:**
+- After reconnaissance, decompose testing by BOTH attack surface AND vulnerability type
+- Create at least 3-5 parallel subagents immediately after Phase 1-2:
+  • One for injection testing (SQLi, command injection, SSTI)
+  • One for access control (IDOR, privilege escalation, broken auth)
+  • One for client-side (XSS, CSRF, open redirects)
+  • One for server-side (SSRF, XXE, deserialization)
+  • One for business logic (race conditions, workflow bypass)
+- Do NOT serialize testing that can be parallelized — multiple agents running concurrently is always preferred
+- Spawn additional agents as new attack surfaces are discovered
 
 **Input Validation**
 - Injection testing on all input fields (SQL, XSS, command, template)

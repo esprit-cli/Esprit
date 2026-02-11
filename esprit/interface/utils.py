@@ -255,14 +255,17 @@ def _build_llm_stats(stats_text: Text, total_stats: dict[str, Any]) -> None:
         stats_text.append("Output Tokens ", style="dim")
         stats_text.append(format_token_count(total_stats["output_tokens"]), style="white")
 
-        if total_stats["cost"] > 0:
-            stats_text.append(" · ", style="dim white")
-            stats_text.append("Cost ", style="dim")
-            stats_text.append(f"${total_stats['cost']:.4f}", style="bold #fbbf24")
+        cost = total_stats["cost"]
+        stats_text.append(" · ", style="dim white")
+        stats_text.append("Cost ", style="dim")
+        if cost >= 0.005:
+            stats_text.append(f"${cost:.2f}", style="bold #fbbf24")
+        else:
+            stats_text.append(f"${cost:.2f}", style="dim white")
     else:
         stats_text.append("\n")
         stats_text.append("Cost ", style="dim")
-        stats_text.append("$0.0000 ", style="#fbbf24")
+        stats_text.append("$0.00 ", style="dim white")
         stats_text.append("· ", style="dim white")
         stats_text.append("Tokens ", style="dim")
         stats_text.append("0", style="white")
@@ -361,25 +364,26 @@ def build_live_stats_text(tracer: Any, agent_config: dict[str, Any] | None = Non
 
     stats_text.append("  ·  ", style="dim white")
 
-    # Cost — use estimated cost for Antigravity (free) models
-    actual_cost = total_stats["cost"]
+    # Cost
     model = ""
     if agent_config:
         llm_config = agent_config["llm_config"]
         model = getattr(llm_config, "model_name", "")
-    is_antigravity = model.startswith("antigravity/")
-    estimated = _estimate_cost(model, total_stats["input_tokens"], total_stats["output_tokens"]) if model else 0.0
 
-    if is_antigravity and estimated > 0:
-        stats_text.append("Savings ", style="dim")
-        stats_text.append(f"${estimated:.4f}", style="#22c55e")
-        stats_text.append(" (free)", style="dim #22c55e")
-    elif actual_cost > 0:
-        stats_text.append("Cost ", style="dim")
-        stats_text.append(f"${actual_cost:.4f}", style="#fbbf24")
+    from esprit.llm.pricing import get_pricing_db
+
+    session_cost = get_pricing_db().get_cost(
+        model,
+        total_stats["input_tokens"],
+        total_stats["output_tokens"],
+        total_stats["cached_tokens"],
+    ) if model else 0.0
+
+    stats_text.append("Cost ", style="dim")
+    if session_cost >= 0.005:
+        stats_text.append(f"${session_cost:.2f}", style="#fbbf24")
     else:
-        stats_text.append("Cost ", style="dim")
-        stats_text.append(f"${actual_cost:.4f}", style="dim white")
+        stats_text.append(f"${session_cost:.2f}", style="dim white")
 
     return stats_text
 
@@ -387,56 +391,6 @@ def build_live_stats_text(tracer: Any, agent_config: dict[str, Any] | None = Non
 _SCAN_SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 
 _ACTIVITY_SPINNER = ["◐", "◓", "◑", "◒"]
-
-# Map Antigravity model names → litellm model_cost keys for pricing lookup
-_LITELLM_PRICING_MAP: dict[str, str] = {
-    "claude-opus-4-6-thinking": "claude-opus-4-6",
-    "claude-opus-4-5-thinking": "claude-opus-4-5",
-    "claude-sonnet-4-5-thinking": "claude-sonnet-4-5",
-    "claude-sonnet-4-5": "claude-sonnet-4-5",
-    "gemini-2.5-flash": "gemini-2.5-flash",
-    "gemini-2.5-flash-lite": "gemini-2.5-flash-lite",
-    "gemini-2.5-flash-thinking": "gemini-2.5-flash",
-    "gemini-2.5-pro": "gemini-2.5-pro",
-    "gemini-3-flash": "gemini-3-flash-preview",
-    "gemini-3-pro-high": "gemini-3-pro-preview",
-    "gemini-3-pro-image": "gemini-3-pro-image-preview",
-    "gemini-3-pro-low": "gemini-3-pro-preview",
-}
-
-
-def _estimate_cost(model: str, input_tokens: int, output_tokens: int) -> float:
-    """Estimate API cost using litellm's pricing data, with hardcoded fallback."""
-    bare = model.split("/", 1)[-1] if "/" in model else model
-    litellm_key = _LITELLM_PRICING_MAP.get(bare, bare)
-    try:
-        import litellm
-        cost_map = litellm.model_cost
-        info = cost_map.get(litellm_key)
-        if not info:
-            info = cost_map.get(f"gemini/{litellm_key}")
-        if info:
-            input_rate = info.get("input_cost_per_token", 0)
-            output_rate = info.get("output_cost_per_token", 0)
-            return input_tokens * input_rate + output_tokens * output_rate
-    except Exception:
-        pass
-    # Fallback pricing per million tokens (input, output)
-    _fallback: dict[str, tuple[float, float]] = {
-        "claude-opus-4-6": (5.0, 25.0),
-        "claude-opus-4-5": (5.0, 25.0),
-        "claude-sonnet-4-5": (3.0, 15.0),
-        "gemini-2.5-flash": (0.30, 2.50),
-        "gemini-2.5-flash-lite": (0.10, 0.40),
-        "gemini-2.5-pro": (1.25, 10.0),
-        "gemini-3-flash-preview": (0.50, 3.0),
-        "gemini-3-pro-preview": (2.0, 12.0),
-        "gemini-3-pro-image-preview": (2.0, 12.0),
-    }
-    fb = _fallback.get(litellm_key)
-    if fb:
-        return (input_tokens * fb[0] + output_tokens * fb[1]) / 1_000_000
-    return 0.0
 
 
 def _format_elapsed(seconds: float) -> str:
@@ -468,8 +422,17 @@ def build_tui_stats_text(
         bare_model = model.split("/", 1)[-1] if "/" in model else model
         is_antigravity = model.startswith("antigravity/")
 
+        # Provider badge
         if is_antigravity:
             stats_text.append("AG ", style="bold #a78bfa")
+        elif "gpt" in bare_model.lower() or "o1" in bare_model or "o3" in bare_model or "o4" in bare_model or "codex" in bare_model.lower():
+            stats_text.append("OAI ", style="bold #22c55e")
+        elif "copilot" in model.lower():
+            stats_text.append("CO ", style="bold #6366f1")
+        elif "gemini" in bare_model.lower():
+            stats_text.append("GG ", style="bold #4285f4")
+        elif "claude" in bare_model.lower():
+            stats_text.append("CC ", style="bold #d97706")
         stats_text.append(bare_model, style="white")
 
     # Elapsed time and scan status
@@ -519,9 +482,12 @@ def build_tui_stats_text(
     total_stats = llm_stats["total"]
     input_tokens = total_stats["input_tokens"]
     output_tokens = total_stats["output_tokens"]
+
+    from esprit.llm.pricing import get_pricing_db, get_lifetime_cost
     cached_tokens = total_stats["cached_tokens"]
     total_tokens = input_tokens + output_tokens
     requests = total_stats["requests"]
+    context_tokens = llm_stats.get("max_context_tokens", 0)
 
     # Agents / Tools / Requests
     stats_text.append("\n")
@@ -567,20 +533,10 @@ def build_tui_stats_text(
         stats_text.append("▸ Total ", style="dim")
         stats_text.append(f"{format_token_count(total_tokens):>5s}", style="white bold")
 
-        # Context window usage bar
-        context_limit = 128_000  # default
-        _CTX_LIMITS: dict[str, int] = {
-            "claude": 200_000,
-            "gemini-2.5-pro": 1_048_576,
-            "gemini-2.5-flash": 1_048_576,
-            "gemini-3": 1_048_576,
-        }
-        bare = model.split("/", 1)[-1] if model and "/" in model else (model or "")
-        for key, limit in _CTX_LIMITS.items():
-            if key in bare:
-                context_limit = limit
-                break
-        ctx_pct = min(100, (input_tokens / max(context_limit, 1)) * 100)
+        # Context window usage bar — uses last request's input tokens (current window)
+        context_limit = get_pricing_db().get_context_limit(model) if model else 128_000
+        ctx_input = context_tokens if context_tokens > 0 else input_tokens
+        ctx_pct = min(100, (ctx_input / max(context_limit, 1)) * 100)
         bar_width = 18
         filled = int(bar_width * ctx_pct / 100)
         bar_color = "#22c55e" if ctx_pct < 60 else "#eab308" if ctx_pct < 85 else "#ef4444"
@@ -594,35 +550,24 @@ def build_tui_stats_text(
         stats_text.append("▸ Tokens ", style="dim")
         stats_text.append("0", style="dim white")
 
-    # Cost estimation — always show
+    # Cost — calculated from pricing DB
     stats_text.append("\n")
     stats_text.append("─" * 28, style="dim #3f3f3f")
 
-    actual_cost = total_stats["cost"]
-    estimated = _estimate_cost(model, input_tokens, output_tokens) if model else 0.0
-    is_antigravity = model.startswith("antigravity/") if model else False
+    session_cost = get_pricing_db().get_cost(
+        model, input_tokens, output_tokens, cached_tokens,
+    ) if model else 0.0
+    lifetime_cost = get_lifetime_cost()
 
     stats_text.append("\n")
-    if is_antigravity and estimated > 0:
-        stats_text.append("  Savings ", style="dim")
-        stats_text.append(f"${estimated:.4f}", style="#22c55e bold")
-        stats_text.append("\n")
-        stats_text.append("  You pay ", style="dim")
-        stats_text.append("$0.0000", style="#22c55e")
-        stats_text.append(" free", style="dim #22c55e")
-    elif is_antigravity:
-        stats_text.append("  Cost ", style="dim")
-        stats_text.append("$0.0000", style="#22c55e")
-        stats_text.append(" free", style="dim #22c55e")
-    elif actual_cost > 0:
-        stats_text.append("  Cost ", style="dim")
-        stats_text.append(f"${actual_cost:.4f}", style="#fbbf24 bold")
-    elif estimated > 0:
-        stats_text.append("  Est. cost ", style="dim")
-        stats_text.append(f"${estimated:.4f}", style="#fbbf24")
+    stats_text.append("  Cost ", style="dim")
+    if session_cost >= 0.005:
+        stats_text.append(f"${session_cost:.2f}", style="#fbbf24 bold")
     else:
-        stats_text.append("  Cost ", style="dim")
-        stats_text.append("$0.0000", style="dim white")
+        stats_text.append(f"${session_cost:.2f}", style="dim white")
+    if lifetime_cost >= 0.01:
+        stats_text.append(f"  all-time ", style="dim")
+        stats_text.append(f"${lifetime_cost:.2f}", style="dim #a78bfa")
 
     # Vulnerabilities
     vuln_count = (

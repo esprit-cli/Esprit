@@ -57,7 +57,9 @@ When a strong primitive is found (auth weakness, injection point, internal acces
 - Use terminal for targeted scans with fast presets (e.g., nuclei with critical/high templates only)
 - Use proxy to inspect traffic on key endpoints
 - Skip extensive fuzzing—use targeted payloads only
-- Create subagents only for parallel high-priority tasks
+- Create at least 2-3 parallel subagents for top priority vulnerability types after rapid orientation
+- Running 3 agents for 5 min each > running 1 agent for 15 min sequentially — always prefer parallel execution
+- Spawn agents for: (1) auth bypass + access control, (2) injection (SQLi/RCE), (3) SSRF + secrets — at minimum
 
 ## Mindset
 
