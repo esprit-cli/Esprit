@@ -124,6 +124,16 @@ class BrowserScreenshotWidget(Widget):  # type: ignore[misc]
 
         except Exception:  # noqa: BLE001
             logger.debug("textual-image rendering failed, falling back to halfblock", exc_info=True)
+            # content_widget may have been removed; re-query or recreate
+            try:
+                content_widget = self.query_one("#screenshot_content", Static)
+            except Exception:  # noqa: BLE001
+                try:
+                    scroll = self.query_one("#screenshot_scroll", VerticalScroll)
+                    content_widget = Static("", id="screenshot_content")
+                    scroll.mount(content_widget)
+                except Exception:  # noqa: BLE001
+                    return
             self._render_with_halfblock(content_widget)
 
     def _render_with_halfblock(self, content_widget: Static) -> None:

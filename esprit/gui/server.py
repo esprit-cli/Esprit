@@ -75,6 +75,15 @@ class GUIServer:
             ) from exc
 
         app = FastAPI(title="Esprit Dashboard")
+
+        # Protect against DNS rebinding attacks
+        from starlette.middleware.trustedhost import TrustedHostMiddleware
+
+        app.add_middleware(
+            TrustedHostMiddleware,
+            allowed_hosts=["localhost", "127.0.0.1"],
+        )
+
         self._bridge = TracerBridge(tracer)
 
         # --- Routes ---
@@ -134,10 +143,12 @@ class GUIServer:
         )
         server = uvicorn.Server(config)
 
-        self._started.set()
-
-        if open_browser:
-            self._loop.call_later(1.5, lambda: webbrowser.open(f"http://localhost:{self.port}"))
+        # Signal readiness after uvicorn binds
+        @app.on_event("startup")
+        async def _on_startup() -> None:
+            self._started.set()
+            if open_browser:
+                webbrowser.open(f"http://localhost:{self.port}")
 
         try:
             self._loop.run_until_complete(server.serve())

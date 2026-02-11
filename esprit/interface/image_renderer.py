@@ -75,6 +75,11 @@ def screenshot_to_rich_text(
     try:
         from PIL import Image, ImageFilter
 
+        # Guard against absurdly large payloads (~50 MB base64 ≈ ~37 MB raw)
+        if len(base64_png) > 50_000_000:
+            logger.debug("Screenshot base64 too large (%d bytes), skipping", len(base64_png))
+            return None
+
         image_data = base64.b64decode(base64_png)
         img = Image.open(io.BytesIO(image_data))
         img = img.convert("RGB")

@@ -34,14 +34,20 @@ class EspritDashboard {
       this._setStatus('connected', 'running');
     };
     this.ws.onmessage = (e) => {
-      const msg = JSON.parse(e.data);
-      this._handleMessage(msg);
+      try {
+        const msg = JSON.parse(e.data);
+        this._handleMessage(msg);
+      } catch (err) {
+        console.warn('Failed to parse WS message', err);
+      }
     };
     this.ws.onclose = () => {
       this._setStatus('reconnecting...', 'disconnected');
       setTimeout(() => this.connect(), 2000);
     };
-    this.ws.onerror = () => {};
+    this.ws.onerror = (err) => {
+      console.warn('WebSocket error', err);
+    };
   }
 
   _handleMessage(msg) {
@@ -842,7 +848,7 @@ class EspritDashboard {
   _renderVulns() {
     const container = document.getElementById('vulns-list');
     const countEl = document.getElementById('vuln-count');
-    countEl.textContent = this.vulnerabilities.length;
+    if (countEl) countEl.textContent = this.vulnerabilities.length;
 
     this._clearEl(container);
 
