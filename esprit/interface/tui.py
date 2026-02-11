@@ -46,10 +46,7 @@ def get_package_version() -> str:
     try:
         return pkg_version("esprit-agent")
     except PackageNotFoundError:
-        try:
-            return pkg_version("esprit-agent")
-        except PackageNotFoundError:
-            return "dev"
+        return "dev"
 
 
 class ChatTextArea(TextArea):  # type: ignore[misc]
@@ -1180,8 +1177,6 @@ class EspritTUIApp(App):  # type: ignore[misc]
                 return True
 
         except (KeyError, AttributeError, ValueError) as e:
-            import logging
-
             logging.warning(f"Failed to update agent node label: {e}")
 
         return False
@@ -1379,7 +1374,7 @@ class EspritTUIApp(App):  # type: ignore[misc]
 
     def _get_root_agent_id(self) -> str | None:
         """Return the root agent id (the agent with no parent)."""
-        for agent_id, data in self.tracer.agents.items():
+        for agent_id, data in list(self.tracer.agents.items()):
             if data.get("parent_id") is None:
                 return agent_id
         return None
@@ -1388,7 +1383,7 @@ class EspritTUIApp(App):  # type: ignore[misc]
         """Return child agent data dicts for the given parent."""
         return [
             data
-            for data in self.tracer.agents.values()
+            for data in list(self.tracer.agents.values())
             if data.get("parent_id") == parent_id
         ]
 
@@ -1404,7 +1399,7 @@ class EspritTUIApp(App):  # type: ignore[misc]
 
         # Fall back to the most recent chat message
         agent_msgs = [
-            m for m in reversed(self.tracer.chat_messages)
+            m for m in reversed(list(self.tracer.chat_messages))
             if m.get("agent_id") == agent_id and m.get("role") == "assistant"
         ]
         if agent_msgs:
@@ -1415,7 +1410,7 @@ class EspritTUIApp(App):  # type: ignore[misc]
 
         # Fall back to last tool being used
         agent_tools = [
-            t for t in self.tracer.tool_executions.values()
+            t for t in list(self.tracer.tool_executions.values())
             if t.get("agent_id") == agent_id
         ]
         if agent_tools:
@@ -1499,7 +1494,7 @@ class EspritTUIApp(App):  # type: ignore[misc]
         """Check if any child agents are currently running."""
         return any(
             data.get("status") in ("running", "waiting")
-            for data in self.tracer.agents.values()
+            for data in list(self.tracer.agents.values())
             if data.get("parent_id") == agent_id
         )
 
@@ -1731,11 +1726,11 @@ class EspritTUIApp(App):  # type: ignore[misc]
             _DONE_STATUSES = _FAIL_STATUSES | {"completed", "stopped"}
             all_agents_done = all(
                 a.get("status") in _DONE_STATUSES
-                for a in self.tracer.agents.values()
+                for a in list(self.tracer.agents.values())
             )
             any_failed = any(
                 a.get("status") in _FAIL_STATUSES
-                for a in self.tracer.agents.values()
+                for a in list(self.tracer.agents.values())
             )
             if all_agents_done and any_failed:
                 scan_failed = True
@@ -1878,7 +1873,7 @@ class EspritTUIApp(App):  # type: ignore[misc]
         if not has_active_agents:
             has_active_agents = any(
                 agent_data.get("status", "running") in ["running", "waiting"]
-                for agent_data in self.tracer.agents.values()
+                for agent_data in list(self.tracer.agents.values())
             )
 
         if not has_active_agents:
@@ -1918,7 +1913,7 @@ class EspritTUIApp(App):  # type: ignore[misc]
                 "id": f"chat_{msg['message_id']}",
                 "data": msg,
             }
-            for msg in self.tracer.chat_messages
+            for msg in list(self.tracer.chat_messages)
             if msg.get("agent_id") == agent_id
         ]
 
@@ -2051,8 +2046,6 @@ class EspritTUIApp(App):  # type: ignore[misc]
 
             self._reorganize_orphaned_agents(agent_id)
         except (AttributeError, ValueError, RuntimeError) as e:
-            import logging
-
             logging.warning(f"Failed to add agent node {agent_id}: {e}")
 
     def _expand_new_agent_nodes(self) -> None:
@@ -2307,8 +2300,6 @@ class EspritTUIApp(App):  # type: ignore[misc]
             send_user_message_to_agent(self.selected_agent_id, message)
 
         except (ImportError, AttributeError) as e:
-            import logging
-
             logging.warning(f"Failed to send message to agent {self.selected_agent_id}: {e}")
 
         self._displayed_events.clear()
@@ -2464,8 +2455,6 @@ class EspritTUIApp(App):  # type: ignore[misc]
                 return agent_name, True
 
         except (KeyError, AttributeError, ValueError) as e:
-            import logging
-
             logging.warning(f"Failed to gather agent events: {e}")
 
         return agent_name, False
@@ -2478,16 +2467,12 @@ class EspritTUIApp(App):  # type: ignore[misc]
 
             result = stop_agent(agent_id)
 
-            import logging
-
             if result.get("success"):
                 logging.info(f"Stop request sent to agent: {result.get('message', 'Unknown')}")
             else:
                 logging.warning(f"Failed to stop agent: {result.get('error', 'Unknown error')}")
 
         except Exception:
-            import logging
-
             logging.exception(f"Failed to stop agent {agent_id}")
 
     def action_custom_quit(self) -> None:

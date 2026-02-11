@@ -161,7 +161,7 @@ class TracerBridge:
 
         # Agents
         current_agent_count = len(t.agents)
-        current_statuses = {aid: a.get("status", "") for aid, a in t.agents.items()}
+        current_statuses = {aid: a.get("status", "") for aid, a in list(t.agents.items())}
         if current_agent_count != self._last_agent_count or current_statuses != self._last_agent_statuses:
             deltas.append({"type": "agents_update", "agents": self._serialize_agents()})
             self._last_agent_count = current_agent_count
@@ -241,7 +241,7 @@ class TracerBridge:
     def _serialize_agents(self) -> list[dict[str, Any]]:
         agents = []
         t = self._tracer
-        for agent_id, data in t.agents.items():
+        for agent_id, data in list(t.agents.items()):
             agents.append({
                 "id": agent_id,
                 "name": data.get("name", ""),

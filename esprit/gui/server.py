@@ -148,7 +148,9 @@ class GUIServer:
         async def _on_startup() -> None:
             self._started.set()
             if open_browser:
-                webbrowser.open(f"http://localhost:{self.port}")
+                asyncio.get_event_loop().run_in_executor(
+                    None, webbrowser.open, f"http://localhost:{self.port}"
+                )
 
         try:
             self._loop.run_until_complete(server.serve())

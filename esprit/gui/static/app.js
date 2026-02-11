@@ -18,6 +18,8 @@ class EspritDashboard {
     this.activeTab = 'terminal';
     this._terminalRenderedCount = 0;
     this._toolsRenderedCount = 0;
+    this._reconnectDelay = 1000;
+    this._maxReconnectDelay = 30000;
 
     this._initTabs();
     this._initBrowserZoom();
@@ -32,6 +34,7 @@ class EspritDashboard {
     this.ws = new WebSocket(proto + '://' + location.host + '/ws');
     this.ws.onopen = () => {
       this._setStatus('connected', 'running');
+      this._reconnectDelay = 1000;
     };
     this.ws.onmessage = (e) => {
       try {
@@ -43,7 +46,8 @@ class EspritDashboard {
     };
     this.ws.onclose = () => {
       this._setStatus('reconnecting...', 'disconnected');
-      setTimeout(() => this.connect(), 2000);
+      setTimeout(() => this.connect(), this._reconnectDelay);
+      this._reconnectDelay = Math.min(this._reconnectDelay * 2, this._maxReconnectDelay);
     };
     this.ws.onerror = (err) => {
       console.warn('WebSocket error', err);
