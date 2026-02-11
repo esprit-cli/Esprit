@@ -16,6 +16,8 @@ DO NOT USE:
 
 White-box requirement (when you have access to the code): You MUST include code_file, code_before, code_after, and code_diff. These must contain the actual code (before/after) and a complete, apply-able unified diff.
 
+- Include CWE and OWASP Top 10 classifications when applicable (e.g., CWE-89 for SQL Injection, A03:2021 Injection).
+
 DEDUPLICATION: If this tool returns with success=false and mentions a duplicate, DO NOT attempt to re-submit. The vulnerability has already been reported. Move on to testing other areas.
 
 Professional, customer-facing report rules (PDF-ready):
@@ -124,6 +126,12 @@ H = High (total loss of availability)</description>
       </parameter>
       <parameter name="code_diff" type="string" required="false">
         <description>MANDATORY for white-box testing: unified diff showing the code changes. Must be a complete, apply-able unified diff (git format) covering all affected files, with proper file headers, line numbers, and sufficient context.</description>
+      </parameter>
+      <parameter name="cwe_id" type="string" required="false">
+        <description>CWE identifier for the vulnerability class (e.g., "CWE-89" for SQL Injection, "CWE-79" for XSS). Use the most specific applicable CWE ID.</description>
+      </parameter>
+      <parameter name="owasp_category" type="string" required="false">
+        <description>OWASP Top 10 (2021) category (e.g., "A01:2021 Broken Access Control", "A03:2021 Injection"). Use the full identifier with name.</description>
       </parameter>
     </parameters>
     <returns type="Dict[str, Any]">

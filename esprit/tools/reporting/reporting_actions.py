@@ -113,6 +113,8 @@ def create_vulnerability_report(
     code_before: str | None = None,
     code_after: str | None = None,
     code_diff: str | None = None,
+    cwe_id: str | None = None,
+    owasp_category: str | None = None,
 ) -> dict[str, Any]:
     validation_errors = _validate_required_fields(
         title=title,
@@ -226,6 +228,8 @@ def create_vulnerability_report(
                 code_before=code_before,
                 code_after=code_after,
                 code_diff=code_diff,
+                cwe_id=cwe_id,
+                owasp_category=owasp_category,
             )
 
             return {

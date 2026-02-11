@@ -976,6 +976,34 @@ def persist_config() -> None:
         save_current_config()
 
 
+def display_cost_estimate(
+    model_name: str, scan_mode: str, target_count: int, is_whitebox: bool,
+) -> None:
+    console = Console()
+    try:
+        from esprit.llm.cost_estimator import estimate_scan_cost
+
+        estimate = estimate_scan_cost(
+            model_name=model_name,
+            scan_mode=scan_mode,
+            target_count=target_count,
+            is_whitebox=is_whitebox,
+        )
+        if estimate["estimated_cost_mid"] > 0:
+            low = estimate["estimated_cost_low"]
+            high = estimate["estimated_cost_high"]
+            mode = scan_mode.capitalize()
+            targets = f"{target_count} target{'s' if target_count > 1 else ''}"
+            wb = " + source code" if is_whitebox else ""
+            console.print(
+                f"[dim]Estimated cost:[/] [cyan]${low:.2f}[/] - [cyan]${high:.2f}[/] "
+                f"[dim]({mode} mode, {targets}{wb})[/]"
+            )
+            console.print()
+    except Exception:
+        pass  # Non-critical — don't block scan
+
+
 def main() -> None:
     if sys.platform == "win32":
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
@@ -1017,6 +1045,13 @@ def main() -> None:
     args.local_sources = collect_local_sources(args.targets_info)
 
     is_whitebox = bool(args.local_sources)
+
+    display_cost_estimate(
+        model_name=Config.get("esprit_llm") or "",
+        scan_mode=args.scan_mode,
+        target_count=len(args.targets_info),
+        is_whitebox=is_whitebox,
+    )
 
     posthog.start(
         model=Config.get("esprit_llm"),

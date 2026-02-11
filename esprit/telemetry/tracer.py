@@ -97,6 +97,8 @@ class Tracer:
         code_before: str | None = None,
         code_after: str | None = None,
         code_diff: str | None = None,
+        cwe_id: str | None = None,
+        owasp_category: str | None = None,
     ) -> str:
         report_id = f"vuln-{len(self.vulnerability_reports) + 1:04d}"
 
@@ -139,6 +141,10 @@ class Tracer:
             report["code_after"] = code_after.strip()
         if code_diff:
             report["code_diff"] = code_diff.strip()
+        if cwe_id:
+            report["cwe_id"] = cwe_id.strip()
+        if owasp_category:
+            report["owasp_category"] = owasp_category.strip()
 
         self.vulnerability_reports.append(report)
         logger.info(f"Added vulnerability report: {report_id} - {title}")
@@ -327,6 +333,8 @@ class Tracer:
                             ("Endpoint", report.get("endpoint")),
                             ("Method", report.get("method")),
                             ("CVE", report.get("cve")),
+                            ("CWE", report.get("cwe_id")),
+                            ("OWASP", report.get("owasp_category")),
                         ]
                         cvss_score = report.get("cvss")
                         if cvss_score is not None:
@@ -377,7 +385,7 @@ class Tracer:
                 with vuln_csv_file.open("w", encoding="utf-8", newline="") as f:
                     import csv
 
-                    fieldnames = ["id", "title", "severity", "timestamp", "file"]
+                    fieldnames = ["id", "title", "severity", "cwe_id", "owasp_category", "timestamp", "file"]
                     writer = csv.DictWriter(f, fieldnames=fieldnames)
                     writer.writeheader()
 
@@ -387,6 +395,8 @@ class Tracer:
                                 "id": report["id"],
                                 "title": report["title"],
                                 "severity": report["severity"].upper(),
+                                "cwe_id": report.get("cwe_id", ""),
+                                "owasp_category": report.get("owasp_category", ""),
                                 "timestamp": report["timestamp"],
                                 "file": f"vulnerabilities/{report['id']}.md",
                             }
