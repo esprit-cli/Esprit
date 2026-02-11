@@ -483,6 +483,9 @@ class Tracer:
         return self.interrupted_content.pop(agent_id, None)
 
     def cleanup(self) -> None:
+        if getattr(self, "_cleanup_done", False):
+            return
+        self._cleanup_done = True
         self.save_run_data(mark_complete=True)
         # Persist session cost to lifetime total
         try:
@@ -493,4 +496,4 @@ class Tracer:
 
                 add_session_cost(session_cost)
         except Exception:
-            logger.debug("Failed to persist session cost")
+            logger.debug("Failed to persist session cost", exc_info=True)

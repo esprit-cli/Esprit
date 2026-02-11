@@ -89,6 +89,7 @@ class EspritDashboard {
         break;
       case 'streaming_update':
         this.streaming = delta.streaming || {};
+        this._terminalDirty = true;
         this._renderTerminal();
         break;
       case 'screenshot_update':

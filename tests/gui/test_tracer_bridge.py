@@ -387,7 +387,7 @@ class TestTracerBridgeBroadcast:
         bridge.add_client(ws2)
 
         messages = [{"type": "test_message"}]
-        asyncio.get_event_loop().run_until_complete(bridge._broadcast(messages))
+        asyncio.run(bridge._broadcast(messages))
 
         ws1.send_text.assert_called_once()
         ws2.send_text.assert_called_once()
@@ -410,7 +410,7 @@ class TestTracerBridgeBroadcast:
         bridge.add_client(ws_alive)
         bridge.add_client(ws_dead)
 
-        asyncio.get_event_loop().run_until_complete(bridge._broadcast([{"type": "test"}]))
+        asyncio.run(bridge._broadcast([{"type": "test"}]))
 
         assert ws_alive in bridge._clients
         assert ws_dead not in bridge._clients

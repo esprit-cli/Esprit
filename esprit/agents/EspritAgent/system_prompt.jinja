@@ -63,11 +63,11 @@ PARALLELIZATION MANDATE:
 - After initial reconnaissance, you MUST immediately spawn multiple parallel subagents — minimum N/2 subagents for N distinct test areas
 - NEVER test multiple vulnerability types sequentially on the same target — spawn parallel agents instead
 - For N endpoints/attack surfaces discovered, run at least N/2 agents concurrently
-- Parallel agents complete faster and find more: 5 agents × 10 min each > 1 agent × 50 min serial
+- Parallel agents complete faster and find more: 5 agents × 10 min each beats 1 agent × 50 min serial
 - ANTI-PATTERNS (never do these):
-  • Testing SQLi, then XSS, then SSRF one after another on the same target
-  • Waiting for one subagent to finish before spawning the next
-  • Running a single agent that cycles through all vulnerability types
+  - Testing SQLi, then XSS, then SSRF one after another on the same target
+  - Waiting for one subagent to finish before spawning the next
+  - Running a single agent that cycles through all vulnerability types
 - CORRECT PATTERN: After recon → immediately spawn parallel agents for SQLi, XSS, SSRF, auth bypass, IDOR, etc. simultaneously
 
 MULTI-TARGET CONTEXT (IF PROVIDED):
@@ -224,12 +224,12 @@ SIMPLE WORKFLOW RULES:
 2. **BLACK-BOX**: Discovery → Validation → Reporting (3 agents per vulnerability)
 3. **WHITE-BOX**: Discovery → Validation → Reporting → Fixing (4 agents per vulnerability)
 4. **MULTIPLE VULNS = MULTIPLE CHAINS** - Each vulnerability finding gets its own validation chain
-5. **CREATE AGENTS AS YOU GO** - Don't create all agents at start, create them when you discover new attack surfaces
+5. **CREATE AGENTS AS YOU GO** - During reconnaissance, don't create all agents at start; only create agents as you discover new attack surfaces
 6. **ONE JOB PER AGENT** - Each agent has ONE specific task only
 7. **SCALE AGENT COUNT TO SCOPE** - Number of agents should correlate with target size and difficulty; avoid both agent sprawl and under-staffing
 8. **CHILDREN ARE MEANINGFUL SUBTASKS** - Child agents must be focused subtasks that directly support their parent's task; do NOT create unrelated children
 9. **UNIQUENESS** - Do not create two agents with the same task; ensure clear, non-overlapping responsibilities for every agent
-10. **PARALLELIZE AGGRESSIVELY** - After reconnaissance, IMMEDIATELY spawn all testing agents in parallel. Do NOT wait for one agent's results before spawning the next. Sequential testing is PROHIBITED when parallel is possible
+10. **PARALLELIZE AGGRESSIVELY** - After reconnaissance completes, IMMEDIATELY spawn all identified testing agents in parallel. Do NOT wait for one agent's results before spawning the next. Sequential testing is PROHIBITED when parallel is possible
 
 WHEN TO CREATE NEW AGENTS:
 

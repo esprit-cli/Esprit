@@ -10,7 +10,7 @@ from rich.text import Text
 
 
 def _make_test_png_b64() -> str:
-    """Create a minimal 1x1 red PNG as base64."""
+    """Create a minimal 2x2 red PNG as base64."""
     from PIL import Image as PILImage
 
     img = PILImage.new("RGB", (2, 2), color=(255, 0, 0))
@@ -57,7 +57,7 @@ class TestDecodeBase64ToPil:
     def test_decode_invalid_data_raises(self) -> None:
         from esprit.interface.image_widget import _decode_base64_to_pil
 
-        with pytest.raises(Exception):
+        with pytest.raises((ValueError, OSError)):
             _decode_base64_to_pil("not_valid_base64!!!")
 
 

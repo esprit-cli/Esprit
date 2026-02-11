@@ -78,7 +78,13 @@ class BrowserScreenshotWidget(Widget):  # type: ignore[misc]
         try:
             content_widget = self.query_one("#screenshot_content", Static)
         except Exception:  # noqa: BLE001
-            return
+            # Recreate the content widget if it was removed (e.g. by textual-image)
+            try:
+                scroll = self.query_one("#screenshot_scroll", VerticalScroll)
+                content_widget = Static("", id="screenshot_content")
+                scroll.mount(content_widget)
+            except Exception:  # noqa: BLE001
+                return
 
         if not self.screenshot_b64:
             content_widget.update(Text("No screenshot available", style="dim"))
@@ -94,12 +100,13 @@ class BrowserScreenshotWidget(Widget):  # type: ignore[misc]
         try:
             from textual_image.widget import Image
 
+            # Decode first — only remove children if decode succeeds
+            pil_img = _decode_base64_to_pil(self.screenshot_b64)  # type: ignore[arg-type]
+
             # Remove old content and mount the Image widget
             scroll = self.query_one("#screenshot_scroll", VerticalScroll)
             for child in list(scroll.children):
                 child.remove()
-
-            pil_img = _decode_base64_to_pil(self.screenshot_b64)  # type: ignore[arg-type]
 
             # Create the Image widget
             img_widget = Image(pil_img)

@@ -82,6 +82,8 @@ def screenshot_to_rich_text(
         target_w = _get_available_width(max_width)
 
         orig_w, orig_h = img.size
+        if orig_w == 0 or orig_h == 0:
+            return None
         scale = target_w / orig_w
         new_w = target_w
         new_h = int(orig_h * scale)

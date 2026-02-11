@@ -15,8 +15,8 @@ class TestResponsiveLayoutHint:
 
         assert hasattr(EspritTUIApp, "_apply_responsive_layout")
 
-    def test_gui_server_none_shows_hint_in_narrow(self) -> None:
-        """When gui_server is set and width < 120, should show dashboard URL."""
+    def test_layout_source_contains_dashboard_hint(self) -> None:
+        """Check that _apply_responsive_layout source contains dashboard URL hints."""
         import inspect
         from esprit.interface.tui import EspritTUIApp
 

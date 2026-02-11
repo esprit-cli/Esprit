@@ -566,7 +566,7 @@ def build_tui_stats_text(
     else:
         stats_text.append(f"${session_cost:.2f}", style="dim white")
     if lifetime_cost >= 0.01:
-        stats_text.append(f"  all-time ", style="dim")
+        stats_text.append("  all-time ", style="dim")
         stats_text.append(f"${lifetime_cost:.2f}", style="dim #a78bfa")
 
     # Vulnerabilities

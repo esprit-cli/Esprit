@@ -169,11 +169,14 @@ class PricingDB:
             req = Request(LITELLM_PRICING_URL, headers={"User-Agent": "esprit"})
             with urlopen(req, timeout=10) as resp:
                 raw: dict[str, Any] = json.loads(resp.read())
+            updates: dict[str, ModelPricing] = {}
             count = 0
             for name, info in raw.items():
                 if isinstance(info, dict) and info.get("input_cost_per_token"):
-                    self._data[name] = ModelPricing(info)
+                    updates[name] = ModelPricing(info)
                     count += 1
+            with self._lock:
+                self._data.update(updates)
             logger.debug("Fetched %d models from LiteLLM remote pricing", count)
         except Exception:
             logger.debug("Failed to fetch remote pricing, using bundled data")
@@ -190,7 +193,7 @@ class PricingDB:
             t = threading.Thread(target=self._fetch_remote, daemon=True)
             t.start()
 
-    def _resolve_model(self, model: str) -> ModelPricing | None:
+    def _resolve_model(self, model: str, _seen: set[str] | None = None) -> ModelPricing | None:
         """Resolve a model name to its pricing entry."""
         # Strip provider prefix for bare name
         bare = model.split("/", 1)[-1] if "/" in model else model
@@ -206,17 +209,35 @@ class PricingDB:
             if key in self._data:
                 return self._data[key]
 
-        # Try alias
+        # Try alias (with cycle guard)
         alias = _MODEL_ALIASES.get(bare)
         if alias:
-            return self._resolve_model(alias)
+            if _seen is None:
+                _seen = set()
+            if alias not in _seen:
+                _seen.add(alias)
+                return self._resolve_model(alias, _seen)
 
-        # Fuzzy: substring match (e.g. "claude-sonnet-4-5-20250514" matches "claude-sonnet-4-5")
+        # Fuzzy: longest-prefix match (e.g. "claude-sonnet-4-5-20250514" matches "claude-sonnet-4-5")
         bare_lower = bare.lower()
-        for key, pricing in self._data.items():
-            key_lower = key.lower()
-            if bare_lower in key_lower or key_lower in bare_lower:
-                return pricing
+        best: ModelPricing | None = None
+        best_len = 0
+        for key, pricing in list(self._data.items()):
+            key_bare = key.split("/", 1)[-1].lower() if "/" in key else key.lower()
+            # Model name must start with the DB key (or vice versa) on a boundary
+            if bare_lower.startswith(key_bare) and len(key_bare) > best_len:
+                # Ensure match is on a boundary (end, or followed by dash/digit)
+                rest = bare_lower[len(key_bare):]
+                if not rest or rest[0] in ("-", ".", ":") or rest[0].isdigit():
+                    best = pricing
+                    best_len = len(key_bare)
+            elif key_bare.startswith(bare_lower) and len(bare_lower) > best_len:
+                rest = key_bare[len(bare_lower):]
+                if not rest or rest[0] in ("-", ".", ":") or rest[0].isdigit():
+                    best = pricing
+                    best_len = len(bare_lower)
+        if best is not None:
+            return best
 
         return None
 
@@ -248,13 +269,16 @@ class PricingDB:
 
 # Module-level singleton
 _db: PricingDB | None = None
+_db_lock = threading.Lock()
 
 
 def get_pricing_db() -> PricingDB:
     """Get or create the global pricing database."""
     global _db
     if _db is None:
-        _db = PricingDB()
+        with _db_lock:
+            if _db is None:
+                _db = PricingDB()
     return _db
 
 
@@ -284,6 +308,9 @@ def _write_usage(data: dict[str, Any]) -> None:
         logger.debug("Failed to write usage file")
 
 
+_usage_lock = threading.Lock()
+
+
 def get_lifetime_cost() -> float:
     """Read the accumulated lifetime cost from disk."""
     return float(_read_usage().get("lifetime_cost", 0.0))
@@ -291,9 +318,10 @@ def get_lifetime_cost() -> float:
 
 def add_session_cost(session_cost: float) -> float:
     """Add session cost to lifetime total. Returns new lifetime total."""
-    usage = _read_usage()
-    lifetime = float(usage.get("lifetime_cost", 0.0)) + session_cost
-    usage["lifetime_cost"] = round(lifetime, 4)
-    usage["last_updated"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-    _write_usage(usage)
+    with _usage_lock:
+        usage = _read_usage()
+        lifetime = float(usage.get("lifetime_cost", 0.0)) + session_cost
+        usage["lifetime_cost"] = round(lifetime, 4)
+        usage["last_updated"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        _write_usage(usage)
     return lifetime

@@ -110,7 +110,7 @@ class GUIServer:
             except WebSocketDisconnect:
                 pass
             except Exception:  # noqa: BLE001
-                pass
+                logger.debug("WebSocket handler error", exc_info=True)
             finally:
                 self._bridge.remove_client(websocket)
 
@@ -142,7 +142,7 @@ class GUIServer:
         try:
             self._loop.run_until_complete(server.serve())
         except Exception:  # noqa: BLE001
-            pass
+            logger.debug("GUI server stopped with error", exc_info=True)
 
     def get_url(self) -> str:
         return f"http://localhost:{self.port}"
