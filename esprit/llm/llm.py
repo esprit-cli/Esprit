@@ -20,7 +20,6 @@ from esprit.llm.utils import (
     parse_tool_invocations,
 )
 from esprit.skills import load_skills
-from esprit.tools import get_tools_prompt
 from esprit.utils.resource_paths import get_esprit_resource_path
 
 # Provider OAuth integration (Codex, Copilot, Gemini, Anthropic, Antigravity)
@@ -142,7 +141,6 @@ class LLM:
             env.globals["get_skill"] = lambda name: skill_content.get(name, "")
 
             result = env.get_template("system_prompt.jinja").render(
-                get_tools_prompt=get_tools_prompt,
                 loaded_skill_names=list(skill_content.keys()),
                 **skill_content,
             )
@@ -157,7 +155,7 @@ class LLM:
             self.agent_id = agent_id
 
     async def generate(
-        self, conversation_history: list[dict[str, Any]]
+        self, conversation_history: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None
     ) -> AsyncIterator[LLMResponse]:
         messages = self._prepare_messages(conversation_history)
         max_retries = int(Config.get("esprit_llm_max_retries") or "5")
@@ -166,10 +164,10 @@ class LLM:
         while attempt <= max_retries:
             try:
                 if self._is_antigravity():
-                    async for response in self._stream_antigravity(messages):
+                    async for response in self._stream_antigravity(messages, tools=tools):
                         yield response
                 else:
-                    async for response in self._stream(messages):
+                    async for response in self._stream(messages, tools=tools):
                         yield response
                 return  # noqa: TRY300
             except Exception as e:  # noqa: BLE001
@@ -188,13 +186,13 @@ class LLM:
                 await asyncio.sleep(wait)
                 attempt += 1
 
-    async def _stream(self, messages: list[dict[str, Any]]) -> AsyncIterator[LLMResponse]:
+    async def _stream(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None) -> AsyncIterator[LLMResponse]:
         accumulated = ""
         chunks: list[Any] = []
         done_streaming = 0
 
         self._total_stats.requests += 1
-        response = await acompletion(**self._build_completion_args(messages), stream=True)
+        response = await acompletion(**self._build_completion_args(messages, tools=tools), stream=True)
 
         async for chunk in response:
             chunks.append(chunk)
@@ -215,17 +213,27 @@ class LLM:
                     continue
                 yield LLMResponse(content=accumulated)
 
-        if chunks:
-            self._update_usage_stats(stream_chunk_builder(chunks))
+        assembled = stream_chunk_builder(chunks) if chunks else None
+        if assembled:
+            self._update_usage_stats(assembled)
 
-        accumulated = fix_incomplete_tool_call(_truncate_to_first_function(accumulated))
-        yield LLMResponse(
-            content=accumulated,
-            tool_invocations=parse_tool_invocations(accumulated),
-            thinking_blocks=self._extract_thinking(chunks),
-        )
+        # Try native tool calls first, fall back to XML parsing
+        native_tool_calls = self._extract_native_tool_calls(assembled)
+        if native_tool_calls:
+            yield LLMResponse(
+                content=accumulated,
+                tool_invocations=native_tool_calls,
+                thinking_blocks=self._extract_thinking(chunks),
+            )
+        else:
+            accumulated = fix_incomplete_tool_call(_truncate_to_first_function(accumulated))
+            yield LLMResponse(
+                content=accumulated,
+                tool_invocations=parse_tool_invocations(accumulated),
+                thinking_blocks=self._extract_thinking(chunks),
+            )
 
-    async def _stream_antigravity(self, messages: list[dict[str, Any]]) -> AsyncIterator[LLMResponse]:
+    async def _stream_antigravity(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None) -> AsyncIterator[LLMResponse]:
         """Stream responses from the Antigravity Cloud Code API directly."""
         self._total_stats.requests += 1
 
@@ -261,6 +269,7 @@ class LLM:
             model=model,
             project_id=project_id,
             max_tokens=int(Config.get("esprit_max_tokens") or "16384"),
+            tools=tools,
         )
         headers = build_request_headers(access_token, model)
 
@@ -379,9 +388,25 @@ class LLM:
             )
 
         accumulated = fix_incomplete_tool_call(_truncate_to_first_function(accumulated))
+        # Convert native tool calls from Cloud Code if present
+        native_invocations = None
+        if all_tool_calls:
+            native_invocations = []
+            for tc in all_tool_calls:
+                tc_args = tc.get("args", {})
+                if isinstance(tc_args, str):
+                    try:
+                        tc_args = json.loads(tc_args)
+                    except (json.JSONDecodeError, ValueError):
+                        tc_args = {}
+                native_invocations.append({
+                    "toolName": tc.get("name", ""),
+                    "args": tc_args,
+                    "tool_call_id": tc.get("id", ""),
+                })
         yield LLMResponse(
             content=accumulated,
-            tool_invocations=parse_tool_invocations(accumulated),
+            tool_invocations=native_invocations or parse_tool_invocations(accumulated),
             thinking_blocks=all_thinking or None,
         )
 
@@ -428,7 +453,7 @@ class LLM:
             if tracer and agent_id:
                 tracer.compacting_agents.discard(agent_id)
 
-    def _build_completion_args(self, messages: list[dict[str, Any]]) -> dict[str, Any]:
+    def _build_completion_args(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None) -> dict[str, Any]:
         if not self._supports_vision():
             messages = self._strip_images(messages)
 
@@ -438,6 +463,9 @@ class LLM:
             "timeout": self.config.timeout,
             "stream_options": {"include_usage": True},
         }
+
+        if tools:
+            args["tools"] = tools
 
         # Translate google/ → gemini/ for litellm compatibility
         if self.config.model_name and self.config.model_name.lower().startswith("google/"):
@@ -497,6 +525,31 @@ class LLM:
         except Exception:  # noqa: BLE001, S110  # nosec B110
             pass
         return None
+
+    def _extract_native_tool_calls(self, response: Any) -> list[dict[str, Any]] | None:
+        """Extract native tool calls from a litellm assembled response."""
+        if not response or not response.choices:
+            return None
+        msg = response.choices[0].message
+        tool_calls = getattr(msg, "tool_calls", None)
+        if not tool_calls:
+            return None
+        result = []
+        for tc in tool_calls:
+            try:
+                args = (
+                    json.loads(tc.function.arguments)
+                    if isinstance(tc.function.arguments, str)
+                    else (tc.function.arguments or {})
+                )
+            except (json.JSONDecodeError, AttributeError):
+                args = {}
+            result.append({
+                "toolName": tc.function.name,
+                "args": args,
+                "tool_call_id": tc.id,
+            })
+        return result or None
 
     def _update_usage_stats(self, response: Any) -> None:
         try:

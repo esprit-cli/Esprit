@@ -321,25 +321,63 @@ async def process_tool_invocations(
 
     tracer, agent_id = _get_tracer_and_agent_id(agent_state)
 
+    # Detect native tool calling mode
+    is_native = any(inv.get("tool_call_id") for inv in tool_invocations)
+
     for tool_inv in tool_invocations:
         observation_xml, images, tool_should_finish = await _execute_single_tool(
             tool_inv, agent_state, tracer, agent_id
         )
-        observation_parts.append(observation_xml)
-        all_images.extend(images)
+
+        if is_native:
+            # Native mode: each result is a separate role=tool message
+            tool_call_id = tool_inv.get("tool_call_id", "")
+            tool_name = tool_inv.get("toolName", "unknown")
+            # Extract plain result text (strip XML wrapper)
+            result_text = _extract_plain_result(observation_xml, tool_name)
+            if images:
+                content: list[dict[str, Any]] = [{"type": "text", "text": result_text}]
+                content.extend(images)
+                conversation_history.append({
+                    "role": "tool",
+                    "tool_call_id": tool_call_id,
+                    "content": content,
+                })
+            else:
+                conversation_history.append({
+                    "role": "tool",
+                    "tool_call_id": tool_call_id,
+                    "content": result_text,
+                })
+        else:
+            observation_parts.append(observation_xml)
+            all_images.extend(images)
 
         if tool_should_finish:
             should_agent_finish = True
 
-    if all_images:
-        content = [{"type": "text", "text": "Tool Results:\n\n" + "\n\n".join(observation_parts)}]
-        content.extend(all_images)
-        conversation_history.append({"role": "user", "content": content})
-    else:
-        observation_content = "Tool Results:\n\n" + "\n\n".join(observation_parts)
-        conversation_history.append({"role": "user", "content": observation_content})
+    # Legacy XML mode: combine all results into one user message
+    if not is_native and observation_parts:
+        if all_images:
+            content = [{"type": "text", "text": "Tool Results:\n\n" + "\n\n".join(observation_parts)}]
+            content.extend(all_images)
+            conversation_history.append({"role": "user", "content": content})
+        else:
+            observation_content = "Tool Results:\n\n" + "\n\n".join(observation_parts)
+            conversation_history.append({"role": "user", "content": observation_content})
 
     return should_agent_finish
+
+
+def _extract_plain_result(observation_xml: str, tool_name: str) -> str:
+    """Extract plain result text from XML-wrapped tool result."""
+    # Try to extract content between <result> tags
+    start = observation_xml.find("<result>")
+    end = observation_xml.find("</result>")
+    if start != -1 and end != -1:
+        return observation_xml[start + len("<result>"):end]
+    # Fallback: return as-is
+    return observation_xml
 
 
 def extract_screenshot_from_result(result: Any) -> str | None:

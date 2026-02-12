@@ -87,6 +87,66 @@ def _load_xml_schema(path: Path) -> Any:
         return tools_dict
 
 
+_XML_TYPE_TO_JSON: dict[str, str] = {
+    "string": "string",
+    "boolean": "boolean",
+    "number": "number",
+    "integer": "integer",
+    "dict": "object",
+    "list": "array",
+}
+
+
+def _xml_to_json_schema(tool_name: str, xml_string: str) -> dict[str, Any] | None:
+    """Convert a single tool's XML schema to litellm-compatible JSON tool definition."""
+    try:
+        root = DefusedET.fromstring(xml_string)
+    except DefusedET.ParseError:
+        logger.warning(f"Failed to parse XML schema for tool: {tool_name}")
+        return None
+
+    # Build description from <description> + <details>
+    desc_el = root.find("description")
+    details_el = root.find("details")
+    description = (desc_el.text or "").strip() if desc_el is not None else ""
+    if details_el is not None and details_el.text:
+        description = f"{description}\n\n{details_el.text.strip()}"
+
+    # Build parameters
+    properties: dict[str, Any] = {}
+    required: list[str] = []
+
+    params_el = root.find("parameters")
+    if params_el is not None:
+        for param in params_el.findall("parameter"):
+            param_name = param.attrib.get("name")
+            if not param_name:
+                continue
+            param_type = param.attrib.get("type", "string")
+            json_type = _XML_TYPE_TO_JSON.get(param_type, "string")
+
+            param_desc_el = param.find("description")
+            param_desc = (param_desc_el.text or "").strip() if param_desc_el is not None else ""
+
+            properties[param_name] = {"type": json_type, "description": param_desc}
+
+            if param.attrib.get("required", "false").lower() == "true":
+                required.append(param_name)
+
+    parameters: dict[str, Any] = {"type": "object", "properties": properties}
+    if required:
+        parameters["required"] = required
+
+    return {
+        "type": "function",
+        "function": {
+            "name": tool_name,
+            "description": description,
+            "parameters": parameters,
+        },
+    }
+
+
 def _parse_param_schema(tool_xml: str) -> dict[str, Any]:
     params: set[str] = set()
     required: set[str] = set()
@@ -187,6 +247,12 @@ def register_tool(
             param_schema = _parse_param_schema(xml_schema if isinstance(xml_schema, str) else "")
             _tool_param_schemas[str(func_dict["name"])] = param_schema
 
+            # Generate JSON schema for native tool calling
+            if isinstance(xml_schema, str):
+                json_schema = _xml_to_json_schema(f.__name__, xml_schema)
+                if json_schema:
+                    func_dict["json_schema"] = json_schema
+
         tools.append(func_dict)
         _tools_by_name[str(func_dict["name"])] = f
 
@@ -226,6 +292,24 @@ def should_execute_in_sandbox(tool_name: str) -> bool:
         if tool.get("name") == tool_name:
             return bool(tool.get("sandbox_execution", True))
     return True
+
+
+def get_tools_json(tool_names: list[str] | None = None) -> list[dict[str, Any]]:
+    """Return JSON tool definitions for native tool calling via litellm.
+
+    Args:
+        tool_names: If provided, only return schemas for these tools.
+                    If None, return all tools that have JSON schemas.
+    """
+    result = []
+    for tool in tools:
+        json_schema = tool.get("json_schema")
+        if not json_schema:
+            continue
+        if tool_names is not None and tool["name"] not in tool_names:
+            continue
+        result.append(json_schema)
+    return result
 
 
 def get_tools_prompt() -> str:

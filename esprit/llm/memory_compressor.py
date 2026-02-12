@@ -121,7 +121,15 @@ def _summarize_messages(
     for msg in messages:
         role = msg.get("role", "unknown")
         text = _extract_message_text(msg)
-        formatted.append(f"{role}: {text}")
+        # Include tool name for tool result messages
+        if role == "tool":
+            tool_call_id = msg.get("tool_call_id", "")
+            formatted.append(f"tool_result({tool_call_id}): {text}")
+        elif role == "assistant" and msg.get("tool_calls"):
+            tool_names = ", ".join(tc.get("function", {}).get("name", "?") for tc in msg["tool_calls"])
+            formatted.append(f"assistant [called: {tool_names}]: {text}")
+        else:
+            formatted.append(f"{role}: {text}")
 
     conversation = "\n".join(formatted)
     prompt = SUMMARY_PROMPT_TEMPLATE.format(conversation=conversation)

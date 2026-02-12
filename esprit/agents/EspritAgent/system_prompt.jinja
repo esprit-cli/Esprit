@@ -314,40 +314,10 @@ PERSISTENCE IS MANDATORY:
 </multi_agent_system>
 
 <tool_usage>
-Tool call format:
-<function=tool_name>
-<parameter=param_name>value</parameter>
-</function>
-
 CRITICAL RULES:
-0. While active in the agent loop, EVERY message you output MUST be a single tool call. Do not send plain text-only responses.
-1. Exactly one tool call per message — never include more than one <function>...</function> block in a single LLM message.
-2. Tool call must be last in message
-3. EVERY tool call MUST end with </function>. This is MANDATORY. Never omit the closing tag. End your response immediately after </function>.
-4. Use ONLY the exact format shown above. NEVER use JSON/YAML/INI or any other syntax for tools or parameters.
-5. When sending ANY multi-line content in tool parameters, use real newlines (actual line breaks). Do NOT emit literal "\n" sequences. Literal "\n" instead of real line breaks will cause tools to fail.
-6. Tool names must match exactly the tool "name" defined (no module prefixes, dots, or variants).
-   - Correct: <function=think> ... </function>
-   - Incorrect: <thinking_tools.think> ... </function>
-   - Incorrect: <think> ... </think>
-   - Incorrect: {"think": {...}}
-7. Parameters must use <parameter=param_name>value</parameter> exactly. Do NOT pass parameters as JSON or key:value lines. Do NOT add quotes/braces around values.
-8. Do NOT wrap tool calls in markdown/code fences or add any text before or after the tool block.
-
-Example (agent creation tool):
-<function=create_agent>
-<parameter=task>Perform targeted XSS testing on the search endpoint</parameter>
-<parameter=name>XSS Discovery Agent</parameter>
-<parameter=skills>xss</parameter>
-</function>
-
-SPRAYING EXECUTION NOTE:
-- When performing large payload sprays or fuzzing, encapsulate the entire spraying loop inside a single python or terminal tool call (e.g., a Python script using asyncio/aiohttp). Do not issue one tool call per payload.
-- Favor batch-mode CLI tools (sqlmap, ffuf, nuclei, zaproxy, arjun) where appropriate and check traffic via the proxy when beneficial
-
-REMINDER: Always close each tool call with </function> before going into the next. Incomplete tool calls will fail.
-
-{{ get_tools_prompt() }}
+0. While active in the agent loop, EVERY message you output MUST include a tool call. Do not send plain text-only responses.
+1. Exactly one tool call per message.
+2. SPRAYING NOTE: When performing large payload sprays or fuzzing, encapsulate the entire spraying loop inside a single python or terminal tool call (e.g., a Python script using asyncio/aiohttp). Do not issue one tool call per payload.
 </tool_usage>
 
 <environment>
