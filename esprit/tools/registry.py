@@ -1,13 +1,13 @@
 import inspect
+import html
 import logging
 import os
+import re
 from collections.abc import Callable
 from functools import wraps
 from inspect import signature
 from pathlib import Path
 from typing import Any
-
-import defusedxml.ElementTree as DefusedET
 
 from esprit.utils.resource_paths import get_esprit_resource_path
 
@@ -44,7 +44,7 @@ def _process_dynamic_content(content: str) -> str:
     return content
 
 
-def _load_xml_schema(path: Path) -> Any:
+def _load_xml_schema(path: Path) -> dict[str, str] | None:
     if not path.exists():
         return None
     try:
@@ -54,7 +54,7 @@ def _load_xml_schema(path: Path) -> Any:
 
         start_tag = '<tool name="'
         end_tag = "</tool>"
-        tools_dict = {}
+        tools_dict: dict[str, str] = {}
 
         pos = 0
         while True:
@@ -96,42 +96,79 @@ _XML_TYPE_TO_JSON: dict[str, str] = {
     "list": "array",
 }
 
+_EXAMPLES_BLOCK_RE = re.compile(r"<examples>.*?</examples>", re.DOTALL | re.IGNORECASE)
+_PARAMETER_BLOCK_RE = re.compile(
+    r"<parameter(?P<attrs>[^>]*)>(?P<body>.*?)</parameter>",
+    re.DOTALL | re.IGNORECASE,
+)
+_TAG_ATTR_RE = re.compile(r'([a-zA-Z_][a-zA-Z0-9_-]*)="([^"]*)"')
+
+
+def _strip_examples_block(xml_string: str) -> str:
+    return _EXAMPLES_BLOCK_RE.sub("", xml_string)
+
+
+def _extract_first_tag_body(xml_string: str, tag: str) -> str:
+    match = re.search(rf"<{tag}\b[^>]*>(.*?)</{tag}>", xml_string, re.DOTALL | re.IGNORECASE)
+    if not match:
+        return ""
+    return html.unescape(match.group(1).strip())
+
+
+def _parse_tag_attributes(attr_text: str) -> dict[str, str]:
+    attrs: dict[str, str] = {}
+    for key, value in _TAG_ATTR_RE.findall(attr_text):
+        attrs[key.lower()] = html.unescape(value.strip())
+    return attrs
+
+
+def _iter_tool_parameters(tool_xml: str) -> list[dict[str, str]]:
+    params_section = _extract_first_tag_body(tool_xml, "parameters")
+    if not params_section:
+        return []
+
+    parsed: list[dict[str, str]] = []
+    for match in _PARAMETER_BLOCK_RE.finditer(params_section):
+        attrs = _parse_tag_attributes(match.group("attrs"))
+        name = attrs.get("name")
+        if not name:
+            continue
+
+        param_desc = _extract_first_tag_body(match.group("body"), "description")
+        parsed.append({
+            "name": name,
+            "type": attrs.get("type", "string"),
+            "required": attrs.get("required", "false"),
+            "description": param_desc,
+        })
+
+    return parsed
+
 
 def _xml_to_json_schema(tool_name: str, xml_string: str) -> dict[str, Any] | None:
     """Convert a single tool's XML schema to litellm-compatible JSON tool definition."""
-    try:
-        root = DefusedET.fromstring(xml_string)
-    except DefusedET.ParseError:
-        logger.warning(f"Failed to parse XML schema for tool: {tool_name}")
-        return None
+    sanitized_xml = _strip_examples_block(xml_string)
 
     # Build description from <description> + <details>
-    desc_el = root.find("description")
-    details_el = root.find("details")
-    description = (desc_el.text or "").strip() if desc_el is not None else ""
-    if details_el is not None and details_el.text:
-        description = f"{description}\n\n{details_el.text.strip()}"
+    description = _extract_first_tag_body(sanitized_xml, "description")
+    details = _extract_first_tag_body(sanitized_xml, "details")
+    if details:
+        description = f"{description}\n\n{details}" if description else details
 
     # Build parameters
     properties: dict[str, Any] = {}
     required: list[str] = []
 
-    params_el = root.find("parameters")
-    if params_el is not None:
-        for param in params_el.findall("parameter"):
-            param_name = param.attrib.get("name")
-            if not param_name:
-                continue
-            param_type = param.attrib.get("type", "string")
-            json_type = _XML_TYPE_TO_JSON.get(param_type, "string")
+    for param in _iter_tool_parameters(sanitized_xml):
+        param_name = param["name"]
+        param_type = param.get("type", "string").lower()
+        json_type = _XML_TYPE_TO_JSON.get(param_type, "string")
+        param_desc = param.get("description", "")
 
-            param_desc_el = param.find("description")
-            param_desc = (param_desc_el.text or "").strip() if param_desc_el is not None else ""
+        properties[param_name] = {"type": json_type, "description": param_desc}
 
-            properties[param_name] = {"type": json_type, "description": param_desc}
-
-            if param.attrib.get("required", "false").lower() == "true":
-                required.append(param_name)
+        if param.get("required", "false").lower() == "true":
+            required.append(param_name)
 
     parameters: dict[str, Any] = {"type": "object", "properties": properties}
     if required:
@@ -151,25 +188,13 @@ def _parse_param_schema(tool_xml: str) -> dict[str, Any]:
     params: set[str] = set()
     required: set[str] = set()
 
-    params_start = tool_xml.find("<parameters>")
-    params_end = tool_xml.find("</parameters>")
-
-    if params_start == -1 or params_end == -1:
-        return {"params": set(), "required": set(), "has_params": False}
-
-    params_section = tool_xml[params_start : params_end + len("</parameters>")]
-
-    try:
-        root = DefusedET.fromstring(params_section)
-    except DefusedET.ParseError:
-        return {"params": set(), "required": set(), "has_params": False}
-
-    for param in root.findall(".//parameter"):
-        name = param.attrib.get("name")
+    sanitized_xml = _strip_examples_block(tool_xml)
+    for param in _iter_tool_parameters(sanitized_xml):
+        name = param.get("name")
         if not name:
             continue
         params.add(name)
-        if param.attrib.get("required", "false").lower() == "true":
+        if param.get("required", "false").lower() == "true":
             required.add(name)
 
     return {"params": params, "required": required, "has_params": bool(params or required)}
@@ -213,7 +238,7 @@ def register_tool(
     func: Callable[..., Any] | None = None, *, sandbox_execution: bool = True
 ) -> Callable[..., Any]:
     def decorator(f: Callable[..., Any]) -> Callable[..., Any]:
-        func_dict = {
+        func_dict: dict[str, Any] = {
             "name": f.__name__,
             "function": f,
             "module": _get_module_name(f),
@@ -301,7 +326,7 @@ def get_tools_json(tool_names: list[str] | None = None) -> list[dict[str, Any]]:
         tool_names: If provided, only return schemas for these tools.
                     If None, return all tools that have JSON schemas.
     """
-    result = []
+    result: list[dict[str, Any]] = []
     for tool in tools:
         json_schema = tool.get("json_schema")
         if not json_schema:
@@ -320,10 +345,10 @@ def get_tools_prompt() -> str:
             tools_by_module[module] = []
         tools_by_module[module].append(tool)
 
-    xml_sections = []
+    xml_sections: list[str] = []
     for module, module_tools in sorted(tools_by_module.items()):
         tag_name = f"{module}_tools"
-        section_parts = [f"<{tag_name}>"]
+        section_parts: list[str] = [f"<{tag_name}>"]
         for tool in module_tools:
             tool_xml = tool.get("xml_schema", "")
             if tool_xml:

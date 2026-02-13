@@ -369,12 +369,12 @@ async def process_tool_invocations(
     return should_agent_finish
 
 
-def _extract_plain_result(observation_xml: str, tool_name: str) -> str:
+def _extract_plain_result(observation_xml: str, _tool_name: str) -> str:
     """Extract plain result text from XML-wrapped tool result."""
     # Try to extract content between <result> tags
     start = observation_xml.find("<result>")
-    end = observation_xml.find("</result>")
-    if start != -1 and end != -1:
+    end = observation_xml.rfind("</result>")
+    if start != -1 and end != -1 and end >= start + len("<result>"):
         return observation_xml[start + len("<result>"):end]
     # Fallback: return as-is
     return observation_xml

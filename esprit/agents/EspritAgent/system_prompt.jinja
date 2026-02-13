@@ -327,9 +327,11 @@ Fallback-mode requirements:
 CRITICAL RULES:
 0. While active in the agent loop, EVERY message you output MUST include a tool call. Do not send plain text-only responses.
 1. Exactly one tool call per message.
-2. SPRAYING NOTE: When performing large payload sprays or fuzzing, encapsulate the entire spraying loop inside a single python or terminal tool call (e.g., a Python script using asyncio/aiohttp). Do not issue one tool call per payload.
+2. SPRAYING NOTE: When performing large payload sprays or fuzzing, encapsulate the entire spraying loop inside a single python or terminal tool call (e.g., a Python script using asyncio/aiohttp). Do not issue one tool call per payload. Favor batch-mode CLI tools (sqlmap, ffuf, nuclei, zaproxy, arjun) where appropriate and check traffic via the proxy when beneficial.
 
+{% if not native_tools_enabled %}
 {{ get_tools_prompt() }}
+{% endif %}
 </tool_usage>
 
 <environment>

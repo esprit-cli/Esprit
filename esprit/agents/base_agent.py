@@ -380,18 +380,30 @@ class BaseAgent(metaclass=AgentMeta):
             if hasattr(final_response, "tool_invocations") and final_response.tool_invocations
             else []
         )
-        if actions and actions[0].get("tool_call_id"):
-            native_tool_calls = [
-                {
-                    "id": inv["tool_call_id"],
-                    "type": "function",
-                    "function": {
-                        "name": inv["toolName"],
-                        "arguments": json.dumps(inv["args"]),
-                    },
-                }
-                for inv in actions
-            ]
+        if any(inv.get("tool_call_id") for inv in actions):
+            tool_calls_payload: list[dict[str, Any]] = []
+            for inv in actions:
+                tool_call_id = str(inv.get("tool_call_id") or "")
+                if not tool_call_id:
+                    continue
+
+                try:
+                    arguments_json = json.dumps(inv.get("args", {}), default=str)
+                except (TypeError, ValueError):
+                    arguments_json = "{}"
+
+                tool_calls_payload.append(
+                    {
+                        "id": tool_call_id,
+                        "type": "function",
+                        "function": {
+                            "name": str(inv.get("toolName") or ""),
+                            "arguments": arguments_json,
+                        },
+                    }
+                )
+
+            native_tool_calls = tool_calls_payload or None
 
         thinking_blocks = getattr(final_response, "thinking_blocks", None)
         self.state.add_message(
@@ -408,12 +420,6 @@ class BaseAgent(metaclass=AgentMeta):
                 agent_id=self.state.agent_id,
             )
 
-        actions = (
-            final_response.tool_invocations
-            if hasattr(final_response, "tool_invocations") and final_response.tool_invocations
-            else []
-        )
-
         if actions:
             return await self._execute_actions(actions, tracer)
 
@@ -421,6 +427,9 @@ class BaseAgent(metaclass=AgentMeta):
 
     def _get_agent_tools(self) -> list[dict[str, Any]] | None:
         """Get JSON tool definitions for native tool calling."""
+        if not self.llm.supports_native_tool_calling():
+            return None
+
         try:
             from esprit.tools.registry import get_tools_json
 

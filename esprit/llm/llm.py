@@ -143,6 +143,7 @@ class LLM:
 
             result = env.get_template("system_prompt.jinja").render(
                 get_tools_prompt=get_tools_prompt,
+                native_tools_enabled=self.supports_native_tool_calling(),
                 loaded_skill_names=list(skill_content.keys()),
                 **skill_content,
             )
@@ -155,6 +156,18 @@ class LLM:
             self.agent_name = agent_name
         if agent_id:
             self.agent_id = agent_id
+
+    def supports_native_tool_calling(self) -> bool:
+        if not self.config.model_name:
+            return False
+
+        if self._is_antigravity():
+            return True
+
+        try:
+            return bool(litellm.supports_function_calling(model=self.config.model_name))
+        except Exception:  # noqa: BLE001
+            return False
 
     async def generate(
         self, conversation_history: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None
@@ -561,18 +574,46 @@ class LLM:
             return None
         result = []
         for tc in tool_calls:
+            tool_name = ""
+            tool_call_id = ""
+            args: dict[str, Any] = {}
+
             try:
-                args = (
-                    json.loads(tc.function.arguments)
-                    if isinstance(tc.function.arguments, str)
-                    else (tc.function.arguments or {})
-                )
-            except (json.JSONDecodeError, AttributeError):
+                function_payload = getattr(tc, "function", None)
+                if isinstance(tc, dict) and not function_payload:
+                    function_payload = tc.get("function")
+
+                raw_name = getattr(function_payload, "name", "")
+                if isinstance(function_payload, dict):
+                    raw_name = function_payload.get("name", raw_name)
+                tool_name = str(raw_name or "")
+
+                raw_call_id = getattr(tc, "id", "")
+                if isinstance(tc, dict):
+                    raw_call_id = tc.get("id", raw_call_id)
+                tool_call_id = str(raw_call_id or "")
+
+                raw_args: Any = None
+                if function_payload is not None:
+                    raw_args = getattr(function_payload, "arguments", None)
+                    if isinstance(function_payload, dict):
+                        raw_args = function_payload.get("arguments", raw_args)
+
+                if isinstance(raw_args, str):
+                    parsed = json.loads(raw_args)
+                    args = parsed if isinstance(parsed, dict) else {}
+                elif isinstance(raw_args, dict):
+                    args = raw_args
+            except (AttributeError, TypeError, ValueError, json.JSONDecodeError):
                 args = {}
+
+            if not tool_name:
+                continue
+
             result.append({
-                "toolName": tc.function.name,
+                "toolName": tool_name,
                 "args": args,
-                "tool_call_id": tc.id,
+                "tool_call_id": tool_call_id,
             })
         return result or None
 
