@@ -321,8 +321,14 @@ async def process_tool_invocations(
 
     tracer, agent_id = _get_tracer_and_agent_id(agent_state)
 
-    # Detect native tool calling mode
-    is_native = any(inv.get("tool_call_id") for inv in tool_invocations)
+    # Native mode requires every invocation to carry a tool_call_id.
+    # Mixed payloads (some with IDs, some without) fall back to legacy XML mode.
+    tool_call_ids = [str(inv.get("tool_call_id") or "") for inv in tool_invocations]
+    has_all_tool_call_ids = bool(tool_call_ids) and all(tool_call_ids)
+    has_mixed_tool_call_ids = any(tool_call_ids) and not has_all_tool_call_ids
+    is_native = has_all_tool_call_ids
+    if has_mixed_tool_call_ids:
+        is_native = False
 
     for tool_inv in tool_invocations:
         observation_xml, images, tool_should_finish = await _execute_single_tool(
@@ -331,7 +337,7 @@ async def process_tool_invocations(
 
         if is_native:
             # Native mode: each result is a separate role=tool message
-            tool_call_id = tool_inv.get("tool_call_id", "")
+            tool_call_id = str(tool_inv.get("tool_call_id") or "")
             tool_name = tool_inv.get("toolName", "unknown")
             # Extract plain result text (strip XML wrapper)
             result_text = _extract_plain_result(observation_xml, tool_name)
