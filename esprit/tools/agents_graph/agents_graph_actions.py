@@ -1,9 +1,12 @@
+import logging
 import threading
 from datetime import UTC, datetime
 from typing import Any, Literal
 
 from esprit.tools.registry import register_tool
 
+
+logger = logging.getLogger(__name__)
 
 _agent_graph: dict[str, Any] = {
     "nodes": {},
@@ -20,16 +23,113 @@ _agent_instances: dict[str, Any] = {}
 
 _agent_states: dict[str, Any] = {}
 
+# ── Inherited context summarization ──────────────────────────────
+# When a subagent inherits parent context, long histories are compressed
+# to avoid sending tens of thousands of redundant tokens every turn.
+
+_INHERIT_SUMMARIZE_THRESHOLD = 15  # Summarize if parent history exceeds this
+_RECENT_MESSAGES_TO_KEEP = 10  # Keep last N messages verbatim after summary
+
+
+def _format_messages_as_text(messages: list[dict[str, Any]]) -> str:
+    """Format messages as readable text with role labels."""
+    from esprit.llm.memory_compressor import extract_message_text
+
+    parts: list[str] = []
+    for msg in messages:
+        role = msg.get("role", "unknown")
+        text = extract_message_text(msg)
+        if not text.strip():
+            continue
+        if role == "tool":
+            tool_call_id = msg.get("tool_call_id", "")
+            parts.append(f"tool_result({tool_call_id}): {text}")
+        elif role == "assistant" and msg.get("tool_calls"):
+            tool_names = ", ".join(
+                tc.get("function", {}).get("name", "?") for tc in msg["tool_calls"]
+            )
+            parts.append(f"assistant [called: {tool_names}]: {text}")
+        else:
+            parts.append(f"{role}: {text}")
+    return "\n".join(parts)
+
+
+def _format_messages_brief(messages: list[dict[str, Any]]) -> str:
+    """Format messages as truncated text (fallback when LLM summary fails)."""
+    from esprit.llm.memory_compressor import extract_message_text
+
+    parts: list[str] = []
+    for msg in messages:
+        role = msg.get("role", "unknown")
+        text = extract_message_text(msg)
+        if not text.strip():
+            continue
+        if len(text) > 500:
+            text = text[:250] + "\n...[truncated]...\n" + text[-250:]
+        parts.append(f"{role}: {text}")
+    return "\n".join(parts)
+
+
+def _summarize_inherited_context(
+    messages: list[dict[str, Any]],
+    child_task: str,
+) -> str:
+    """Compress parent conversation for subagent inheritance.
+
+    For long histories, summarises old messages via an LLM call and keeps
+    the most recent messages verbatim.  Falls back to truncated text
+    formatting if the LLM call fails.
+    """
+    old_messages = messages[:-_RECENT_MESSAGES_TO_KEEP]
+    recent_messages = messages[-_RECENT_MESSAGES_TO_KEEP:]
+
+    # Try LLM summarisation for old messages
+    summary = ""
+    try:
+        from esprit.config import Config
+        from esprit.llm.memory_compressor import summarize_messages
+
+        model = Config.get("esprit_llm")
+        if model:
+            summary_msg = summarize_messages(old_messages, model, timeout=30)
+            summary = summary_msg.get("content", "")
+    except Exception:  # noqa: BLE001
+        logger.warning("LLM summarisation of inherited context failed, using truncated text")
+
+    if not summary.strip():
+        summary = _format_messages_brief(old_messages)
+
+    recent_text = _format_messages_as_text(recent_messages)
+
+    return (
+        f"<earlier_context_summary message_count='{len(old_messages)}'>\n"
+        f"{summary}\n"
+        f"</earlier_context_summary>\n\n"
+        f"<recent_parent_activity>\n"
+        f"{recent_text}\n"
+        f"</recent_parent_activity>"
+    )
+
 
 def _run_agent_in_thread(
     agent: Any, state: Any, inherited_messages: list[dict[str, Any]]
 ) -> dict[str, Any]:
     try:
         if inherited_messages:
-            state.add_message("user", "<inherited_context_from_parent>")
-            for msg in inherited_messages:
-                state.add_message(msg["role"], msg["content"])
-            state.add_message("user", "</inherited_context_from_parent>")
+            if len(inherited_messages) > _INHERIT_SUMMARIZE_THRESHOLD:
+                # Long history: summarise to avoid token bloat on every turn
+                context = _summarize_inherited_context(inherited_messages, state.task)
+                state.add_message(
+                    "user",
+                    f"<inherited_context_from_parent>\n{context}\n"
+                    f"</inherited_context_from_parent>",
+                )
+            else:
+                # Short history: pass through as individual messages (no change)
+                state.add_message("user", "<inherited_context_from_parent>")
+                for msg in inherited_messages:
+                    state.add_message(msg["role"], msg["content"])
+                state.add_message("user", "</inherited_context_from_parent>")
 
         parent_info = _agent_graph["nodes"].get(state.parent_id, {})
         parent_name = parent_info.get("name", "Unknown Parent")

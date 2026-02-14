@@ -87,7 +87,7 @@ def _get_message_tokens(msg: dict[str, Any], model: str) -> int:
     return 0
 
 
-def _extract_message_text(msg: dict[str, Any]) -> str:
+def extract_message_text(msg: dict[str, Any]) -> str:
     content = msg.get("content", "")
     if isinstance(content, str):
         return content
@@ -105,7 +105,7 @@ def _extract_message_text(msg: dict[str, Any]) -> str:
     return str(content)
 
 
-def _summarize_messages(
+def summarize_messages(
     messages: list[dict[str, Any]],
     model: str,
     timeout: int = 30,
@@ -120,7 +120,7 @@ def _summarize_messages(
     formatted = []
     for msg in messages:
         role = msg.get("role", "unknown")
-        text = _extract_message_text(msg)
+        text = extract_message_text(msg)
         # Include tool name for tool result messages
         if role == "tool":
             tool_call_id = msg.get("tool_call_id", "")
@@ -248,7 +248,7 @@ class MemoryCompressor:
         chunk_size = 10
         for i in range(0, len(old_msgs), chunk_size):
             chunk = old_msgs[i : i + chunk_size]
-            summary = _summarize_messages(chunk, model_name, self.timeout)
+            summary = summarize_messages(chunk, model_name, self.timeout)
             if summary:
                 compressed.append(summary)
 
