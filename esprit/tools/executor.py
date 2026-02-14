@@ -2,6 +2,8 @@ import inspect
 import os
 from typing import Any
 
+import defusedxml.ElementTree as DefusedET
+
 import httpx
 
 from esprit.config import Config
@@ -375,14 +377,35 @@ async def process_tool_invocations(
     return should_agent_finish
 
 
-def _extract_plain_result(observation_xml: str, _tool_name: str) -> str:
-    """Extract plain result text from XML-wrapped tool result."""
-    # Try to extract content between <result> tags
+def _extract_result_from_string(observation_xml: str) -> str | None:
     start = observation_xml.find("<result>")
     end = observation_xml.rfind("</result>")
-    if start != -1 and end != -1 and end >= start + len("<result>"):
-        return observation_xml[start + len("<result>"):end]
-    # Fallback: return as-is
+    if start == -1 or end == -1 or end < start + len("<result>"):
+        return None
+    return observation_xml[start + len("<result>") : end]
+
+
+def _extract_plain_result(observation_xml: str, _tool_name: str) -> str:
+    """Extract plain result text from XML-wrapped tool result."""
+    try:
+        root = DefusedET.fromstring(observation_xml)
+        if root.find("result") is not None:
+            # Keep raw payload to preserve nested tags and trailing text.
+            extracted = _extract_result_from_string(observation_xml)
+            if extracted is not None:
+                return extracted
+
+            # Should be rare: parser found <result> but raw tag search failed.
+            result_node = root.find("result")
+            if result_node is not None:
+                return "".join(result_node.itertext()).strip()
+    except DefusedET.ParseError:
+        pass
+
+    extracted = _extract_result_from_string(observation_xml)
+    if extracted is not None:
+        return extracted
+
     return observation_xml
 
 

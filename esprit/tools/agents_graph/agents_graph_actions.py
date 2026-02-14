@@ -92,7 +92,14 @@ def _summarize_inherited_context(
         model = Config.get("esprit_llm")
         if model:
             summary_msg = summarize_messages(old_messages, model, timeout=30)
-            summary = summary_msg.get("content", "")
+            if isinstance(summary_msg, dict):
+                # summarize_messages() returns old_messages[0] on internal failure.
+                # Detect that sentinel and use local fallback formatting instead.
+                if old_messages and summary_msg is old_messages[0]:
+                    summary = ""
+                else:
+                    raw_summary = summary_msg.get("content", "")
+                    summary = raw_summary if isinstance(raw_summary, str) else str(raw_summary)
     except Exception:  # noqa: BLE001
         logger.warning("LLM summarisation of inherited context failed, using truncated text")
 

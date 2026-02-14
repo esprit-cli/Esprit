@@ -24,6 +24,37 @@ class TestExtractPlainResult:
         parsed = _extract_plain_result(observation, "terminal_execute")
         assert parsed == observation
 
+    def test_extracts_via_xml_parser_for_wellformed_xml(self) -> None:
+        observation = (
+            "<tool_result>"
+            "<tool_name>terminal_execute</tool_name>"
+            "<result>hello world</result>"
+            "</tool_result>"
+        )
+        parsed = _extract_plain_result(observation, "terminal_execute")
+        assert parsed == "hello world"
+
+    def test_preserves_nested_result_payload(self) -> None:
+        observation = (
+            "<tool_result>"
+            "<tool_name>terminal_execute</tool_name>"
+            "<result>prefix <b>value</b> suffix</result>"
+            "</tool_result>"
+        )
+        parsed = _extract_plain_result(observation, "terminal_execute")
+        assert parsed == "prefix <b>value</b> suffix"
+
+    def test_falls_back_to_string_search_for_malformed_xml(self) -> None:
+        # Ampersand without escaping makes this invalid XML for ElementTree
+        observation = (
+            "<tool_result>\n"
+            "<tool_name>http_request</tool_name>\n"
+            "<result>foo & bar</result>\n"
+            "</tool_result>"
+        )
+        parsed = _extract_plain_result(observation, "http_request")
+        assert parsed == "foo & bar"
+
 
 class TestProcessToolInvocations:
     def test_mixed_tool_call_ids_fall_back_to_legacy_mode(self, monkeypatch: Any) -> None:

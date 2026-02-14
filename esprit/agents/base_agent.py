@@ -375,11 +375,7 @@ class BaseAgent(metaclass=AgentMeta):
 
         # Build tool_calls for the assistant message (native mode)
         native_tool_calls = None
-        actions = (
-            final_response.tool_invocations
-            if hasattr(final_response, "tool_invocations") and final_response.tool_invocations
-            else []
-        )
+        actions = final_response.tool_invocations or []
         if any(inv.get("tool_call_id") for inv in actions):
             tool_calls_payload: list[dict[str, Any]] = []
             for inv in actions:

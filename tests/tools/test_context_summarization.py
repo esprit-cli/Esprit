@@ -191,6 +191,27 @@ class TestSummarizeInheritedContext:
         old_msgs_passed = call_args[0][0]
         assert len(old_msgs_passed) == expected_old_count
 
+    def test_fallback_when_summarizer_returns_first_message(self) -> None:
+        msgs = _make_messages(20)
+        old_msgs = msgs[:-_RECENT_MESSAGES_TO_KEEP]
+
+        with (
+            patch(
+                "esprit.llm.memory_compressor.summarize_messages",
+                return_value=old_msgs[0],
+            ),
+            patch(
+                "esprit.config.Config"
+            ) as mock_config,
+        ):
+            mock_config.get.return_value = "test-model"
+            result = _summarize_inherited_context(msgs, "test task")
+
+        # summarize_messages uses this as a failure sentinel; ensure we fall back
+        # to brief formatting over old messages instead of keeping only one.
+        assert "message 0" in result
+        assert "message 1" in result
+
 
 # ── _run_agent_in_thread context branching ───────────────────────
 
@@ -269,4 +290,38 @@ class TestRunAgentInThreadContextBranching:
 
         # Clean up
         mod._agent_graph["nodes"].pop("agent_456", None)
+        mod._agent_graph["nodes"].pop("agent_parent", None)
+
+    def test_threshold_boundary_uses_short_path(self) -> None:
+        """Exactly 15 inherited messages should keep existing behavior."""
+        state = MagicMock()
+        state.task = "test task"
+        state.agent_id = "agent_789"
+        state.parent_id = "agent_parent"
+        state.agent_name = "Test Agent"
+
+        msgs = _make_messages(15)  # Exactly threshold
+
+        from esprit.tools.agents_graph import agents_graph_actions as mod
+
+        mod._agent_graph["nodes"]["agent_parent"] = {"name": "Parent", "task": "parent task"}
+        mod._agent_graph["nodes"]["agent_789"] = {
+            "name": "Test Agent",
+            "task": "test task",
+            "status": "running",
+            "parent_id": "agent_parent",
+        }
+
+        with patch.object(mod, "_summarize_inherited_context") as mock_summarize:
+            agent = MagicMock()
+
+            try:
+                mod._run_agent_in_thread(agent, state, msgs)
+            except Exception:
+                pass
+
+            mock_summarize.assert_not_called()
+
+        # Clean up
+        mod._agent_graph["nodes"].pop("agent_789", None)
         mod._agent_graph["nodes"].pop("agent_parent", None)
