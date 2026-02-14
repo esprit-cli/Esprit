@@ -140,3 +140,76 @@ class TestSystemPromptToolGating:
         llm = LLM(LLMConfig(model_name="ollama/llama3"), "EspritAgent")
 
         assert "<agents_graph_tools>" in llm.system_prompt
+
+
+class TestPromptCacheControl:
+    def test_marks_system_identity_and_first_user_for_cache(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        llm = LLM.__new__(LLM)
+        llm.config = SimpleNamespace(model_name="anthropic/claude-3-5-sonnet-20241022")
+
+        monkeypatch.setattr("esprit.llm.llm.supports_prompt_caching", lambda model: True)
+
+        messages = [
+            {"role": "system", "content": "system prompt"},
+            {
+                "role": "user",
+                "content": (
+                    "\n\n<agent_identity>\n"
+                    "<agent_name>EspritAgent</agent_name>\n"
+                    "<agent_id>agent_123</agent_id>\n"
+                    "</agent_identity>\n\n"
+                ),
+            },
+            {"role": "user", "content": "scan https://example.com"},
+            {"role": "assistant", "content": "acknowledged"},
+        ]
+
+        updated = llm._add_cache_control(messages)
+
+        for idx in (0, 1, 2, 3):
+            content = updated[idx]["content"]
+            assert isinstance(content, list)
+            assert content[0]["type"] == "text"
+            assert content[0]["cache_control"] == {"type": "ephemeral"}
+        assert updated[3]["content"][0]["text"] == "acknowledged"
+
+    def test_skips_changes_when_prompt_caching_not_supported(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        llm = LLM.__new__(LLM)
+        llm.config = SimpleNamespace(model_name="anthropic/claude-3-5-sonnet-20241022")
+
+        monkeypatch.setattr("esprit.llm.llm.supports_prompt_caching", lambda model: False)
+
+        messages = [
+            {"role": "system", "content": "system prompt"},
+            {"role": "user", "content": "task"},
+        ]
+
+        updated = llm._add_cache_control(messages)
+        assert updated == messages
+
+    def test_preserves_existing_cache_control(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        llm = LLM.__new__(LLM)
+        llm.config = SimpleNamespace(model_name="anthropic/claude-3-5-sonnet-20241022")
+
+        monkeypatch.setattr("esprit.llm.llm.supports_prompt_caching", lambda model: True)
+
+        messages = [
+            {
+                "role": "system",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "system prompt",
+                        "cache_control": {"type": "ephemeral"},
+                    }
+                ],
+            },
+            {"role": "user", "content": "task"},
+        ]
+
+        updated = llm._add_cache_control(messages)
+        assert updated[0]["content"][0]["cache_control"] == {"type": "ephemeral"}

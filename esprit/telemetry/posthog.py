@@ -113,6 +113,19 @@ def end(tracer: "Tracer", exit_reason: str = "completed") -> None:
 
     llm = tracer.get_total_llm_stats()
     total = llm.get("total", {})
+    llm_input_tokens = int(total.get("input_tokens", 0) or 0)
+    llm_cached_tokens = int(total.get("cached_tokens", 0) or 0)
+    llm_uncached_input_tokens = int(
+        llm.get("uncached_input_tokens", max(0, llm_input_tokens - llm_cached_tokens))
+    )
+    llm_cache_hit_ratio = float(
+        llm.get(
+            "cache_hit_ratio",
+            round((llm_cached_tokens / max(llm_input_tokens, 1)) * 100, 2)
+            if llm_input_tokens > 0
+            else 0.0,
+        )
+    )
 
     _send(
         "scan_ended",
@@ -126,6 +139,10 @@ def end(tracer: "Tracer", exit_reason: str = "completed") -> None:
             "tool_count": tracer.get_real_tool_count(),
             "llm_tokens": llm.get("total_tokens", 0),
             "llm_cost": total.get("cost", 0.0),
+            "llm_input_tokens": llm_input_tokens,
+            "llm_cached_tokens": llm_cached_tokens,
+            "llm_uncached_input_tokens": llm_uncached_input_tokens,
+            "llm_cache_hit_ratio": llm_cache_hit_ratio,
         },
     )
 

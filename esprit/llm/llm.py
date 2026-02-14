@@ -819,14 +819,97 @@ class LLM:
 
         result = list(messages)
 
+        # Cache static prefix blocks first for better cache hit rates:
+        # 1) system prompt
+        # 2) agent identity metadata block
+        # 3) first real user task/instruction
+        # 4) rolling checkpoint near the end of context
+        cached_indices: set[int] = set()
+
         if result[0].get("role") == "system":
-            content = result[0]["content"]
             result[0] = {
                 **result[0],
-                "content": [
-                    {"type": "text", "text": content, "cache_control": {"type": "ephemeral"}}
-                ]
-                if isinstance(content, str)
-                else content,
+                "content": self._with_ephemeral_cache_control(result[0].get("content")),
             }
+            cached_indices.add(0)
+
+        identity_index = None
+        for idx, msg in enumerate(result[1:], start=1):
+            if not self._is_agent_identity_message(msg):
+                continue
+            identity_index = idx
+            result[idx] = {
+                **msg,
+                "content": self._with_ephemeral_cache_control(msg.get("content")),
+            }
+            cached_indices.add(idx)
+            break
+
+        start_index = 1 if identity_index is None else identity_index + 1
+        for idx in range(start_index, len(result)):
+            msg = result[idx]
+            if msg.get("role") != "user":
+                continue
+            if self._is_agent_identity_message(msg):
+                continue
+            result[idx] = {
+                **msg,
+                "content": self._with_ephemeral_cache_control(msg.get("content")),
+            }
+            cached_indices.add(idx)
+            break
+
+        # Rolling checkpoint captures the latest stable prefix for future turns.
+        for idx in range(len(result) - 1, 0, -1):
+            if idx in cached_indices:
+                continue
+            msg = result[idx]
+            if msg.get("role") not in {"user", "assistant"}:
+                continue
+            if self._is_agent_identity_message(msg):
+                continue
+            result[idx] = {
+                **msg,
+                "content": self._with_ephemeral_cache_control(msg.get("content")),
+            }
+            break
+
         return result
+
+    def _with_ephemeral_cache_control(self, content: Any) -> Any:
+        if isinstance(content, str):
+            return [{"type": "text", "text": content, "cache_control": {"type": "ephemeral"}}]
+
+        if not isinstance(content, list):
+            return content
+
+        updated_content: list[Any] = []
+        changed = False
+
+        for part in content:
+            if isinstance(part, dict) and part.get("type") == "text" and "cache_control" not in part:
+                updated_content.append({**part, "cache_control": {"type": "ephemeral"}})
+                changed = True
+            else:
+                updated_content.append(part)
+
+        return updated_content if changed else content
+
+    def _is_agent_identity_message(self, message: dict[str, Any]) -> bool:
+        if message.get("role") != "user":
+            return False
+
+        content = message.get("content")
+        if isinstance(content, str):
+            return "<agent_identity>" in content
+
+        if isinstance(content, list):
+            for part in content:
+                if not isinstance(part, dict):
+                    continue
+                if part.get("type") != "text":
+                    continue
+                if "<agent_identity>" in str(part.get("text", "")):
+                    return True
+
+        return False

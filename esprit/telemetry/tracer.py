@@ -16,6 +16,15 @@ logger = logging.getLogger(__name__)
 _global_tracer: Optional["Tracer"] = None
 
 
+def _cache_metrics(input_tokens: int, cached_tokens: int) -> tuple[int, float]:
+    uncached_input_tokens = max(0, input_tokens - cached_tokens)
+    if input_tokens <= 0:
+        return uncached_input_tokens, 0.0
+
+    cache_hit_ratio = (cached_tokens / max(input_tokens, 1)) * 100
+    return uncached_input_tokens, round(min(cache_hit_ratio, 100.0), 2)
+
+
 def get_global_tracer() -> Optional["Tracer"]:
     return _global_tracer
 
@@ -448,25 +457,79 @@ class Tracer:
             "requests": 0,
         }
         max_context = 0
+        by_model: dict[str, dict[str, Any]] = {}
+        by_agent: dict[str, dict[str, Any]] = {}
 
-        for agent_instance in _agent_instances.values():
+        for agent_id, agent_instance in _agent_instances.items():
             if hasattr(agent_instance, "llm") and hasattr(agent_instance.llm, "_total_stats"):
                 agent_stats = agent_instance.llm._total_stats
+                model_name = "unknown"
+                if hasattr(agent_instance.llm, "config") and hasattr(agent_instance.llm.config, "model_name"):
+                    model_name = str(agent_instance.llm.config.model_name or "unknown")
+
                 total_stats["input_tokens"] += agent_stats.input_tokens
                 total_stats["output_tokens"] += agent_stats.output_tokens
                 total_stats["cached_tokens"] += agent_stats.cached_tokens
                 total_stats["cost"] += agent_stats.cost
                 total_stats["requests"] += agent_stats.requests
+
+                model_stats = by_model.setdefault(
+                    model_name,
+                    {
+                        "input_tokens": 0,
+                        "output_tokens": 0,
+                        "cached_tokens": 0,
+                        "cost": 0.0,
+                        "requests": 0,
+                    },
+                )
+                model_stats["input_tokens"] += agent_stats.input_tokens
+                model_stats["output_tokens"] += agent_stats.output_tokens
+                model_stats["cached_tokens"] += agent_stats.cached_tokens
+                model_stats["cost"] += agent_stats.cost
+                model_stats["requests"] += agent_stats.requests
+
+                agent_uncached, agent_cache_ratio = _cache_metrics(
+                    int(agent_stats.input_tokens), int(agent_stats.cached_tokens)
+                )
+                by_agent[str(agent_id)] = {
+                    "model": model_name,
+                    "input_tokens": int(agent_stats.input_tokens),
+                    "output_tokens": int(agent_stats.output_tokens),
+                    "cached_tokens": int(agent_stats.cached_tokens),
+                    "uncached_input_tokens": agent_uncached,
+                    "cache_hit_ratio": agent_cache_ratio,
+                    "cost": round(float(agent_stats.cost), 4),
+                    "requests": int(agent_stats.requests),
+                }
+
                 last = getattr(agent_stats, "last_input_tokens", 0)
                 if last > max_context:
                     max_context = last
 
         total_stats["cost"] = round(total_stats["cost"], 4)
+        for model_stats in by_model.values():
+            model_stats["cost"] = round(float(model_stats["cost"]), 4)
+            uncached, cache_ratio = _cache_metrics(
+                int(model_stats["input_tokens"]), int(model_stats["cached_tokens"])
+            )
+            model_stats["uncached_input_tokens"] = uncached
+            model_stats["cache_hit_ratio"] = cache_ratio
+
+        total_uncached, total_cache_ratio = _cache_metrics(
+            int(total_stats["input_tokens"]), int(total_stats["cached_tokens"])
+        )
+        total_stats["uncached_input_tokens"] = total_uncached
+        total_stats["cache_hit_ratio"] = total_cache_ratio
 
         return {
             "total": total_stats,
             "total_tokens": total_stats["input_tokens"] + total_stats["output_tokens"],
             "max_context_tokens": max_context,
+            "uncached_input_tokens": total_uncached,
+            "cache_hit_ratio": total_cache_ratio,
+            "by_model": by_model,
+            "by_agent": by_agent,
         }
 
     def update_streaming_content(self, agent_id: str, content: str) -> None:

@@ -485,6 +485,15 @@ def build_tui_stats_text(
 
     from esprit.llm.pricing import get_pricing_db, get_lifetime_cost
     cached_tokens = total_stats["cached_tokens"]
+    uncached_input_tokens = int(
+        llm_stats.get("uncached_input_tokens", max(0, input_tokens - cached_tokens))
+    )
+    cache_hit_ratio = float(
+        llm_stats.get(
+            "cache_hit_ratio",
+            round((cached_tokens / max(input_tokens, 1)) * 100, 2) if input_tokens > 0 else 0.0,
+        )
+    )
     total_tokens = input_tokens + output_tokens
     requests = total_stats["requests"]
     context_tokens = llm_stats.get("max_context_tokens", 0)
@@ -517,8 +526,13 @@ def build_tui_stats_text(
         stats_text.append("▸ In   ", style="dim")
         stats_text.append(f"{format_token_count(input_tokens):>6s}", style="white")
         if cached_tokens > 0:
-            cache_pct = (cached_tokens / max(input_tokens, 1)) * 100
-            stats_text.append(f"  ({cache_pct:.0f}% cached)", style="#a78bfa")
+            stats_text.append(f"  ({format_token_count(cached_tokens)} cached)", style="#a78bfa")
+
+        stats_text.append("\n")
+        stats_text.append("▸ Bill ", style="dim")
+        stats_text.append(f"{format_token_count(uncached_input_tokens):>6s}", style="white")
+        if input_tokens > 0:
+            stats_text.append(f"  ({cache_hit_ratio:.0f}% hit)", style="#a78bfa")
 
         stats_text.append("\n")
         stats_text.append("▸ Out  ", style="dim")
