@@ -44,6 +44,7 @@ include = [
 
 [tool.poetry.scripts]
 esprit = "esprit.interface.main:main"
+spd = "esprit.interface.main:main"
 
 [tool.poetry.dependencies]
 python = "^3.12"

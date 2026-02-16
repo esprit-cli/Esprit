@@ -6609,6 +6609,27 @@ typing-extensions = ">=4.4.0,<5.0.0"
 syntax = ["tree-sitter (>=0.23.0) ; python_version >= \"3.9\"", "tree-sitter-bash (>=0.23.0) ; python_version >= \"3.9\"", "tree-sitter-css (>=0.23.0) ; python_version >= \"3.9\"", "tree-sitter-go (>=0.23.0) ; python_version >= \"3.9\"", "tree-sitter-html (>=0.23.0) ; python_version >= \"3.9\"", "tree-sitter-java (>=0.23.0) ; python_version >= \"3.9\"", "tree-sitter-javascript (>=0.23.0) ; python_version >= \"3.9\"", "tree-sitter-json (>=0.24.0) ; python_version >= \"3.9\"", "tree-sitter-markdown (>=0.3.0) ; python_version >= \"3.9\"", "tree-sitter-python (>=0.23.0) ; python_version >= \"3.9\"", "tree-sitter-regex (>=0.24.0) ; python_version >= \"3.9\"", "tree-sitter-rust (>=0.23.0,<=0.23.2) ; python_version >= \"3.9\"", "tree-sitter-sql (>=0.3.0,<0.3.8) ; python_version >= \"3.9\"", "tree-sitter-toml (>=0.6.0) ; python_version >= \"3.9\"", "tree-sitter-xml (>=0.7.0) ; python_version >= \"3.9\"", "tree-sitter-yaml (>=0.6.0) ; python_version >= \"3.9\""]
 
 [[package]]
+name = "textual-image"
+version = "0.8.5"
+description = "Render images via Kitty's Terminal Graphics Protocol with Rich and Textual"
+optional = true
+python-versions = "*"
+groups = ["main"]
+markers = "extra == \"enhanced-preview\""
+files = [
+    {file = "textual_image-0.8.5-py3-none-any.whl", hash = "sha256:dffc85458ca8744bce3f17bddbf582b1e086eb52d111f1063753e8dd316fa45d"},
+    {file = "textual_image-0.8.5.tar.gz", hash = "sha256:43d4c0026a4f21fa255f41eac7b0fc1f7410a4c7bc9bf95b908bec901b0a8c3a"},
+]
+
+[package.dependencies]
+pillow = ">=10.3.0"
+rich = ">=13.4.0"
+
+[package.extras]
+dev = ["mypy", "pytest", "pytest-asyncio", "pytest-cov", "ruff", "syrupy", "tox", "typing-extensions", "typos"]
+textual = ["textual (>=0.68.0)"]
+
+[[package]]
 name = "tiktoken"
 version = "0.11.0"
 description = "tiktoken is a fast BPE tokeniser for use with OpenAI's models"
@@ -7360,10 +7381,12 @@ test = ["big-O", "jaraco.functools", "jaraco.itertools", "jaraco.test", "more_it
 type = ["pytest-mypy"]
 
 [extras]
+enhanced-preview = ["textual-image"]
+gui = ["fastapi", "uvicorn", "websockets"]
 sandbox = ["fastapi", "gql", "ipython", "libtmux", "numpydoc", "openhands-aci", "playwright", "pyte", "uvicorn"]
 vertex = ["google-cloud-aiplatform"]
 
 [metadata]
 lock-version = "2.1"
 python-versions = "^3.12"
-content-hash = "113d05c36aedc78dd53042359fcd6c32158db49c65a1a6c632484c675c5a59c6"
+content-hash = "2d3feb4f0e8ddc5a6cc4a33ff1edb82fa0cd4c9a87620f1678754c7f10b0b52f"
