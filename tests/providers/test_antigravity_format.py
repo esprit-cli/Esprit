@@ -196,6 +196,41 @@ class TestConvertMessages:
         resp = contents[0]["parts"][0]["functionResponse"]["response"]
         assert resp == {"result": "plain text"}
 
+    def test_tool_result_content_parts_preserve_images(self) -> None:
+        msgs = [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_img",
+                        "type": "function",
+                        "function": {
+                            "name": "browser_execute",
+                            "arguments": "{}",
+                        },
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_img",
+                "content": [
+                    {"type": "text", "text": "Screenshot captured"},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": "data:image/png;base64,AAA"},
+                    },
+                ],
+            },
+        ]
+
+        _, contents = _convert_messages(msgs)
+        resp = contents[1]["parts"][0]["functionResponse"]["response"]
+
+        assert resp["result"] == "Screenshot captured"
+        assert resp["images"][0]["url"] == "data:image/png;base64,AAA"
+
 
 # ── Tool Conversion ───────────────────────────────────────────
 

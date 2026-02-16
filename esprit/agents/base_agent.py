@@ -373,33 +373,8 @@ class BaseAgent(metaclass=AgentMeta):
             self.state.add_message("user", corrective_message)
             return False
 
-        # Build tool_calls for the assistant message (native mode)
-        native_tool_calls = None
         actions = final_response.tool_invocations or []
-        if any(inv.get("tool_call_id") for inv in actions):
-            tool_calls_payload: list[dict[str, Any]] = []
-            for inv in actions:
-                tool_call_id = str(inv.get("tool_call_id") or "")
-                if not tool_call_id:
-                    continue
-
-                try:
-                    arguments_json = json.dumps(inv.get("args", {}), default=str)
-                except (TypeError, ValueError):
-                    arguments_json = "{}"
-
-                tool_calls_payload.append(
-                    {
-                        "id": tool_call_id,
-                        "type": "function",
-                        "function": {
-                            "name": str(inv.get("toolName") or ""),
-                            "arguments": arguments_json,
-                        },
-                    }
-                )
-
-            native_tool_calls = tool_calls_payload or None
+        native_tool_calls = self._build_native_tool_calls(actions)
 
         thinking_blocks = getattr(final_response, "thinking_blocks", None)
         self.state.add_message(
@@ -420,6 +395,39 @@ class BaseAgent(metaclass=AgentMeta):
             return await self._execute_actions(actions, tracer)
 
         return False
+
+    @staticmethod
+    def _build_native_tool_calls(actions: list[Any]) -> list[dict[str, Any]] | None:
+        """Build assistant tool_calls payload only when all invocations carry IDs."""
+        if not actions:
+            return None
+
+        for inv in actions:
+            if not isinstance(inv, dict):
+                return None
+            if not str(inv.get("tool_call_id") or ""):
+                return None
+
+        tool_calls_payload: list[dict[str, Any]] = []
+        for inv in actions:
+            tool_call_id = str(inv.get("tool_call_id") or "")
+            try:
+                arguments_json = json.dumps(inv.get("args", {}), default=str)
+            except (TypeError, ValueError):
+                arguments_json = "{}"
+
+            tool_calls_payload.append(
+                {
+                    "id": tool_call_id,
+                    "type": "function",
+                    "function": {
+                        "name": str(inv.get("toolName") or ""),
+                        "arguments": arguments_json,
+                    },
+                }
+            )
+
+        return tool_calls_payload or None
 
     def _get_agent_tools(self) -> list[dict[str, Any]] | None:
         """Get JSON tool definitions for native tool calling."""
