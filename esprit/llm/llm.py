@@ -73,10 +73,11 @@ for _base in ["gpt-5.3-codex", "gpt-5.2-codex"]:
 
 
 class LLMRequestFailedError(Exception):
-    def __init__(self, message: str, details: str | None = None):
+    def __init__(self, message: str, details: str | None = None, status_code: int | None = None):
         super().__init__(message)
         self.message = message
         self.details = details
+        self.status_code = status_code
 
 
 @dataclass
@@ -509,6 +510,35 @@ class LLM:
         if self.config.model_name and self.config.model_name.lower().startswith("google/"):
             args["model"] = "gemini/" + self.config.model_name.split("/", 1)[1]
 
+        # Esprit subscription provider — route through Esprit LLM proxy to Bedrock
+        if self.config.model_name and self.config.model_name.lower().startswith("esprit/"):
+            if PROVIDERS_AVAILABLE:
+                from esprit.providers.esprit_subs import (
+                    LLM_PROXY_URL,
+                    resolve_bedrock_model,
+                    _load_esprit_credentials,
+                )
+                bare_model = self.config.model_name.split("/", 1)[1]
+                bedrock_model = resolve_bedrock_model(bare_model)
+                creds = _load_esprit_credentials()
+                if creds and creds.access_token:
+                    # The Esprit proxy exposes an OpenAI-compatible API, so
+                    # we use the openai/ prefix to avoid litellm attempting
+                    # AWS SigV4 signing with bedrock/ prefix.
+                    args["model"] = f"openai/{bedrock_model}"
+                    args["api_base"] = LLM_PROXY_URL
+                    args["api_key"] = creds.access_token
+                    args["extra_headers"] = {
+                        "X-Esprit-Provider": "bedrock",
+                        "X-Esprit-Model": bedrock_model,
+                    }
+                else:
+                    raise LLMRequestFailedError(
+                        "Not logged in to Esprit. Run 'esprit provider login esprit' first.",
+                        status_code=401,
+                    )
+                return args
+
         # Check provider-managed credentials first (API keys + OAuth)
         use_oauth = False
         provider_api_key: str | None = None
@@ -673,7 +703,11 @@ class LLM:
     def _is_anthropic(self) -> bool:
         if not self.config.model_name:
             return False
-        return any(p in self.config.model_name.lower() for p in ["anthropic/", "claude"])
+        model_lower = self.config.model_name.lower()
+        # Esprit subscription routes to Bedrock Claude (Haiku)
+        if model_lower.startswith("esprit/"):
+            return True
+        return any(p in model_lower for p in ["anthropic/", "claude"])
 
     def _is_antigravity(self) -> bool:
         if not PROVIDERS_AVAILABLE or not self.config.model_name:
@@ -685,7 +719,8 @@ class LLM:
         if "/" in model:
             prefix = model.split("/", 1)[0]
             _NON_AG_PREFIXES = {"anthropic", "google", "openai", "bedrock",
-                                "github-copilot", "gemini", "azure", "vertex_ai"}
+                                "github-copilot", "gemini", "azure", "vertex_ai",
+                                "esprit"}
             if prefix in _NON_AG_PREFIXES:
                 return False
         # Check if the bare model name is an antigravity model and oauth is configured
@@ -819,7 +854,12 @@ class LLM:
         return result
 
     def _add_cache_control(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        if not messages or not supports_prompt_caching(self.config.model_name):
+        # Esprit models route to Bedrock Claude which supports prompt caching,
+        # but litellm doesn't recognise the "esprit/..." alias.
+        model_for_cache_check = self.config.model_name
+        if model_for_cache_check.lower().startswith("esprit/"):
+            model_for_cache_check = "anthropic/claude-3-5-haiku-latest"
+        if not messages or not supports_prompt_caching(model_for_cache_check):
             return messages
 
         result = list(messages)

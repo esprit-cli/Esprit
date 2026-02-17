@@ -17,6 +17,9 @@ console = Console()
 
 # Available models by provider
 AVAILABLE_MODELS = {
+    "esprit": [
+        ("default", "Esprit Default"),
+    ],
     "openai": [
         ("gpt-5.3-codex", "GPT-5.3 Codex (recommended)"),
         ("gpt-5.1-codex", "GPT-5.1 Codex"),
@@ -139,6 +142,10 @@ def cmd_config_model(model: str | None = None) -> int:
         for provider_id, models in AVAILABLE_MODELS.items():
             if provider_id in _multi_account:
                 has_creds = pool.has_accounts(provider_id)
+            elif provider_id == "esprit":
+                # Esprit subscription uses platform credentials, not token store
+                from esprit.auth.credentials import is_authenticated
+                has_creds = is_authenticated()
             else:
                 has_creds = token_store.has_credentials(provider_id)
             if has_creds:
@@ -148,9 +155,13 @@ def cmd_config_model(model: str | None = None) -> int:
 
         # Show connected providers first
         for provider_id, models in connected_providers:
-            creds = token_store.get(provider_id)
-            auth_type = creds.type.upper() if creds else "OAUTH"
+            if provider_id == "esprit":
+                auth_type = "PLATFORM"
+            else:
+                creds = token_store.get(provider_id)
+                auth_type = creds.type.upper() if creds else "OAUTH"
             provider_label = {
+                "esprit": "ESPRIT (YOUR SUBSCRIPTION)",
                 "antigravity": "ANTIGRAVITY",
                 "openai": "OPENAI",
                 "anthropic": "ANTHROPIC",
@@ -169,6 +180,7 @@ def cmd_config_model(model: str | None = None) -> int:
         if disconnected_providers:
             for provider_id, models in disconnected_providers:
                 provider_label = {
+                    "esprit": "ESPRIT (YOUR SUBSCRIPTION)",
                     "antigravity": "ANTIGRAVITY",
                     "openai": "OPENAI",
                     "anthropic": "ANTHROPIC",
@@ -235,7 +247,9 @@ def cmd_config_show() -> int:
     elif config_model:
         table.add_row("Model", config_model, "[dim]~/.esprit/config.json[/]")
     else:
-        table.add_row("Model", "[dim]bedrock/...claude-haiku-4-5... (default)[/]", "[dim]default[/]")
+        from esprit.llm.config import DEFAULT_MODEL
+        default_display = DEFAULT_MODEL.replace("bedrock/", "").replace("us.anthropic.", "anthropic/")
+        table.add_row("Model", f"[dim]{default_display} (default)[/]", "[dim]default[/]")
 
     console.print(table)
     console.print()

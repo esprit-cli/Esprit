@@ -273,6 +273,14 @@ def ensure_provider_configured() -> bool:
     if Config.get("llm_api_key"):
         return True
 
+    # Check for Esprit subscription (platform credentials)
+    try:
+        from esprit.auth.credentials import is_authenticated
+        if is_authenticated():
+            return True
+    except ImportError:
+        pass
+
     # Check for OAuth providers (single-credential)
     token_store = TokenStore()
     for provider_id in ["anthropic", "google", "github-copilot"]:
@@ -301,6 +309,18 @@ def _get_configured_providers() -> list[tuple[str, str]]:
     result = []
 
     from esprit.providers.constants import MULTI_ACCOUNT_PROVIDERS as _multi_account
+
+    # Check Esprit subscription (platform credentials)
+    try:
+        from esprit.auth.credentials import is_authenticated as _is_esprit_auth, get_credentials as _get_esprit_creds
+        if _is_esprit_auth():
+            _ecreds = _get_esprit_creds()
+            _plan = _ecreds.get("plan", "free").upper() if _ecreds else "FREE"
+            _email = _ecreds.get("email", "") if _ecreds else ""
+            detail = _email if _email else f"Platform ({_plan})"
+            result.append(("esprit", detail))
+    except ImportError:
+        pass
 
     for provider_id in ["antigravity", "openai", "anthropic", "google", "github-copilot"]:
         if provider_id in _multi_account:
@@ -377,6 +397,7 @@ def pre_scan_setup(non_interactive: bool = False) -> bool:
     table.add_column("Account", style="white")
     for pid, detail in providers:
         display_name = {
+            "esprit": "[bold #6366f1]Esprit[/] [dim](Subscription)[/]",
             "antigravity": "[bold #a78bfa]Antigravity[/] [dim](Free)[/]",
             "openai": "OpenAI",
             "anthropic": "Anthropic",
@@ -385,6 +406,7 @@ def pre_scan_setup(non_interactive: bool = False) -> bool:
             "direct": "Direct",
         }.get(pid, pid)
         auth_type = {
+            "esprit": "[green]Platform[/]",
             "antigravity": "[green]OAuth[/]",
             "openai": "[green]OAuth[/]" if "@" in detail else "[yellow]API Key[/]",
             "anthropic": "[yellow]API Key[/]",
@@ -404,6 +426,7 @@ def pre_scan_setup(non_interactive: bool = False) -> bool:
         bare = current_model.split("/", 1)[-1] if "/" in current_model else current_model
         provider_prefix = current_model.split("/", 1)[0] if "/" in current_model else ""
         provider_badge = {
+            "esprit": "[bold #6366f1]ES[/]",
             "antigravity": "[bold #a78bfa]AG[/]",
             "openai": "[bold #74aa9c]OAI[/]",
             "anthropic": "[bold #d4a27f]CC[/]",
@@ -510,6 +533,11 @@ async def warm_up_llm() -> None:
         is_codex_oauth = "codex" in model_lower
         if is_codex_oauth and should_use_oauth(model_name):
             console.print("[dim]Codex OAuth configured — skipping warm-up test[/]")
+            return
+
+        # Esprit subscription routes through proxy — skip warm-up test
+        if model_lower.startswith("esprit/"):
+            console.print("[dim]Esprit subscription configured — skipping warm-up test[/]")
             return
 
         # Antigravity models bypass litellm entirely — skip warm-up test
@@ -687,6 +715,7 @@ Examples:
 
   # Provider authentication
   esprit provider login              # Interactive provider selection
+  esprit provider login esprit       # Login with Esprit subscription
   esprit provider login openai       # Login to OpenAI Codex
   esprit provider login github-copilot
   esprit provider login google       # Login to Google Gemini
@@ -706,6 +735,7 @@ Examples:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Supported providers:
+  esprit          Esprit Subscription (Esprit Default)
   anthropic       Claude Pro/Max (OAuth) or API key
   openai          ChatGPT Plus/Pro / Codex (OAuth) or API key
   github-copilot  GitHub Copilot (OAuth)
@@ -715,7 +745,7 @@ Supported providers:
     provider_subparsers = provider_parser.add_subparsers(dest="provider_command")
     
     provider_login = provider_subparsers.add_parser("login", help="Login to a provider via OAuth")
-    provider_login.add_argument("provider_id", nargs="?", help="Provider ID (anthropic, openai, github-copilot, google)")
+    provider_login.add_argument("provider_id", nargs="?", help="Provider ID (esprit, anthropic, openai, github-copilot, google)")
     
     provider_logout = provider_subparsers.add_parser("logout", help="Logout from a provider")
     provider_logout.add_argument("provider_id", nargs="?", help="Provider ID to logout from")

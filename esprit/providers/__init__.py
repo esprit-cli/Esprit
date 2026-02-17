@@ -2,6 +2,7 @@
 Provider authentication plugins for Esprit CLI.
 
 Supports OAuth-based authentication for:
+- Esprit Subscription (AWS Bedrock via Esprit proxy)
 - Anthropic Claude Pro/Max
 - OpenAI ChatGPT Plus/Pro (Codex)
 - GitHub Copilot
@@ -16,10 +17,12 @@ from esprit.providers.openai_codex import OpenAICodexProvider
 from esprit.providers.copilot import CopilotProvider
 from esprit.providers.google_gemini import GoogleGeminiProvider
 from esprit.providers.antigravity import AntigravityProvider
+from esprit.providers.esprit_subs import EspritSubsProvider
 from esprit.providers.token_store import TokenStore
 
 # Provider registry
 PROVIDERS: dict[str, type[ProviderAuth]] = {
+    "esprit": EspritSubsProvider,
     "anthropic": AnthropicOAuthProvider,
     "openai": OpenAICodexProvider,
     "github-copilot": CopilotProvider,
@@ -29,6 +32,7 @@ PROVIDERS: dict[str, type[ProviderAuth]] = {
 
 # Provider display names
 PROVIDER_NAMES: dict[str, str] = {
+    "esprit": "Esprit (Use Your Subscription)",
     "anthropic": "Anthropic (Claude Pro/Max)",
     "openai": "OpenAI (ChatGPT Plus/Pro)",
     "github-copilot": "GitHub Copilot",
@@ -59,6 +63,7 @@ __all__ = [
     "PROVIDER_NAMES",
     "get_provider_auth",
     "list_providers",
+    "EspritSubsProvider",
     "AnthropicOAuthProvider",
     "OpenAICodexProvider",
     "CopilotProvider",
