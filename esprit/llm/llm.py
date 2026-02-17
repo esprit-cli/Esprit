@@ -509,9 +509,14 @@ class LLM:
         if self.config.model_name and self.config.model_name.lower().startswith("google/"):
             args["model"] = "gemini/" + self.config.model_name.split("/", 1)[1]
 
-        # Check for provider OAuth authentication first (Codex, Copilot, Gemini, etc.)
+        # Check provider-managed credentials first (API keys + OAuth)
         use_oauth = False
+        provider_api_key: str | None = None
         if PROVIDERS_AVAILABLE and self.config.model_name:
+            provider_api_key = get_provider_api_key(self.config.model_name)
+            if provider_api_key:
+                args["api_key"] = provider_api_key
+
             use_oauth = should_use_oauth(self.config.model_name)
             if use_oauth:
                 model_lower = self.config.model_name.lower()
@@ -523,16 +528,16 @@ class LLM:
                 if "codex" in model_lower:
                     bare_model = self.config.model_name.split("/", 1)[-1]
                     args["model"] = bare_model
-                    args["api_key"] = get_provider_api_key(self.config.model_name) or "oauth-auth"
+                    args["api_key"] = provider_api_key or "oauth-auth"
                 else:
                     provider_headers = get_provider_headers(self.config.model_name)
                     if provider_headers:
                         args["extra_headers"] = provider_headers
-                    args["api_key"] = get_provider_api_key(self.config.model_name) or "oauth-auth"
+                    args["api_key"] = provider_api_key or "oauth-auth"
 
         # Fall back to environment variables if not using OAuth
         if not use_oauth:
-            if api_key := Config.get("llm_api_key"):
+            if "api_key" not in args and (api_key := Config.get("llm_api_key")):
                 args["api_key"] = api_key
             if api_base := (
                 Config.get("llm_api_base")
