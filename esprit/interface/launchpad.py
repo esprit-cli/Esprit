@@ -132,6 +132,7 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
         Binding("q", "quit_app", "Quit", show=False),
         Binding("ctrl+c", "quit_app", "Quit", show=False, priority=True),
         Binding("ctrl+q", "quit_app", "Quit", show=False),
+        *[Binding(str(n), f"quick_select({n})", str(n), show=False) for n in range(1, 10)],
     ]
 
     # Ghost pixel art: [] = cyan body, .. = dark (eyes/mouth), * = sparkle
@@ -390,6 +391,7 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
         # Provider badges and display info
         _BADGES: dict[str, str] = {
             "antigravity": "AG",
+            "esprit": "ES",
             "openai": "OAI",
             "anthropic": "CC",
             "google": "GG",
@@ -397,11 +399,22 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
         }
         _PROVIDER_LABELS: dict[str, str] = {
             "antigravity": "ANTIGRAVITY",
+            "esprit": "ESPRIT",
             "openai": "OPENAI",
             "anthropic": "ANTHROPIC",
             "google": "GOOGLE",
             "github-copilot": "COPILOT",
         }
+
+        # Providers known to be free
+        _FREE_PROVIDERS = {"antigravity"}
+
+        # Lazy-load pricing DB for context/cost info
+        try:
+            from esprit.llm.pricing import get_pricing_db
+            pricing_db = get_pricing_db()
+        except Exception:  # noqa: BLE001
+            pricing_db = None
 
         # Check which providers are connected
         connected: dict[str, bool] = {}
@@ -422,12 +435,16 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
             badge = _BADGES.get(provider_id, provider_id[:3].upper())
             label = _PROVIDER_LABELS.get(provider_id, provider_id.upper())
             is_connected = connected.get(provider_id, False)
+            is_free_provider = provider_id in _FREE_PROVIDERS
 
             # Filter models
             matching_models = []
             for model_id, model_name in models:
                 full_model = f"{provider_id}/{model_id}"
-                if query and query not in model_name.lower() and query not in model_id.lower() and query not in badge.lower() and query not in label.lower():
+                searchable = f"{model_name} {model_id} {badge} {label}".lower()
+                if is_free_provider:
+                    searchable += " free"
+                if query and query not in searchable:
                     continue
                 matching_models.append((model_id, model_name, full_model))
 
@@ -437,20 +454,59 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
             # Provider section header
             conn_indicator = "\u2713" if is_connected else "\u00b7"
             conn_label = "connected" if is_connected else "not connected"
+            header_hint = f"[{badge}] {conn_label}"
+            if is_free_provider:
+                header_hint += "  FREE"
             entries.append(_MenuEntry(
                 f"separator:{provider_id}",
                 f"  {conn_indicator} {label}",
-                f"[{badge}] {conn_label}",
+                header_hint,
             ))
 
-            # Model entries
+            # Model entries with pricing/context info
             for model_id, model_name, full_model in matching_models:
-                marker = "\u25cf" if full_model == current else "\u25cb"
+                is_current = full_model == current
+                marker = "\u25cf" if is_current else "\u25cb"
                 dim = "" if is_connected else "\u2022 "
+
+                # Build hint with context + pricing info
+                hint_parts: list[str] = []
+
+                if pricing_db:
+                    try:
+                        ctx = pricing_db.get_context_limit(model_id)
+                        if ctx and ctx > 0:
+                            if ctx >= 1_000_000:
+                                hint_parts.append(f"{ctx // 1_000_000}M ctx")
+                            else:
+                                hint_parts.append(f"{ctx // 1000}K ctx")
+                    except Exception:  # noqa: BLE001
+                        pass
+
+                    if not is_free_provider:
+                        try:
+                            pricing = pricing_db.get_pricing(model_id)
+                            if pricing and pricing.input_cost > 0:
+                                cost_per_m = pricing.input_cost * 1_000_000
+                                hint_parts.append(f"${cost_per_m:.1f}/M in")
+                        except Exception:  # noqa: BLE001
+                            pass
+
+                is_free = is_free_provider or "(free)" in model_name.lower()
+                if is_free and not any("free" in p.lower() for p in hint_parts):
+                    hint_parts.insert(0, "FREE")
+
+                if is_current:
+                    hint_parts.append("\u2605 active")
+
+                hint = "  ".join(hint_parts) if hint_parts else badge
+
+                model_label = f"    {marker} {dim}{model_name}"
+
                 entries.append(_MenuEntry(
                     f"model:{full_model}",
-                    f"    {marker} {dim}{model_name}",
-                    badge,
+                    model_label,
+                    hint,
                 ))
 
         entries.append(_MenuEntry("back", "\u2190 Back"))
@@ -554,37 +610,74 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
             menu_widget.update("")
             return
 
+        # Show number shortcuts on views with few selectable entries
+        show_numbers = self._view in ("main", "scan_choose", "provider", "provider_actions", "scan_mode")
+        selectable_num = 0
+
         menu_text = Text()
         for idx, entry in enumerate(self._current_entries):
             is_selected = idx == self.selected_index
             is_separator = entry.key.startswith("separator:")
 
+            if not is_separator:
+                selectable_num += 1
+
             if is_separator:
                 # Provider group header — not selectable
                 menu_text.append(entry.label, style=Style(color="#67e8f9", bold=True))
                 if entry.hint:
-                    menu_text.append(f"  {entry.hint}", style=Style(color="#555555"))
+                    # Highlight "FREE" in the hint
+                    hint = entry.hint
+                    if "FREE" in hint:
+                        parts = hint.split("FREE")
+                        menu_text.append(f"  {parts[0]}", style=Style(color="#555555"))
+                        menu_text.append("FREE", style=Style(color="#22c55e", bold=True))
+                        if len(parts) > 1:
+                            menu_text.append(parts[1], style=Style(color="#555555"))
+                    else:
+                        menu_text.append(f"  {entry.hint}", style=Style(color="#555555"))
             elif is_selected:
                 prefix = "\u276f "
                 label_style = Style(color="#22d3ee", bold=True)
-                hint_style = Style(color="#0e7490")
                 menu_text.append(prefix, style=label_style)
                 menu_text.append(entry.label, style=label_style)
                 if entry.hint:
-                    menu_text.append(f"  {entry.hint}", style=hint_style)
+                    self._append_styled_hint(menu_text, entry.hint, selected=True)
+                if show_numbers and selectable_num <= 9:
+                    menu_text.append(f"  {selectable_num}", style=Style(color="#22d3ee", dim=True))
             else:
                 prefix = "  "
                 label_style = Style(color="#8a8a8a")
-                hint_style = Style(color="#555555")
                 menu_text.append(prefix, style=label_style)
                 menu_text.append(entry.label, style=label_style)
                 if entry.hint:
-                    menu_text.append(f"  {entry.hint}", style=hint_style)
+                    self._append_styled_hint(menu_text, entry.hint, selected=False)
+                if show_numbers and selectable_num <= 9:
+                    menu_text.append(f"  {selectable_num}", style=Style(color="#3f3f3f"))
 
             if idx < len(self._current_entries) - 1:
                 menu_text.append("\n")
 
         menu_widget.update(menu_text)
+
+    def _append_styled_hint(self, text: Text, hint: str, selected: bool) -> None:
+        """Append a hint with special styling for keywords like FREE, active, ctx."""
+        text.append("  ", style=Style(color="#555555"))
+        parts = hint.split("  ")
+        for i, part in enumerate(parts):
+            if i > 0:
+                text.append("  ", style=Style(color="#3f3f3f"))
+            part_stripped = part.strip()
+            if part_stripped == "FREE":
+                text.append("FREE", style=Style(color="#22c55e", bold=True))
+            elif "\u2605 active" in part_stripped:
+                text.append(part_stripped, style=Style(color="#fbbf24", bold=True))
+            elif "ctx" in part_stripped:
+                text.append(part_stripped, style=Style(color="#0e7490" if selected else "#555555"))
+            elif part_stripped.startswith("$"):
+                text.append(part_stripped, style=Style(color="#555555", dim=True))
+            else:
+                text.append(part_stripped, style=Style(color="#0e7490" if selected else "#555555"))
 
     # ── Actions (bound to keys via BINDINGS) ──────────────────────────
 
@@ -613,6 +706,22 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
                 attempts -= 1
             self.selected_index = new_idx
             self._render_menu()
+
+    async def action_quick_select(self, number: int) -> None:
+        """Jump to and select the Nth selectable entry (1-based)."""
+        if self._input_mode:
+            return
+        # Build map of selectable entries (skip separators)
+        selectable = [
+            (idx, entry)
+            for idx, entry in enumerate(self._current_entries)
+            if not entry.key.startswith("separator:")
+        ]
+        if 1 <= number <= len(selectable):
+            target_idx, target_entry = selectable[number - 1]
+            self.selected_index = target_idx
+            self._render_menu()
+            await self._activate_entry(target_entry)
 
     async def action_select_entry(self) -> None:
         if self._input_mode == "model_search":

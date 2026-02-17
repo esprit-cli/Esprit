@@ -517,6 +517,40 @@ def build_tui_stats_text(
     stats_text.append(f"{requests}", style="white bold")
     stats_text.append(" reqs", style="dim")
 
+    # Live streaming indicator - shows which agents are actively generating
+    streaming_agents = []
+    thinking_agents = []
+    for aid in list(tracer.streaming_content.keys()):
+        content = tracer.streaming_content.get(aid)
+        if content and content.strip():
+            agent_data = tracer.agents.get(aid, {})
+            name = agent_data.get("name", "Agent")
+            streaming_agents.append(name)
+    for aid in list(getattr(tracer, "streaming_thinking", {}).keys()):
+        content = getattr(tracer, "streaming_thinking", {}).get(aid)
+        if content and content.strip():
+            agent_data = tracer.agents.get(aid, {})
+            name = agent_data.get("name", "Agent")
+            if name not in streaming_agents:
+                thinking_agents.append(name)
+
+    if streaming_agents or thinking_agents:
+        stats_text.append("\n")
+        gen_frame = _ACTIVITY_SPINNER[spinner_frame % len(_ACTIVITY_SPINNER)]
+        if thinking_agents and not streaming_agents:
+            stats_text.append(f"{gen_frame} ", style="#a855f7")
+            stats_text.append("Thinking", style="#a855f7")
+        else:
+            stats_text.append(f"{gen_frame} ", style="#22d3ee")
+            stats_text.append("Generating", style="#22d3ee")
+        # Show streaming token count from current content
+        total_streaming_chars = sum(
+            len(tracer.streaming_content.get(aid, ""))
+            for aid in tracer.streaming_content
+        )
+        if total_streaming_chars > 0:
+            stats_text.append(f"  ~{format_token_count(total_streaming_chars // 4)} tok", style="dim #22d3ee")
+
     # Token breakdown
     stats_text.append("\n")
     stats_text.append("─" * 28, style="dim #3f3f3f")

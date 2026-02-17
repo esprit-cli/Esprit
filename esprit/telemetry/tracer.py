@@ -45,6 +45,7 @@ class Tracer:
         self.tool_executions: dict[int, dict[str, Any]] = {}
         self.chat_messages: list[dict[str, Any]] = []
         self.streaming_content: dict[str, str] = {}
+        self.streaming_thinking: dict[str, str] = {}
         self.interrupted_content: dict[str, str] = {}
 
         self.vulnerability_reports: list[dict[str, Any]] = []
@@ -227,6 +228,7 @@ class Tracer:
         role: str,
         agent_id: str | None = None,
         metadata: dict[str, Any] | None = None,
+        thinking_blocks: list[dict[str, Any]] | None = None,
     ) -> int:
         message_id = self._next_message_id
         self._next_message_id += 1
@@ -239,6 +241,8 @@ class Tracer:
             "timestamp": datetime.now(UTC).isoformat(),
             "metadata": metadata or {},
         }
+        if thinking_blocks:
+            message_data["thinking_blocks"] = thinking_blocks
 
         self.chat_messages.append(message_data)
         return message_id
@@ -300,6 +304,9 @@ class Tracer:
             run_dir = self.get_run_dir()
             if mark_complete:
                 self.end_time = datetime.now(UTC).isoformat()
+
+            # Save full checkpoint
+            self.save_checkpoint(run_dir / "checkpoint.json")
 
             if self.final_scan_result:
                 penetration_test_report_file = run_dir / "penetration_test_report.md"
@@ -422,6 +429,72 @@ class Tracer:
         except (OSError, RuntimeError):
             logger.exception("Failed to save scan data")
 
+    def save_checkpoint(self, filepath: Path) -> None:
+        """Saves the full state of the tracer and agents to a JSON file."""
+        import json
+        from esprit.tools.agents_graph.agents_graph_actions import _agent_instances
+
+        data = {
+            "run_id": self.run_id,
+            "run_name": self.run_name,
+            "start_time": self.start_time,
+            "end_time": self.end_time,
+            "agents": self.agents,
+            "tool_executions": self.tool_executions,
+            "chat_messages": self.chat_messages,
+            "vulnerability_reports": self.vulnerability_reports,
+            "scan_results": self.scan_results,
+            "scan_config": self.scan_config,
+            "run_metadata": self.run_metadata,
+            "next_execution_id": self._next_execution_id,
+            "next_message_id": self._next_message_id,
+            "agent_states": {},
+        }
+
+        # Serialize agent states
+        for agent_id, agent in _agent_instances.items():
+            if hasattr(agent, "state"):
+                data["agent_states"][agent_id] = agent.state.model_dump()
+
+        with filepath.open("w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, default=str)
+
+        logger.info(f"Checkpoint saved to {filepath}")
+
+    @classmethod
+    def load_checkpoint(cls, filepath: Path) -> "Tracer":
+        """Loads a tracer from a checkpoint JSON file."""
+        import json
+        from esprit.agents.state import AgentState
+
+        with filepath.open("r", encoding="utf-8") as f:
+            data = json.load(f)
+
+        tracer = cls(run_name=data.get("run_name"))
+        tracer.run_id = data.get("run_id", tracer.run_id)
+        tracer.start_time = data.get("start_time", tracer.start_time)
+        tracer.end_time = data.get("end_time")
+
+        tracer.agents = data.get("agents", {})
+        # Convert keys back to int for tool_executions
+        tracer.tool_executions = {int(k): v for k, v in data.get("tool_executions", {}).items()}
+        tracer.chat_messages = data.get("chat_messages", [])
+        tracer.vulnerability_reports = data.get("vulnerability_reports", [])
+        tracer.scan_results = data.get("scan_results")
+        tracer.scan_config = data.get("scan_config")
+        tracer.run_metadata = data.get("run_metadata", tracer.run_metadata)
+        tracer._next_execution_id = data.get("next_execution_id", 1)
+        tracer._next_message_id = data.get("next_message_id", 1)
+
+        # Restore saved vuln IDs to prevent duplication
+        tracer._saved_vuln_ids = {r["id"] for r in tracer.vulnerability_reports}
+
+        # Note: Agent states need to be rehydrated by the caller/runtime
+        # We store them in a temporary attribute for the runtime to access
+        tracer._loaded_agent_states = data.get("agent_states", {})
+
+        return tracer
+
     def _calculate_duration(self) -> float:
         try:
             start = datetime.fromisoformat(self.start_time.replace("Z", "+00:00"))
@@ -540,6 +613,15 @@ class Tracer:
 
     def get_streaming_content(self, agent_id: str) -> str | None:
         return self.streaming_content.get(agent_id)
+
+    def update_streaming_thinking(self, agent_id: str, thinking: str) -> None:
+        self.streaming_thinking[agent_id] = thinking
+
+    def clear_streaming_thinking(self, agent_id: str) -> None:
+        self.streaming_thinking.pop(agent_id, None)
+
+    def get_streaming_thinking(self, agent_id: str) -> str | None:
+        return self.streaming_thinking.get(agent_id)
 
     def finalize_streaming_as_interrupted(self, agent_id: str) -> str | None:
         content = self.streaming_content.pop(agent_id, None)

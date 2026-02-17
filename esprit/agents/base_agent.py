@@ -86,32 +86,38 @@ class BaseAgent(metaclass=AgentMeta):
 
         tracer = get_global_tracer()
         if tracer:
-            tracer.log_agent_creation(
-                agent_id=self.state.agent_id,
-                name=self.state.agent_name,
-                task=self.state.task,
-                parent_id=self.state.parent_id,
-            )
-            if self.state.parent_id is None:
-                scan_config = tracer.scan_config or {}
-                exec_id = tracer.log_tool_execution_start(
-                    agent_id=self.state.agent_id,
-                    tool_name="scan_start_info",
-                    args=scan_config,
-                )
-                tracer.update_tool_execution(execution_id=exec_id, status="completed", result={})
+            # Check if this is a resumption of an existing agent
+            is_resumed = self.state.agent_id in tracer.agents
 
-            else:
-                exec_id = tracer.log_tool_execution_start(
+            if not is_resumed:
+                tracer.log_agent_creation(
                     agent_id=self.state.agent_id,
-                    tool_name="subagent_start_info",
-                    args={
-                        "name": self.state.agent_name,
-                        "task": self.state.task,
-                        "parent_id": self.state.parent_id,
-                    },
+                    name=self.state.agent_name,
+                    task=self.state.task,
+                    parent_id=self.state.parent_id,
                 )
-                tracer.update_tool_execution(execution_id=exec_id, status="completed", result={})
+                if self.state.parent_id is None:
+                    scan_config = tracer.scan_config or {}
+                    exec_id = tracer.log_tool_execution_start(
+                        agent_id=self.state.agent_id,
+                        tool_name="scan_start_info",
+                        args=scan_config,
+                    )
+                    tracer.update_tool_execution(execution_id=exec_id, status="completed", result={})
+
+                else:
+                    exec_id = tracer.log_tool_execution_start(
+                        agent_id=self.state.agent_id,
+                        tool_name="subagent_start_info",
+                        args={
+                            "name": self.state.agent_name,
+                            "task": self.state.task,
+                            "parent_id": self.state.parent_id,
+                        },
+                    )
+                    tracer.update_tool_execution(execution_id=exec_id, status="completed", result={})
+            else:
+                tracer.update_agent_status(self.state.agent_id, "resumed")
 
         self._add_to_agents_graph()
 
@@ -320,30 +326,52 @@ class BaseAgent(metaclass=AgentMeta):
         import os
 
         sandbox_mode = os.getenv("ESPRIT_SANDBOX_MODE", "false").lower() == "true"
-        if not sandbox_mode and self.state.sandbox_id is None:
+        if not sandbox_mode:
             from esprit.runtime import get_runtime
 
-            try:
-                runtime = get_runtime()
-                sandbox_info = await runtime.create_sandbox(
-                    self.state.agent_id, self.state.sandbox_token, self.local_sources
-                )
-                self.state.sandbox_id = sandbox_info["workspace_id"]
-                self.state.sandbox_token = sandbox_info["auth_token"]
-                self.state.sandbox_info = sandbox_info
+            runtime = get_runtime()
+            sandbox_initialized = False
 
-                if "agent_id" in sandbox_info:
-                    self.state.sandbox_info["agent_id"] = sandbox_info["agent_id"]
-            except Exception as e:
-                from esprit.telemetry import posthog
+            # Attempt to revive existing sandbox if we have an ID
+            if self.state.sandbox_id and hasattr(runtime, "revive_sandbox"):
+                try:
+                    logger.info(f"Attempting to revive sandbox {self.state.sandbox_id}...")
+                    sandbox_info = await runtime.revive_sandbox(self.state.sandbox_id)
+                    self.state.sandbox_info = sandbox_info
+                    self.state.sandbox_token = sandbox_info["auth_token"]
+                    if "agent_id" in sandbox_info:
+                        self.state.sandbox_info["agent_id"] = sandbox_info["agent_id"]
+                    sandbox_initialized = True
+                    logger.info(f"Successfully revived sandbox {self.state.sandbox_id}")
+                except Exception as e:
+                    logger.warning(f"Failed to revive sandbox {self.state.sandbox_id}: {e}")
+                    # If revival fails, we must create a new one.
+                    # We clear the ID so the creation logic below triggers.
+                    self.state.sandbox_id = None
 
-                posthog.error("sandbox_init_error", str(e))
-                raise
+            if not sandbox_initialized and self.state.sandbox_id is None:
+                try:
+                    sandbox_info = await runtime.create_sandbox(
+                        self.state.agent_id, self.state.sandbox_token, self.local_sources
+                    )
+                    self.state.sandbox_id = sandbox_info["workspace_id"]
+                    self.state.sandbox_token = sandbox_info["auth_token"]
+                    self.state.sandbox_info = sandbox_info
+
+                    if "agent_id" in sandbox_info:
+                        self.state.sandbox_info["agent_id"] = sandbox_info["agent_id"]
+                except Exception as e:
+                    from esprit.telemetry import posthog
+
+                    posthog.error("sandbox_init_error", str(e))
+                    raise
 
         if not self.state.task:
             self.state.task = task
-
-        self.state.add_message("user", task)
+            self.state.add_message("user", task)
+        elif not self.state.messages:
+             # Ensure there's at least one message if task was set but messages empty (rare)
+             self.state.add_message("user", task)
 
     async def _process_iteration(self, tracer: Optional["Tracer"]) -> bool:
         final_response = None
@@ -351,8 +379,19 @@ class BaseAgent(metaclass=AgentMeta):
 
         async for response in self.llm.generate(self.state.get_conversation_history(), tools=tools):
             final_response = response
-            if tracer and response.content:
-                tracer.update_streaming_content(self.state.agent_id, response.content)
+            if tracer:
+                if response.content:
+                    tracer.update_streaming_content(self.state.agent_id, response.content)
+                # Stream thinking blocks as they arrive
+                thinking = getattr(response, "thinking_blocks", None)
+                if thinking:
+                    combined = "\n".join(
+                        b.get("thinking", b.get("text", ""))
+                        for b in thinking
+                        if b.get("thinking") or b.get("text")
+                    )
+                    if combined:
+                        tracer.update_streaming_thinking(self.state.agent_id, combined)
 
         if final_response is None:
             return False
@@ -385,10 +424,12 @@ class BaseAgent(metaclass=AgentMeta):
         )
         if tracer:
             tracer.clear_streaming_content(self.state.agent_id)
+            tracer.clear_streaming_thinking(self.state.agent_id)
             tracer.log_chat_message(
                 content=clean_content(final_response.content),
                 role="assistant",
                 agent_id=self.state.agent_id,
+                thinking_blocks=thinking_blocks,
             )
 
         if actions:

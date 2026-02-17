@@ -871,6 +871,7 @@ class EspritTUIApp(App):  # type: ignore[misc]
 
         self._streaming_render_cache: dict[str, tuple[int, Any]] = {}
         self._last_streaming_len: dict[str, int] = {}
+        self._last_thinking_len: dict[str, int] = {}
 
         self._scan_thread: threading.Thread | None = None
         self._scan_stop_event = threading.Event()
@@ -1067,7 +1068,7 @@ class EspritTUIApp(App):  # type: ignore[misc]
             except Exception:  # noqa: BLE001
                 logging.debug("Failed to start GUI server", exc_info=True)
 
-        self.set_interval(0.35, self._update_ui_from_tracer)
+        self.set_interval(0.15, self._update_ui_from_tracer)
 
     def _update_ui_from_tracer(self) -> None:
         if self.show_splash:
@@ -1199,19 +1200,30 @@ class EspritTUIApp(App):  # type: ignore[misc]
         )
 
         if not events and not streaming and not is_root:
-            return self._get_chat_placeholder_content(
-                "Starting agent...", "placeholder-no-activity"
-            )
+            # Also check for streaming thinking - agent might be thinking before producing text
+            thinking = self.tracer.get_streaming_thinking(self.selected_agent_id)
+            if not thinking:
+                return self._get_chat_placeholder_content(
+                    "Starting agent...", "placeholder-no-activity"
+                )
 
         current_event_ids = [e["id"] for e in events]
         current_streaming_len = len(streaming) if streaming else 0
         last_streaming_len = self._last_streaming_len.get(self.selected_agent_id, 0)
 
+        # Also track streaming thinking for cache invalidation
+        streaming_thinking = self.tracer.get_streaming_thinking(self.selected_agent_id)
+        current_thinking_len = len(streaming_thinking) if streaming_thinking else 0
+
         # Skip cache when root has running children (shimmer animation needs refresh)
         has_running = is_root and self._has_running_children(self.selected_agent_id)
 
+        # Also invalidate cache when thinking changes
+        has_thinking_change = current_thinking_len != self._last_thinking_len.get(self.selected_agent_id, 0)
+
         if (
             not has_running
+            and not has_thinking_change
             and current_event_ids == self._displayed_events
             and current_streaming_len == last_streaming_len
         ):
@@ -1219,6 +1231,7 @@ class EspritTUIApp(App):  # type: ignore[misc]
 
         self._displayed_events = current_event_ids
         self._last_streaming_len[self.selected_agent_id] = current_streaming_len
+        self._last_thinking_len[self.selected_agent_id] = current_thinking_len
 
         rendered = self._get_rendered_events_content(events)
 
@@ -1291,6 +1304,15 @@ class EspritTUIApp(App):  # type: ignore[misc]
                 renderables.append(content)
 
         if self.selected_agent_id:
+            # Show streaming thinking indicator
+            streaming_thinking = self.tracer.get_streaming_thinking(self.selected_agent_id)
+            if streaming_thinking:
+                thinking_indicator = self._render_streaming_thinking(streaming_thinking)
+                if thinking_indicator:
+                    if renderables:
+                        renderables.append(Text(""))
+                    renderables.append(thinking_indicator)
+
             streaming = self.tracer.get_streaming_content(self.selected_agent_id)
             if streaming:
                 streaming_text = self._render_streaming_content(streaming)
@@ -1324,6 +1346,28 @@ class EspritTUIApp(App):  # type: ignore[misc]
         text.append("Compacting memory", style="#d97706 bold")
         text.append("  ·  ", style="dim")
         text.append("summarizing older messages to free context", style="dim")
+        return text
+
+    def _render_streaming_thinking(self, thinking_content: str) -> Text:
+        """Render a live thinking indicator with animated spinner and content preview."""
+        text = Text()
+        frames = ["◐", "◓", "◑", "◒"]
+        frame = frames[self._stats_spinner_frame % len(frames)]
+        text.append(f" {frame} ", style="#a855f7")
+        text.append("🧠 Thinking", style="bold #a855f7")
+
+        # Show last few lines of thinking content
+        lines = [ln for ln in thinking_content.strip().splitlines() if ln.strip()]
+        if lines:
+            # Show up to 6 lines of the latest thinking
+            show_lines = lines[-6:]
+            text.append("\n")
+            for line in show_lines:
+                display = line if len(line) <= 120 else line[:117] + "..."
+                text.append(f"  {display}\n", style="italic #c4b5fd")
+        else:
+            text.append("...", style="dim #a855f7")
+
         return text
 
     # ------------------------------------------------------------------
@@ -1397,6 +1441,14 @@ class EspritTUIApp(App):  # type: ignore[misc]
             if lines:
                 return lines[-1].strip()
 
+        # Check for streaming thinking (agent is reasoning)
+        thinking = self.tracer.get_streaming_thinking(agent_id)
+        if thinking and thinking.strip():
+            lines = [ln for ln in thinking.strip().splitlines() if ln.strip()]
+            if lines:
+                snippet = lines[-1].strip()
+                return f"Thinking: {snippet}"
+
         # Fall back to the most recent chat message
         agent_msgs = [
             m for m in reversed(list(self.tracer.chat_messages))
@@ -1421,6 +1473,26 @@ class EspritTUIApp(App):  # type: ignore[misc]
                 prefix = "Using" if status == "running" else "Used"
                 return f"{prefix} {tool_name}"
 
+        return None
+
+    def _get_agent_current_tool(self, agent_id: str) -> str | None:
+        """Get the currently running tool for an agent, if any."""
+        running_tools = [
+            t for t in list(self.tracer.tool_executions.values())
+            if t.get("agent_id") == agent_id and t.get("status") == "running"
+            and t.get("tool_name") not in ("scan_start_info", "subagent_start_info")
+        ]
+        if running_tools:
+            last = max(running_tools, key=lambda t: t.get("timestamp", ""))
+            name = last.get("tool_name", "")
+            if name:
+                _TOOL_ICONS = {
+                    "terminal_command": "⌨", "browser_action": "🌐",
+                    "code_analysis": "📄", "web_search": "🔍",
+                    "file_edit": "✏", "python_repl": "🐍",
+                }
+                icon = _TOOL_ICONS.get(name, "⚙")
+                return f"{icon} {name}"
         return None
 
     def _build_subagent_dashboard(self, root_agent_id: str) -> Any:
@@ -1467,11 +1539,48 @@ class EspritTUIApp(App):  # type: ignore[misc]
             if vuln_count > 0:
                 card.append(f"  ⚡{vuln_count}", style="bold #ef4444")
 
+            # Show thinking indicator if agent is currently thinking
+            streaming_thinking = self.tracer.get_streaming_thinking(agent_id)
+            if streaming_thinking and is_active:
+                card.append("  🧠", style="#a855f7")
+
+            # Elapsed time for this agent
+            agent_start = child.get("started_at") or child.get("timestamp")
+            if agent_start:
+                try:
+                    from datetime import datetime, timezone
+                    start_dt = datetime.fromisoformat(agent_start)
+                    if status in ("completed", "failed", "stopped", "llm_failed"):
+                        end_str = child.get("ended_at") or child.get("completed_at")
+                        if end_str:
+                            elapsed_s = (datetime.fromisoformat(end_str) - start_dt).total_seconds()
+                        else:
+                            elapsed_s = (datetime.now(timezone.utc) - start_dt).total_seconds()
+                    else:
+                        elapsed_s = (datetime.now(timezone.utc) - start_dt).total_seconds()
+                    mins, secs = divmod(int(elapsed_s), 60)
+                    card.append(f"  {mins}:{secs:02d}", style="dim #525252")
+                except (ValueError, TypeError):
+                    pass
+
+            # Iteration count
+            iterations = child.get("iterations", 0)
+            if iterations > 0:
+                card.append(f"  iter {iterations}", style="dim #525252")
+
+            # Status label for non-running agents
+            if status == "waiting":
+                card.append("  waiting", style="dim #fbbf24")
+            elif status in ("failed", "llm_failed"):
+                card.append("  failed", style="dim #ef4444")
+            elif status == "completed":
+                card.append("  done", style="dim #22c55e")
+
+            # Line 1: Primary activity snippet
             snippet = self._get_agent_snippet(agent_id)
             if snippet:
                 card.append("\n")
                 if is_active:
-                    # Shimmer effect for running agents
                     card.append("    ")
                     shimmer = self._shimmer_text(snippet, max_len=90)
                     card.append_text(shimmer)
@@ -1479,6 +1588,25 @@ class EspritTUIApp(App):  # type: ignore[misc]
                     card.append("    ", style="dim")
                     display = snippet if len(snippet) <= 90 else snippet[:89] + "…"
                     card.append(display, style="dim")
+
+                # Line 2: Second line of streaming or tool usage
+                streaming = self.tracer.get_streaming_content(agent_id) if is_active else None
+                if streaming and streaming.strip():
+                    lines = [ln for ln in streaming.strip().splitlines() if ln.strip()]
+                    if len(lines) >= 2:
+                        second_line = lines[-2].strip()
+                        if second_line and second_line != snippet:
+                            display2 = second_line if len(second_line) <= 85 else second_line[:82] + "…"
+                            card.append("\n    ")
+                            card.append(display2, style="dim #71717a")
+
+                # Line 3: Current tool being used (if different from snippet)
+                if is_active:
+                    current_tool = self._get_agent_current_tool(agent_id)
+                    if current_tool and not snippet.startswith("Using "):
+                        card.append("\n    ")
+                        card.append(current_tool, style="italic dim #525252")
+
             elif is_active:
                 card.append("\n    ", style="dim")
                 card.append_text(self._shimmer_text("Initializing…", max_len=90))
@@ -1500,11 +1628,13 @@ class EspritTUIApp(App):  # type: ignore[misc]
 
     def _render_streaming_content(self, content: str, agent_id: str | None = None) -> Any:
         cache_key = agent_id or self.selected_agent_id or ""
-        content_len = len(content)
+        # Include cursor phase in cache key so blink animation works
+        cursor_phase = self._stats_spinner_frame % 4
+        content_key = (len(content), cursor_phase)
 
         if cache_key in self._streaming_render_cache:
-            cached_len, cached_output = self._streaming_render_cache[cache_key]
-            if cached_len == content_len:
+            cached_key, cached_output = self._streaming_render_cache[cache_key]
+            if cached_key == content_key:
                 return cached_output
 
         renderables: list[Any] = []
@@ -1527,6 +1657,12 @@ class EspritTUIApp(App):  # type: ignore[misc]
                     renderables.append(Text(""))
                 renderables.append(tool_renderable)
 
+        # Add blinking cursor to show active streaming
+        if renderables:
+            cursor_char = "█" if (self._stats_spinner_frame % 4) < 2 else " "
+            cursor = Text(cursor_char, style="bold #22d3ee")
+            renderables.append(cursor)
+
         if not renderables:
             result = Text()
         elif len(renderables) == 1:
@@ -1534,7 +1670,7 @@ class EspritTUIApp(App):  # type: ignore[misc]
         else:
             result = Group(*renderables)
 
-        self._streaming_render_cache[cache_key] = (content_len, result)
+        self._streaming_render_cache[cache_key] = (content_key, result)
         return result
 
     def _render_streaming_tool(
@@ -1657,6 +1793,16 @@ class EspritTUIApp(App):  # type: ignore[misc]
                 )
                 animated_text.append("Compacting", style="#fbbf24")
                 animated_text.append(" memory", style="#d97706")
+                return (animated_text, keymap_styled([("ctrl-q", "quit")]), True)
+            # Check if this agent is currently thinking
+            streaming_thinking = self.tracer.get_streaming_thinking(agent_id)
+            if streaming_thinking:
+                animated_text = Text()
+                animated_text.append_text(self._get_sweep_animation(["#000000", "#1a001a", "#3d0040", "#5c0066", "#7a0099", "#a300cc", "#c44dff", "#a855f7"]))
+                animated_text.append("🧠 Thinking", style="#a855f7")
+                animated_text.append("  ", style="dim")
+                animated_text.append("esc", style="white")
+                animated_text.append(" stop", style="dim")
                 return (animated_text, keymap_styled([("ctrl-q", "quit")]), True)
             if self._agent_has_real_activity(agent_id):
                 animated_text = Text()
@@ -1890,7 +2036,10 @@ class EspritTUIApp(App):  # type: ignore[misc]
                     return True
 
         streaming = self.tracer.get_streaming_content(agent_id)
-        return bool(streaming and streaming.strip())
+        if streaming and streaming.strip():
+            return True
+        streaming_thinking = self.tracer.get_streaming_thinking(agent_id)
+        return bool(streaming_thinking and streaming_thinking.strip())
 
     def _agent_vulnerability_count(self, agent_id: str) -> int:
         count = 0
@@ -1942,6 +2091,7 @@ class EspritTUIApp(App):  # type: ignore[misc]
         self._displayed_events.clear()
         self._streaming_render_cache.clear()
         self._last_streaming_len.clear()
+        self._last_thinking_len.clear()
 
         self.call_later(self._update_chat_view)
         self._update_agent_status_display()
@@ -2139,12 +2289,32 @@ class EspritTUIApp(App):  # type: ignore[misc]
         parent_node.allow_expand = True
         parent_node.expand()
 
+    def _render_thinking_blocks(self, thinking_blocks: list[dict[str, Any]]) -> Text:
+        """Render thinking blocks with distinctive styling."""
+        text = Text()
+        text.append("🧠 ", style="bold #a855f7")
+        text.append("Thinking", style="bold #a855f7")
+        text.append("\n")
+        for block in thinking_blocks:
+            thinking_text = block.get("thinking", block.get("text", ""))
+            if thinking_text:
+                # Show thinking content, truncate if very long
+                lines = thinking_text.strip().splitlines()
+                for i, line in enumerate(lines):
+                    if i >= 12:
+                        remaining = len(lines) - i
+                        text.append(f"  ... ({remaining} more lines)", style="dim #7c3aed")
+                        break
+                    text.append(f"  {line}\n", style="italic #c4b5fd")
+        return text
+
     def _render_chat_content(self, msg_data: dict[str, Any]) -> Any:
         role = msg_data.get("role")
         content = msg_data.get("content", "")
         metadata = msg_data.get("metadata", {})
+        thinking_blocks = msg_data.get("thinking_blocks")
 
-        if not content:
+        if not content and not thinking_blocks:
             return None
 
         if role == "user":
@@ -2158,7 +2328,20 @@ class EspritTUIApp(App):  # type: ignore[misc]
             interrupted_text.append("Interrupted by user", style="yellow dim")
             return Group(streaming_result, interrupted_text)
 
-        return AgentMessageRenderer.render_simple(content)
+        parts: list[Any] = []
+
+        # Render thinking blocks before the message content
+        if thinking_blocks:
+            parts.append(self._render_thinking_blocks(thinking_blocks))
+
+        if content:
+            parts.append(AgentMessageRenderer.render_simple(content))
+
+        if len(parts) == 0:
+            return None
+        if len(parts) == 1:
+            return parts[0]
+        return Group(*parts)
 
     def _render_tool_content_simple(self, tool_data: dict[str, Any]) -> Any:
         tool_name = tool_data.get("tool_name", "Unknown Tool")

@@ -771,6 +771,18 @@ Supported providers:
     scan_parser.add_argument("-n", "--non-interactive", action="store_true", help="Non-interactive mode")
     scan_parser.add_argument("-m", "--scan-mode", choices=["quick", "standard", "deep"], default="deep")
     scan_parser.add_argument("--config", type=str, help="Path to custom config file")
+    scan_parser.add_argument("--resume", type=str, help="Path to checkpoint file to resume from")
+
+    # Report subcommand
+    report_parser = subparsers.add_parser(
+        "report",
+        help="Generate reports from a completed scan",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    report_parser.add_argument("run_id", help="Run ID or path to run directory")
+    report_parser.add_argument("--html", action="store_true", help="Generate HTML report")
+    report_parser.add_argument("--timelapse", action="store_true", help="Generate timelapse")
+    report_parser.add_argument("--output", "-o", type=str, help="Output directory for reports")
 
     # Uninstall subcommand
     subparsers.add_parser(

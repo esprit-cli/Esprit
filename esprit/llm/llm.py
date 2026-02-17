@@ -381,10 +381,13 @@ class LLM:
                                 accumulated = accumulated[
                                     : accumulated.find("</function>") + len("</function>")
                                 ]
-                                yield LLMResponse(content=accumulated)
+                                yield LLMResponse(content=accumulated, thinking_blocks=all_thinking or None)
                                 done_streaming = True
                                 continue
-                            yield LLMResponse(content=accumulated)
+                            yield LLMResponse(content=accumulated, thinking_blocks=all_thinking or None)
+                        elif thinking:
+                            # Yield thinking-only updates so the UI can show them
+                            yield LLMResponse(content=accumulated, thinking_blocks=all_thinking or None)
 
         # Update usage stats
         if total_usage:
