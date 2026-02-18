@@ -13,9 +13,9 @@ jobs:
       matrix:
         include:
           - os: macos-latest
-            target: macos-arm64
-          - os: macos-15-intel
-            target: macos-x86_64
+            target: darwin-arm64
+          - os: macos-13
+            target: darwin-x86_64
           - os: ubuntu-latest
             target: linux-x86_64
           - os: windows-latest
@@ -32,22 +32,34 @@ jobs:
 
       - uses: snok/install-poetry@v1
 
-      - name: Build
+      - name: Install dependencies
+        shell: bash
+        run: poetry install --with dev
+
+      - name: Build binary
         shell: bash
         run: |
-          poetry install --with dev
-          poetry run pyinstaller esprit.spec --noconfirm
+          poetry run pyinstaller \
+            --name esprit \
+            --onefile \
+            --console \
+            --collect-all esprit \
+            --hidden-import esprit.interface.main \
+            esprit/interface/main.py
 
-          VERSION=$(poetry version -s)
+      - name: Package
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+          RUNNER_OS_NAME: ${{ runner.os }}
+        run: |
           mkdir -p dist/release
 
-          if [[ "${{ runner.os }}" == "Windows" ]]; then
-            cp dist/esprit.exe "dist/release/esprit-${VERSION}-${{ matrix.target }}.exe"
-            (cd dist/release && 7z a "esprit-${VERSION}-${{ matrix.target }}.zip" "esprit-${VERSION}-${{ matrix.target }}.exe")
+          if [[ "$RUNNER_OS_NAME" == "Windows" ]]; then
+            cd dist && zip -j "release/esprit-${TARGET}.zip" esprit.exe
           else
-            cp dist/esprit "dist/release/esprit-${VERSION}-${{ matrix.target }}"
-            chmod +x "dist/release/esprit-${VERSION}-${{ matrix.target }}"
-            tar -C dist/release -czvf "dist/release/esprit-${VERSION}-${{ matrix.target }}.tar.gz" "esprit-${VERSION}-${{ matrix.target }}"
+            chmod +x dist/esprit
+            tar -C dist -czf "dist/release/esprit-${TARGET}.tar.gz" esprit
           fi
 
       - uses: actions/upload-artifact@v4
@@ -61,10 +73,13 @@ jobs:
   release:
     needs: build
     runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
     permissions:
       contents: write
 
     steps:
+      - uses: actions/checkout@v4
+
       - uses: actions/download-artifact@v4
         with:
           path: release
@@ -73,6 +88,5 @@ jobs:
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
-          prerelease: ${{ !startsWith(github.ref, 'refs/tags/') }}
           generate_release_notes: true
           files: release/*
