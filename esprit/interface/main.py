@@ -354,7 +354,8 @@ def _get_available_models(configured_providers: list[tuple[str, str]]) -> list[t
 
     for provider_id, model_list in AVAILABLE_MODELS.items():
         if provider_id in provider_ids:
-            for model_id, display_name in model_list:
+            for entry in model_list:
+                model_id, display_name = entry[0], entry[1]
                 full_id = f"{provider_id}/{model_id}"
                 models.append((full_id, f"{display_name} [{provider_id}]"))
 

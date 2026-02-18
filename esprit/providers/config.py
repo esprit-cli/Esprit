@@ -242,9 +242,9 @@ def cmd_config_model(model: str | None = None) -> int:
     if "/" not in model:
         # Try to infer provider
         for provider_id, models in AVAILABLE_MODELS.items():
-            for model_id, _ in models:
-                if model_id == model:
-                    model = f"{provider_id}/{model_id}"
+            for entry in models:
+                if entry[0] == model:
+                    model = f"{provider_id}/{entry[0]}"
                     break
 
     config.set_model(model)

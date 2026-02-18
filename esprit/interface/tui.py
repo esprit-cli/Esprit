@@ -70,6 +70,19 @@ class ChatTextArea(TextArea):  # type: ignore[misc]
             text_content = str(self.text)  # type: ignore[has-type]
             message = text_content.strip()
             if message:
+                # Block input while agent has running tools to avoid corrupting
+                # the message sequence (tool_use without matching tool_result)
+                app = self._app_reference
+                if app.tracer and app.selected_agent_id:
+                    has_running_tools = any(
+                        t.get("agent_id") == app.selected_agent_id
+                        and t.get("status") == "running"
+                        for t in list(app.tracer.tool_executions.values())
+                    )
+                    if has_running_tools:
+                        event.prevent_default()
+                        return
+
                 self.text = ""
 
                 self._app_reference._send_user_message(message)
