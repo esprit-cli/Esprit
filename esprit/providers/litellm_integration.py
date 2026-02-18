@@ -74,6 +74,9 @@ class ProviderAuthClient:
             # Esprit subscription provider
             if prefix == "esprit":
                 return "esprit"
+            # OpenRouter uses its own prefix
+            if prefix == "openrouter":
+                return "openrouter"
             if prefix in PROVIDERS:
                 return prefix
 

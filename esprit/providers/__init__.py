@@ -18,6 +18,7 @@ from esprit.providers.copilot import CopilotProvider
 from esprit.providers.google_gemini import GoogleGeminiProvider
 from esprit.providers.antigravity import AntigravityProvider
 from esprit.providers.esprit_subs import EspritSubsProvider
+from esprit.providers.openrouter import OpenRouterProvider
 from esprit.providers.token_store import TokenStore
 
 # Provider registry
@@ -25,6 +26,7 @@ PROVIDERS: dict[str, type[ProviderAuth]] = {
     "esprit": EspritSubsProvider,
     "anthropic": AnthropicOAuthProvider,
     "openai": OpenAICodexProvider,
+    "openrouter": OpenRouterProvider,
     "github-copilot": CopilotProvider,
     "google": GoogleGeminiProvider,
     "antigravity": AntigravityProvider,
@@ -35,9 +37,10 @@ PROVIDER_NAMES: dict[str, str] = {
     "esprit": "Esprit (Use Your Subscription)",
     "anthropic": "Anthropic (Claude Pro/Max)",
     "openai": "OpenAI (ChatGPT Plus/Pro)",
+    "openrouter": "OpenRouter",
     "github-copilot": "GitHub Copilot",
     "google": "Google (Gemini)",
-    "antigravity": "Antigravity (Free Claude/Gemini)",
+    "antigravity": "Antigravity",
 }
 
 
@@ -66,6 +69,7 @@ __all__ = [
     "EspritSubsProvider",
     "AnthropicOAuthProvider",
     "OpenAICodexProvider",
+    "OpenRouterProvider",
     "CopilotProvider",
     "GoogleGeminiProvider",
     "AntigravityProvider",

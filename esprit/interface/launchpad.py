@@ -393,6 +393,7 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
             "antigravity": "AG",
             "esprit": "ES",
             "openai": "OAI",
+            "openrouter": "OR",
             "anthropic": "CC",
             "google": "GG",
             "github-copilot": "CO",
@@ -401,20 +402,11 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
             "antigravity": "ANTIGRAVITY",
             "esprit": "ESPRIT",
             "openai": "OPENAI",
+            "openrouter": "OPENROUTER",
             "anthropic": "ANTHROPIC",
             "google": "GOOGLE",
             "github-copilot": "COPILOT",
         }
-
-        # Providers known to be free
-        _FREE_PROVIDERS = {"antigravity"}
-
-        # Lazy-load pricing DB for context/cost info
-        try:
-            from esprit.llm.pricing import get_pricing_db
-            pricing_db = get_pricing_db()
-        except Exception:  # noqa: BLE001
-            pricing_db = None
 
         # Check which providers are connected
         connected: dict[str, bool] = {}
@@ -435,18 +427,19 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
             badge = _BADGES.get(provider_id, provider_id[:3].upper())
             label = _PROVIDER_LABELS.get(provider_id, provider_id.upper())
             is_connected = connected.get(provider_id, False)
-            is_free_provider = provider_id in _FREE_PROVIDERS
 
-            # Filter models
+            # Filter models — entries are 5-tuples: (id, name, cost_in, cost_out, ctx)
             matching_models = []
-            for model_id, model_name in models:
+            for entry in models:
+                model_id, model_name = entry[0], entry[1]
+                cost_in = entry[2] if len(entry) > 2 else 0.0
+                cost_out = entry[3] if len(entry) > 3 else 0.0
+                ctx = entry[4] if len(entry) > 4 else 0
                 full_model = f"{provider_id}/{model_id}"
                 searchable = f"{model_name} {model_id} {badge} {label}".lower()
-                if is_free_provider:
-                    searchable += " free"
                 if query and query not in searchable:
                     continue
-                matching_models.append((model_id, model_name, full_model))
+                matching_models.append((model_id, model_name, full_model, cost_in, cost_out, ctx))
 
             if not matching_models:
                 continue
@@ -454,47 +447,31 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
             # Provider section header
             conn_indicator = "\u2713" if is_connected else "\u00b7"
             conn_label = "connected" if is_connected else "not connected"
-            header_hint = f"[{badge}] {conn_label}"
-            if is_free_provider:
-                header_hint += "  FREE"
             entries.append(_MenuEntry(
                 f"separator:{provider_id}",
                 f"  {conn_indicator} {label}",
-                header_hint,
+                f"[{badge}] {conn_label}",
             ))
 
-            # Model entries with pricing/context info
-            for model_id, model_name, full_model in matching_models:
+            # Model entries with inline pricing
+            for model_id, model_name, full_model, cost_in, cost_out, ctx in matching_models:
                 is_current = full_model == current
                 marker = "\u25cf" if is_current else "\u25cb"
                 dim = "" if is_connected else "\u2022 "
 
-                # Build hint with context + pricing info
+                # Build hint: pricing + context + active badge
                 hint_parts: list[str] = []
 
-                if pricing_db:
-                    try:
-                        ctx = pricing_db.get_context_limit(model_id)
-                        if ctx and ctx > 0:
-                            if ctx >= 1_000_000:
-                                hint_parts.append(f"{ctx // 1_000_000}M ctx")
-                            else:
-                                hint_parts.append(f"{ctx // 1000}K ctx")
-                    except Exception:  # noqa: BLE001
-                        pass
+                if cost_in > 0:
+                    hint_parts.append(f"${cost_in:.2f}/M in")
+                    hint_parts.append(f"${cost_out:.2f}/M out")
+                else:
+                    hint_parts.append("$0")
 
-                    if not is_free_provider:
-                        try:
-                            pricing = pricing_db.get_pricing(model_id)
-                            if pricing and pricing.input_cost > 0:
-                                cost_per_m = pricing.input_cost * 1_000_000
-                                hint_parts.append(f"${cost_per_m:.1f}/M in")
-                        except Exception:  # noqa: BLE001
-                            pass
-
-                is_free = is_free_provider or "(free)" in model_name.lower()
-                if is_free and not any("free" in p.lower() for p in hint_parts):
-                    hint_parts.insert(0, "FREE")
+                if ctx >= 1_000_000:
+                    hint_parts.append(f"{ctx // 1_000_000}M ctx")
+                elif ctx > 0:
+                    hint_parts.append(f"{ctx // 1000}K ctx")
 
                 if is_current:
                     hint_parts.append("\u2605 active")
@@ -509,11 +486,17 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
                     hint,
                 ))
 
+                entries.append(_MenuEntry(
+                    f"model:{full_model}",
+                    model_label,
+                    hint,
+                ))
+
         entries.append(_MenuEntry("back", "\u2190 Back"))
         return entries
 
     def _build_provider_entries(self) -> list[_MenuEntry]:
-        provider_order = ["antigravity", "anthropic", "openai", "google", "github-copilot"]
+        provider_order = ["antigravity", "openrouter", "anthropic", "openai", "google", "github-copilot"]
         entries: list[_MenuEntry] = []
 
         for provider_id in provider_order:
@@ -626,16 +609,7 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
                 # Provider group header — not selectable
                 menu_text.append(entry.label, style=Style(color="#67e8f9", bold=True))
                 if entry.hint:
-                    # Highlight "FREE" in the hint
-                    hint = entry.hint
-                    if "FREE" in hint:
-                        parts = hint.split("FREE")
-                        menu_text.append(f"  {parts[0]}", style=Style(color="#555555"))
-                        menu_text.append("FREE", style=Style(color="#22c55e", bold=True))
-                        if len(parts) > 1:
-                            menu_text.append(parts[1], style=Style(color="#555555"))
-                    else:
-                        menu_text.append(f"  {entry.hint}", style=Style(color="#555555"))
+                    menu_text.append(f"  {entry.hint}", style=Style(color="#555555"))
             elif is_selected:
                 prefix = "\u276f "
                 label_style = Style(color="#22d3ee", bold=True)
@@ -661,21 +635,21 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
         menu_widget.update(menu_text)
 
     def _append_styled_hint(self, text: Text, hint: str, selected: bool) -> None:
-        """Append a hint with special styling for keywords like FREE, active, ctx."""
+        """Append a hint with special styling for keywords like pricing, active, ctx."""
         text.append("  ", style=Style(color="#555555"))
         parts = hint.split("  ")
         for i, part in enumerate(parts):
             if i > 0:
                 text.append("  ", style=Style(color="#3f3f3f"))
             part_stripped = part.strip()
-            if part_stripped == "FREE":
-                text.append("FREE", style=Style(color="#22c55e", bold=True))
+            if part_stripped == "$0":
+                text.append("$0", style=Style(color="#22c55e"))
             elif "\u2605 active" in part_stripped:
                 text.append(part_stripped, style=Style(color="#fbbf24", bold=True))
             elif "ctx" in part_stripped:
                 text.append(part_stripped, style=Style(color="#0e7490" if selected else "#555555"))
             elif part_stripped.startswith("$"):
-                text.append(part_stripped, style=Style(color="#555555", dim=True))
+                text.append(part_stripped, style=Style(color="#a1a1aa" if selected else "#555555"))
             else:
                 text.append(part_stripped, style=Style(color="#0e7490" if selected else "#555555"))
 

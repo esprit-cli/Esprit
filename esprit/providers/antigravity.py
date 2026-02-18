@@ -250,10 +250,10 @@ async def _discover_project(access_token: str) -> tuple[str | None, str | None]:
 
 
 class AntigravityProvider(ProviderAuth):
-    """Antigravity provider for free Claude/Gemini access via Google Cloud Code."""
+    """Antigravity provider for Claude/Gemini access via Google Cloud Code."""
 
     provider_id = "antigravity"
-    display_name = "Antigravity (Free Claude/Gemini)"
+    display_name = "Antigravity"
 
     def __init__(self) -> None:
         self._pending_auth: dict[str, Any] = {}
