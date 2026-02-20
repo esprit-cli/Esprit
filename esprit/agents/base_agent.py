@@ -486,9 +486,14 @@ class BaseAgent(metaclass=AgentMeta):
         if sender_id == "user":
             return True
 
-        # For llm_failed sub-agents, only parent instructions should resume execution.
-        # This avoids deadlocks while preventing unrelated messages from causing retry loops.
-        return bool(sender_id and state.parent_id and sender_id == state.parent_id)
+        if state.parent_id:
+            # For llm_failed sub-agents, only parent instructions should resume execution.
+            # This avoids unrelated sibling messages causing retry loops.
+            return bool(sender_id and sender_id == state.parent_id)
+
+        # Root agents can receive completion/results only from sub-agents.
+        # Allow those messages to resume from llm_failed wait to prevent deadlocks.
+        return bool(sender_id)
 
     def _check_agent_messages(self, state: AgentState) -> None:  # noqa: PLR0912
         try:

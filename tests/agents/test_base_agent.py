@@ -52,11 +52,23 @@ class TestWaitingResumePolicy:
 
         assert BaseAgent._should_resume_waiting_on_message(state, "agent_parent")
 
+    def test_llm_failed_root_resumes_from_subagent_message(self) -> None:
+        state = AgentState(parent_id=None)
+        state.enter_waiting_state(llm_failed=True)
+
+        assert BaseAgent._should_resume_waiting_on_message(state, "agent_child")
+
     def test_llm_failed_ignores_unrelated_agent_message(self) -> None:
         state = AgentState(parent_id="agent_parent")
         state.enter_waiting_state(llm_failed=True)
 
         assert not BaseAgent._should_resume_waiting_on_message(state, "agent_sibling")
+
+    def test_llm_failed_root_ignores_missing_sender(self) -> None:
+        state = AgentState(parent_id=None)
+        state.enter_waiting_state(llm_failed=True)
+
+        assert not BaseAgent._should_resume_waiting_on_message(state, None)
 
     def test_normal_waiting_resumes_from_any_sender(self) -> None:
         state = AgentState(parent_id="agent_parent")
