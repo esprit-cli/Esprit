@@ -697,7 +697,14 @@ class LLM:
         from esprit.telemetry import posthog
 
         posthog.error("llm_error", type(e).__name__)
-        raise LLMRequestFailedError(f"LLM request failed: {type(e).__name__}", str(e)) from e
+        status_code = getattr(e, "status_code", None) or getattr(
+            getattr(e, "response", None), "status_code", None
+        )
+        raise LLMRequestFailedError(
+            f"LLM request failed: {type(e).__name__}",
+            str(e),
+            status_code=status_code,
+        ) from e
 
     def _is_anthropic(self) -> bool:
         if not self.config.model_name:

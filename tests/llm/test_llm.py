@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from esprit.llm.config import LLMConfig
-from esprit.llm.llm import LLM, _mask_email
+from esprit.llm.llm import LLM, LLMRequestFailedError, _mask_email
 
 
 class TestMaskEmail:
@@ -213,3 +213,18 @@ class TestPromptCacheControl:
 
         updated = llm._add_cache_control(messages)
         assert updated[0]["content"][0]["cache_control"] == {"type": "ephemeral"}
+
+
+class TestRaiseError:
+    def test_includes_status_code_from_response(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        llm = LLM.__new__(LLM)
+        monkeypatch.setattr("esprit.telemetry.posthog.error", lambda *_args, **_kwargs: None)
+
+        response = SimpleNamespace(status_code=503)
+        error = RuntimeError("service unavailable")
+        error.response = response  # type: ignore[attr-defined]
+
+        with pytest.raises(LLMRequestFailedError) as exc:
+            llm._raise_error(error)
+
+        assert exc.value.status_code == 503
