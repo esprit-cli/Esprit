@@ -1,5 +1,7 @@
 """Tests for BaseAgent native tool-call payload construction."""
 
+from datetime import UTC, datetime, timedelta
+
 from esprit.agents.base_agent import BaseAgent
 from esprit.agents.state import AgentState
 
@@ -61,3 +63,10 @@ class TestWaitingResumePolicy:
         state.enter_waiting_state(llm_failed=False)
 
         assert BaseAgent._should_resume_waiting_on_message(state, "agent_sibling")
+
+    def test_llm_failed_does_not_auto_resume_on_waiting_timeout(self) -> None:
+        state = AgentState(parent_id="agent_parent")
+        state.enter_waiting_state(llm_failed=True)
+        state.waiting_start_time = datetime.now(UTC) - timedelta(hours=2)
+
+        assert state.has_waiting_timeout() is False
