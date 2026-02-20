@@ -474,6 +474,22 @@ class BaseAgent(metaclass=AgentMeta):
 
         return False
 
+    @staticmethod
+    def _should_resume_waiting_on_message(state: AgentState, sender_id: str | None) -> bool:
+        """Decide whether an inbound message should resume a waiting agent."""
+        if not state.is_waiting_for_input():
+            return False
+
+        if not state.llm_failed:
+            return True
+
+        if sender_id == "user":
+            return True
+
+        # For llm_failed sub-agents, only parent instructions should resume execution.
+        # This avoids deadlocks while preventing unrelated messages from causing retry loops.
+        return bool(sender_id and state.parent_id and sender_id == state.parent_id)
+
     def _check_agent_messages(self, state: AgentState) -> None:  # noqa: PLR0912
         try:
             from esprit.tools.agents_graph.agents_graph_actions import _agent_graph, _agent_messages
@@ -489,26 +505,9 @@ class BaseAgent(metaclass=AgentMeta):
                     if not message.get("read", False):
                         sender_id = message.get("from")
 
-                        if state.is_waiting_for_input():
-                            if state.llm_failed:
-                                if sender_id == "user":
-                                    state.resume_from_waiting()
-                                    has_new_messages = True
-
-                                    from esprit.telemetry.tracer import get_global_tracer
-
-                                    tracer = get_global_tracer()
-                                    if tracer:
-                                        tracer.update_agent_status(state.agent_id, "running")
-                            else:
-                                state.resume_from_waiting()
-                                has_new_messages = True
-
-                                from esprit.telemetry.tracer import get_global_tracer
-
-                                tracer = get_global_tracer()
-                                if tracer:
-                                    tracer.update_agent_status(state.agent_id, "running")
+                        if self._should_resume_waiting_on_message(state, sender_id):
+                            state.resume_from_waiting()
+                            has_new_messages = True
 
                         if sender_id == "user":
                             sender_name = "User"

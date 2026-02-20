@@ -1,6 +1,7 @@
 """Tests for BaseAgent native tool-call payload construction."""
 
 from esprit.agents.base_agent import BaseAgent
+from esprit.agents.state import AgentState
 
 
 class TestBuildNativeToolCalls:
@@ -34,3 +35,29 @@ class TestBuildNativeToolCalls:
         ]
 
         assert BaseAgent._build_native_tool_calls(actions) is None
+
+
+class TestWaitingResumePolicy:
+    def test_llm_failed_resumes_from_user_message(self) -> None:
+        state = AgentState(parent_id="agent_parent")
+        state.enter_waiting_state(llm_failed=True)
+
+        assert BaseAgent._should_resume_waiting_on_message(state, "user")
+
+    def test_llm_failed_resumes_from_parent_message(self) -> None:
+        state = AgentState(parent_id="agent_parent")
+        state.enter_waiting_state(llm_failed=True)
+
+        assert BaseAgent._should_resume_waiting_on_message(state, "agent_parent")
+
+    def test_llm_failed_ignores_unrelated_agent_message(self) -> None:
+        state = AgentState(parent_id="agent_parent")
+        state.enter_waiting_state(llm_failed=True)
+
+        assert not BaseAgent._should_resume_waiting_on_message(state, "agent_sibling")
+
+    def test_normal_waiting_resumes_from_any_sender(self) -> None:
+        state = AgentState(parent_id="agent_parent")
+        state.enter_waiting_state(llm_failed=False)
+
+        assert BaseAgent._should_resume_waiting_on_message(state, "agent_sibling")
