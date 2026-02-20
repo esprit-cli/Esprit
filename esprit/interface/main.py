@@ -509,24 +509,24 @@ def pre_scan_setup(non_interactive: bool = False) -> bool:
 
 async def warm_up_llm() -> None:
     from esprit.llm.config import DEFAULT_MODEL
+    from esprit.llm.api_base import (
+        configured_api_base,
+        detect_conflicting_provider_base_env,
+        resolve_api_base,
+    )
     from esprit.providers.litellm_integration import (
         get_provider_api_key,
         get_provider_headers,
-        get_modified_url,
         should_use_oauth,
     )
 
     console = Console()
+    model_name = ""
 
     try:
         model_name = Config.get("esprit_llm") or DEFAULT_MODEL
         api_key = Config.get("llm_api_key")
-        api_base = (
-            Config.get("llm_api_base")
-            or Config.get("openai_api_base")
-            or Config.get("litellm_base_url")
-            or Config.get("ollama_api_base")
-        )
+        api_base = resolve_api_base(model_name)
 
         # Codex OAuth models use a non-standard API — skip warm-up test
         model_lower = model_name.lower() if model_name else ""
@@ -597,6 +597,22 @@ async def warm_up_llm() -> None:
         error_text.append("\n\n", style="white")
         error_text.append("Could not establish connection to the language model.\n", style="white")
         error_text.append("Please check your configuration and try again.\n", style="white")
+        if not configured_api_base():
+            conflict = detect_conflicting_provider_base_env(model_name)
+            if conflict:
+                env_name, env_value = conflict
+                error_text.append(
+                    f"\nDetected {env_name}={env_value}\n",
+                    style="yellow",
+                )
+                error_text.append(
+                    "This environment variable can override provider API routing.\n",
+                    style="yellow",
+                )
+                error_text.append(
+                    f"Unset it in your shell: unset {env_name}\n",
+                    style="dim white",
+                )
         error_text.append(f"\nError: {e}", style="dim white")
 
         panel = Panel(

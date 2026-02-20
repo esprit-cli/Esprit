@@ -6,6 +6,7 @@ from typing import Any
 import litellm
 
 from esprit.config import Config
+from esprit.llm.api_base import resolve_api_base
 
 
 logger = logging.getLogger(__name__)
@@ -157,12 +158,7 @@ def check_duplicate(
 
         model_name = Config.get("esprit_llm")
         api_key = Config.get("llm_api_key")
-        api_base = (
-            Config.get("llm_api_base")
-            or Config.get("openai_api_base")
-            or Config.get("litellm_base_url")
-            or Config.get("ollama_api_base")
-        )
+        api_base = resolve_api_base(model_name)
 
         messages = [
             {"role": "system", "content": DEDUPE_SYSTEM_PROMPT},

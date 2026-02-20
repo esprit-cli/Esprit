@@ -4,6 +4,7 @@ from typing import Any
 import litellm
 
 from esprit.config import Config
+from esprit.llm.api_base import resolve_api_base
 
 
 logger = logging.getLogger(__name__)
@@ -135,12 +136,7 @@ def summarize_messages(
     prompt = SUMMARY_PROMPT_TEMPLATE.format(conversation=conversation)
 
     api_key = Config.get("llm_api_key")
-    api_base = (
-        Config.get("llm_api_base")
-        or Config.get("openai_api_base")
-        or Config.get("litellm_base_url")
-        or Config.get("ollama_api_base")
-    )
+    api_base = resolve_api_base(model)
 
     try:
         completion_args: dict[str, Any] = {

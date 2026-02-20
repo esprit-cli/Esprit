@@ -12,6 +12,7 @@ from litellm import acompletion, stream_chunk_builder, supports_reasoning
 from litellm.utils import supports_prompt_caching, supports_vision
 
 from esprit.config import Config
+from esprit.llm.api_base import resolve_api_base
 from esprit.llm.config import LLMConfig
 from esprit.llm.memory_compressor import MemoryCompressor
 from esprit.llm.utils import (
@@ -565,17 +566,15 @@ class LLM:
                         args["extra_headers"] = provider_headers
                     args["api_key"] = provider_api_key or "oauth-auth"
 
-        # Fall back to environment variables if not using OAuth
+        # Fall back to configured API key when provider auth is not active.
         if not use_oauth:
             if "api_key" not in args and (api_key := Config.get("llm_api_key")):
                 args["api_key"] = api_key
-            if api_base := (
-                Config.get("llm_api_base")
-                or Config.get("openai_api_base")
-                or Config.get("litellm_base_url")
-                or Config.get("ollama_api_base")
-            ):
-                args["api_base"] = api_base
+
+        # Always resolve API base explicitly so provider-specific env vars (e.g.
+        # ANTHROPIC_BASE_URL) do not silently hijack requests.
+        if api_base := resolve_api_base(self.config.model_name):
+            args["api_base"] = api_base
 
         if self._supports_reasoning():
             args["reasoning_effort"] = self._reasoning_effort
