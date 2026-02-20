@@ -210,8 +210,9 @@ class LLM:
 
         self._total_stats.requests += 1
         response = await acompletion(**self._build_completion_args(messages, tools=tools), stream=True)
+        idle_timeout = self._get_stream_idle_timeout_seconds()
 
-        async for chunk in response:
+        async for chunk in self._iter_with_idle_timeout(response, idle_timeout):
             chunks.append(chunk)
             if done_streaming:
                 done_streaming += 1
@@ -355,7 +356,8 @@ class LLM:
         async with httpx.AsyncClient(timeout=120) as http:
             async with http.stream("POST", url, headers=headers, json=body) as resp:
                 resp.raise_for_status()
-                async for line in resp.aiter_lines():
+                idle_timeout = self._get_stream_idle_timeout_seconds()
+                async for line in self._iter_with_idle_timeout(resp.aiter_lines(), idle_timeout):
                     if done_streaming:
                         break
 
@@ -580,6 +582,34 @@ class LLM:
             args["reasoning_effort"] = self._reasoning_effort
 
         return args
+
+    def _get_stream_idle_timeout_seconds(self) -> float:
+        configured = Config.get("esprit_llm_stream_idle_timeout")
+        if configured:
+            try:
+                return max(5.0, float(configured))
+            except (TypeError, ValueError):
+                pass
+
+        request_timeout = float(getattr(self.config, "timeout", 300) or 300)
+        return max(20.0, min(120.0, request_timeout / 2))
+
+    async def _iter_with_idle_timeout(
+        self,
+        iterator: AsyncIterator[Any],
+        timeout_seconds: float,
+    ) -> AsyncIterator[Any]:
+        while True:
+            try:
+                item = await asyncio.wait_for(iterator.__anext__(), timeout=timeout_seconds)
+            except StopAsyncIteration:
+                return
+            except asyncio.TimeoutError as e:
+                raise TimeoutError(
+                    f"LLM stream idle timeout after {timeout_seconds:.0f}s"
+                ) from e
+            else:
+                yield item
 
     def _get_chunk_content(self, chunk: Any) -> str:
         if chunk.choices and hasattr(chunk.choices[0], "delta"):

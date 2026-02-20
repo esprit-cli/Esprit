@@ -1,5 +1,6 @@
 """Tests for LLM module utilities."""
 
+import asyncio
 from types import SimpleNamespace
 
 import pytest
@@ -228,3 +229,32 @@ class TestRaiseError:
             llm._raise_error(error)
 
         assert exc.value.status_code == 503
+
+
+class TestStreamIdleTimeout:
+    @pytest.mark.asyncio
+    async def test_iter_with_idle_timeout_raises_on_stalled_stream(self) -> None:
+        llm = LLM.__new__(LLM)
+
+        async def stalled() -> SimpleNamespace:
+            while True:
+                await asyncio.sleep(1)
+                yield SimpleNamespace()
+
+        with pytest.raises(TimeoutError):
+            async for _ in llm._iter_with_idle_timeout(stalled(), timeout_seconds=0.01):
+                pass
+
+    @pytest.mark.asyncio
+    async def test_iter_with_idle_timeout_passes_through_chunks(self) -> None:
+        llm = LLM.__new__(LLM)
+
+        async def ready() -> int:
+            yield 1
+            yield 2
+
+        chunks: list[int] = []
+        async for chunk in llm._iter_with_idle_timeout(ready(), timeout_seconds=0.5):
+            chunks.append(chunk)
+
+        assert chunks == [1, 2]
