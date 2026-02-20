@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 from unittest.mock import MagicMock, patch
 
+from esprit.agents.state import AgentState
 from esprit.tools.agents_graph.agents_graph_actions import (
     _RECENT_MESSAGES_TO_KEEP,
     _format_messages_as_text,
@@ -325,3 +326,60 @@ class TestRunAgentInThreadContextBranching:
         # Clean up
         mod._agent_graph["nodes"].pop("agent_789", None)
         mod._agent_graph["nodes"].pop("agent_parent", None)
+
+    def test_short_history_preserves_tool_metadata(self) -> None:
+        """Short-history replay must preserve tool_call_id for Anthropic compatibility."""
+        from esprit.tools.agents_graph import agents_graph_actions as mod
+
+        state = AgentState(
+            agent_id="agent_meta",
+            parent_id="agent_parent",
+            agent_name="Test Agent",
+            task="test task",
+        )
+
+        msgs = [
+            {
+                "role": "assistant",
+                "content": "calling tool",
+                "tool_calls": [
+                    {
+                        "id": "call_abc",
+                        "type": "function",
+                        "function": {"name": "browser_action", "arguments": "{}"},
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "content": "done",
+                "tool_call_id": "call_abc",
+                "name": "browser_action",
+            },
+        ]
+
+        class DummyAgent:
+            async def agent_loop(self, task: str) -> dict[str, Any]:
+                return {"ok": True, "task": task}
+
+        mod._agent_graph["nodes"]["agent_parent"] = {"name": "Parent", "task": "parent task"}
+        mod._agent_graph["nodes"]["agent_meta"] = {
+            "name": "Test Agent",
+            "task": "test task",
+            "status": "running",
+            "parent_id": "agent_parent",
+        }
+
+        try:
+            mod._run_agent_in_thread(DummyAgent(), state, msgs)
+            tool_msg = next(m for m in state.messages if m.get("role") == "tool")
+            assistant_msg = next(
+                m for m in state.messages if m.get("role") == "assistant" and m.get("tool_calls")
+            )
+
+            assert tool_msg["tool_call_id"] == "call_abc"
+            assert tool_msg["name"] == "browser_action"
+            assert assistant_msg["tool_calls"][0]["id"] == "call_abc"
+        finally:
+            mod._agent_graph["nodes"].pop("agent_meta", None)
+            mod._agent_graph["nodes"].pop("agent_parent", None)

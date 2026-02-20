@@ -1,5 +1,6 @@
 import logging
 import threading
+from copy import deepcopy
 from datetime import UTC, datetime
 from typing import Any, Literal
 
@@ -135,8 +136,12 @@ def _run_agent_in_thread(
                 # Short history: pass through as individual messages (no change)
                 state.add_message("user", "<inherited_context_from_parent>")
                 for msg in inherited_messages:
-                    state.add_message(msg["role"], msg["content"])
+                    # Preserve structured message fields (e.g. tool_call_id) required
+                    # by provider APIs when replaying inherited context.
+                    if isinstance(msg, dict):
+                        state.messages.append(deepcopy(msg))
                 state.add_message("user", "</inherited_context_from_parent>")
+                state.last_updated = datetime.now(UTC).isoformat()
 
         parent_info = _agent_graph["nodes"].get(state.parent_id, {})
         parent_name = parent_info.get("name", "Unknown Parent")
