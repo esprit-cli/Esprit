@@ -798,6 +798,7 @@ Supported providers:
     )
 
     args = parser.parse_args()
+    args.skip_pre_scan_checks = False
     
     # Handle provider subcommand
     if args.command == "provider":
@@ -887,6 +888,7 @@ def _apply_launchpad_result(args: argparse.Namespace, launchpad_result: Launchpa
     args.non_interactive = False
     args.scan_mode = launchpad_result.scan_mode
     args.instruction = None
+    args.skip_pre_scan_checks = launchpad_result.prechecked
     args.targets_info = _build_targets_info([launchpad_result.target])
     return True
 
@@ -1054,9 +1056,11 @@ def main() -> None:
     ensure_docker_running()
     pull_docker_image()
 
-    # Interactive pre-scan checks: provider, model, account selection
-    if not pre_scan_setup(non_interactive=args.non_interactive):
-        sys.exit(1)
+    # Interactive pre-scan checks: provider, model, account selection.
+    # Launchpad now owns this flow when a scan is started from its UI.
+    if not getattr(args, "skip_pre_scan_checks", False):
+        if not pre_scan_setup(non_interactive=args.non_interactive):
+            sys.exit(1)
 
     validate_environment()
     asyncio.run(warm_up_llm())

@@ -112,6 +112,7 @@ class LaunchpadResult:
     action: str
     target: str | None = None
     scan_mode: str = "deep"
+    prechecked: bool = False
 
 
 @dataclass(slots=True)
@@ -207,6 +208,7 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
         self._animation_step = 0
         self._ghost_timer: Any | None = None
         self._model_filter = ""
+        self._pending_scan_target: str | None = None
 
         # Detect current project
         self._cwd = os.getcwd()
@@ -322,6 +324,10 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
             self._current_entries = self._build_scan_target_entries()
             self._current_title = "Scan Target"
             self._current_hint = "select target type  esc to go back"
+        elif view == "pre_scan":
+            self._current_entries = self._build_pre_scan_entries()
+            self._current_title = "Pre-scan Checks"
+            self._current_hint = "review config  enter to edit/start  esc to go back"
         elif view == "model":
             self._model_filter = ""
             self._current_entries = self._build_model_entries()
@@ -513,6 +519,116 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
         entries.append(_MenuEntry("back", "\u2190 Back"))
         return entries
 
+    def _configured_provider_rows(self) -> list[tuple[str, str, str]]:
+        rows: list[tuple[str, str, str]] = []
+
+        # Esprit subscription provider (configured via `esprit provider login esprit`)
+        try:
+            from esprit.auth.credentials import (
+                get_credentials as get_esprit_credentials,
+                is_authenticated as is_esprit_authenticated,
+            )
+
+            if is_esprit_authenticated():
+                creds = get_esprit_credentials() or {}
+                email = str(creds.get("email") or "platform")
+                rows.append(("Esprit", "Platform", email))
+        except Exception:
+            pass
+
+        for provider_id in ["openai", "anthropic", "google", "github-copilot", "antigravity"]:
+            provider_name = PROVIDER_NAMES.get(provider_id, provider_id)
+
+            if provider_id in _MULTI_ACCOUNT_PROVIDERS:
+                count = self._account_pool.account_count(provider_id)
+                if count <= 0:
+                    continue
+                best = self._account_pool.peek_best_account(provider_id)
+                auth_type = "OAuth"
+                account = f"{count} account{'s' if count != 1 else ''}"
+                if best is not None:
+                    if best.credentials.type == "api":
+                        auth_type = "API Key"
+                    if best.email:
+                        account = best.email if count == 1 else f"{best.email} (+{count - 1})"
+                rows.append((provider_name, auth_type, account))
+                continue
+
+            creds = self._token_store.get(provider_id)
+            if creds is None:
+                continue
+            auth_type = "OAuth" if creds.type == "oauth" else "API Key"
+            rows.append((provider_name, auth_type, creds.type.upper()))
+
+        if Config.get("llm_api_key"):
+            rows.append(("Direct", "API Key", "LLM_API_KEY"))
+
+        return rows
+
+    def _build_pre_scan_entries(self) -> list[_MenuEntry]:
+        entries: list[_MenuEntry] = []
+        providers = self._configured_provider_rows()
+
+        entries.append(_MenuEntry("info:providers", "Providers"))
+        if providers:
+            for idx, (name, auth_type, account) in enumerate(providers, start=1):
+                entries.append(
+                    _MenuEntry(f"info:provider:{idx}", f"  {name}", f"{auth_type} · {account}")
+                )
+        else:
+            entries.append(
+                _MenuEntry("info:no_provider", "  No provider configured", "open Provider Config")
+            )
+
+        model_name = Config.get("esprit_llm")
+        if model_name:
+            bare_model = model_name.split("/", 1)[-1] if "/" in model_name else model_name
+            entries.append(_MenuEntry("pre_model", f"Model  {bare_model}", model_name))
+        else:
+            entries.append(_MenuEntry("pre_model", "Model  not selected", "select a model"))
+
+        entries.append(_MenuEntry("pre_scan_mode", f"Scan Mode  {self._scan_mode}", "change"))
+
+        if self._pending_scan_target:
+            entries.append(_MenuEntry("info:target", "Target", self._pending_scan_target))
+
+        entries.append(_MenuEntry("pre_start_scan", "Start Scan"))
+        entries.append(_MenuEntry("back", "\u2190 Back"))
+        return entries
+
+    @staticmethod
+    def _is_non_selectable(entry: _MenuEntry) -> bool:
+        return entry.key.startswith("separator:") or entry.key.startswith("info:")
+
+    def _queue_scan_target(self, target: str, replace_current_view: bool = False) -> None:
+        self._pending_scan_target = target
+        self._set_view("pre_scan", push=not replace_current_view)
+
+    def _start_scan_if_ready(self) -> None:
+        if not self._configured_provider_rows():
+            self._set_status("No provider configured. Connect one first.")
+            self._set_view("provider")
+            return
+
+        if not Config.get("esprit_llm"):
+            self._set_status("No model selected. Choose one first.")
+            self._set_view("model")
+            return
+
+        if not self._pending_scan_target:
+            self._set_status("No target selected.")
+            self._set_view("scan_choose")
+            return
+
+        self.exit(
+            LaunchpadResult(
+                action="scan",
+                target=self._pending_scan_target,
+                scan_mode=self._scan_mode,
+                prechecked=True,
+            )
+        )
+
     def _render_panel(self) -> None:
         # Brand (only on main view)
         brand_widget = self.query_one("#launchpad_brand", Static)
@@ -558,10 +674,16 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
         for idx, entry in enumerate(self._current_entries):
             is_selected = idx == self.selected_index
             is_separator = entry.key.startswith("separator:")
+            is_info = entry.key.startswith("info:")
 
             if is_separator:
                 # Provider group header — not selectable
                 menu_text.append(entry.label, style=Style(color="#67e8f9", bold=True))
+                if entry.hint:
+                    menu_text.append(f"  {entry.hint}", style=Style(color="#555555"))
+            elif is_info:
+                menu_text.append("  ", style=Style(color="#8a8a8a"))
+                menu_text.append(entry.label, style=Style(color="#8a8a8a"))
                 if entry.hint:
                     menu_text.append(f"  {entry.hint}", style=Style(color="#555555"))
             elif is_selected:
@@ -593,9 +715,9 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
             return
         if self._current_entries:
             new_idx = (self.selected_index - 1) % len(self._current_entries)
-            # Skip separator entries
+            # Skip non-selectable entries
             attempts = len(self._current_entries)
-            while self._current_entries[new_idx].key.startswith("separator:") and attempts > 0:
+            while self._is_non_selectable(self._current_entries[new_idx]) and attempts > 0:
                 new_idx = (new_idx - 1) % len(self._current_entries)
                 attempts -= 1
             self.selected_index = new_idx
@@ -606,9 +728,9 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
             return
         if self._current_entries:
             new_idx = (self.selected_index + 1) % len(self._current_entries)
-            # Skip separator entries
+            # Skip non-selectable entries
             attempts = len(self._current_entries)
-            while self._current_entries[new_idx].key.startswith("separator:") and attempts > 0:
+            while self._is_non_selectable(self._current_entries[new_idx]) and attempts > 0:
                 new_idx = (new_idx + 1) % len(self._current_entries)
                 attempts -= 1
             self.selected_index = new_idx
@@ -617,7 +739,9 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
     async def action_select_entry(self) -> None:
         if self._input_mode == "model_search":
             # In model search: enter selects the highlighted model, not the input
-            if self._current_entries and not self._current_entries[self.selected_index].key.startswith("separator:"):
+            if self._current_entries and not self._is_non_selectable(
+                self._current_entries[self.selected_index]
+            ):
                 await self._activate_entry(self._current_entries[self.selected_index])
             return
         if self._input_mode:
@@ -645,6 +769,9 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
 
     async def _activate_entry(self, entry: _MenuEntry) -> None:  # noqa: PLR0911, PLR0912
         key = entry.key
+
+        if key.startswith("info:"):
+            return
 
         if key == "model":
             self._set_view("model")
@@ -675,24 +802,39 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
             os.environ["ESPRIT_LLM"] = model_name
             Config.save_current()
             self._set_status(f"Model set: {model_name}")
-            self._set_view("model", push=False)
+            if self._history and self._history[-1] == "pre_scan":
+                self._set_view("pre_scan", push=False)
+            else:
+                self._set_view("model", push=False)
             return
 
         if key.startswith("scan_mode:"):
             mode = key.split(":", 1)[1]
             self._scan_mode = mode
             self._set_status(f"Scan mode: {mode}")
-            self._set_view("scan_mode", push=False)
+            if self._history and self._history[-1] == "pre_scan":
+                self._set_view("pre_scan", push=False)
+            else:
+                self._set_view("scan_mode", push=False)
             return
 
         if key == "scan_cwd":
-            self.exit(LaunchpadResult(action="scan", target=self._cwd, scan_mode=self._scan_mode))
+            self._queue_scan_target(self._cwd)
             return
         if key == "scan_target_input":
             self._set_view("scan_target")
             return
         if key == "scan_local_input":
             self._set_view("scan_local")
+            return
+        if key == "pre_model":
+            self._set_view("model")
+            return
+        if key == "pre_scan_mode":
+            self._set_view("scan_mode")
+            return
+        if key == "pre_start_scan":
+            self._start_scan_if_ready()
             return
 
         if key == "provider_oauth":
@@ -794,10 +936,10 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
             self._model_filter = event.value
             self._current_entries = self._build_model_entries(self._model_filter)
             self.selected_index = 0
-            # Skip separator to first selectable entry
+            # Skip non-selectable entries to first selectable entry
             while (
                 self.selected_index < len(self._current_entries)
-                and self._current_entries[self.selected_index].key.startswith("separator:")
+                and self._is_non_selectable(self._current_entries[self.selected_index])
             ):
                 self.selected_index += 1
             self._render_menu()
@@ -811,7 +953,7 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
             if not value:
                 self._set_status("Target is required")
                 return
-            self.exit(LaunchpadResult(action="scan", target=value, scan_mode=self._scan_mode))
+            self._queue_scan_target(value, replace_current_view=True)
             return
 
         if self._input_mode == "scan_local":
@@ -822,7 +964,7 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
             if not Path(resolved).exists():
                 self._set_status(f"Path not found: {resolved}")
                 return
-            self.exit(LaunchpadResult(action="scan", target=resolved, scan_mode=self._scan_mode))
+            self._queue_scan_target(resolved, replace_current_view=True)
             return
 
         if self._input_mode == "provider_api_key":
