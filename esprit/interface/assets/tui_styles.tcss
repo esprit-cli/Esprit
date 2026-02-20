@@ -1,13 +1,13 @@
 Screen {
-    background: #050505;
-    color: #e8d5d5;
+    background: #02060b;
+    color: #dbe9f2;
 }
 
 #splash_screen {
     height: 100%;
     width: 100%;
-    background: #050505;
-    color: #22d3ee;
+    background: #02060b;
+    color: #32d9ff;
     align: center middle;
     content-align: center middle;
     text-align: center;
@@ -19,7 +19,7 @@ Screen {
     background: transparent;
     text-align: center;
     content-align: center middle;
-    padding: 2;
+    padding: 1 2;
 }
 
 #main_container {

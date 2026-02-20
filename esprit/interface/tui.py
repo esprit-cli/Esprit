@@ -95,14 +95,13 @@ class ChatTextArea(TextArea):  # type: ignore[misc]
 
 
 class SplashScreen(Static):  # type: ignore[misc]
-    PRIMARY_GREEN = "#22d3ee"
-    BANNER = (
-        " ███████╗███████╗██████╗ ██████╗ ██╗████████╗\n"
-        " ██╔════╝██╔════╝██╔══██╗██╔══██╗██║╚══██╔══╝\n"
-        " █████╗  ███████╗██████╔╝██████╔╝██║   ██║   \n"
-        " ██╔══╝  ╚════██║██╔═══╝ ██╔══██╗██║   ██║   \n"
-        " ███████╗███████║██║     ██║  ██║██║   ██║   \n"
-        " ╚══════╝╚══════╝╚═╝     ╚═╝  ╚═╝╚═╝   ╚═╝   "
+    PRIMARY_GREEN = "#32d9ff"
+    WORDMARK = (
+        "███████ ███████ ██████  ██████  ██ ████████",
+        "██      ██      ██   ██ ██   ██ ██    ██",
+        "█████   ███████ ██████  ██████  ██    ██",
+        "██           ██ ██      ██   ██ ██    ██",
+        "███████ ███████ ██      ██   ██ ██    ██",
     )
     GHOST_FRAMES: ClassVar[list[tuple[str, ...]]] = [
         (
@@ -187,7 +186,7 @@ class SplashScreen(Static):  # type: ignore[misc]
         content = Group(
             Align.center(self._build_ghost_text(self._animation_step)),
             Align.center(Text(" ")),
-            Align.center(self._build_banner_text()),
+            Align.center(self._build_wordmark_text(self._animation_step)),
             Align.center(Text(" ")),
             Align.center(self._build_welcome_text()),
             Align.center(self._build_version_text()),
@@ -196,21 +195,45 @@ class SplashScreen(Static):  # type: ignore[misc]
             Align.center(start_line.copy()),
         )
 
-        return Panel.fit(content, border_style=self.PRIMARY_GREEN, padding=(1, 6))
+        return Panel.fit(content, border_style="#0b7f95", padding=(1, 4))
 
     def _build_welcome_text(self) -> Text:
         text = Text("Ghost shell online: ", style=Style(color="white", bold=True))
-        text.append("Esprit", style=Style(color=self.PRIMARY_GREEN, bold=True))
+        text.append("Esprit", style=Style(color="#67e8f9", bold=True))
         return text
 
     def _build_version_text(self) -> Text:
-        return Text(f"v{self._version}", style=Style(color="white", dim=True))
+        return Text(f"v{self._version}", style=Style(color="#9ca3af", dim=True))
 
     def _build_tagline_text(self) -> Text:
-        return Text("Open-source AI hackers for your apps", style=Style(color="#b8a0a0", dim=True))
+        return Text("Open-source AI hackers for your apps", style=Style(color="#94a3b8", dim=True))
 
-    def _build_banner_text(self) -> Text:
-        return Text(self.BANNER.strip("\n"), style=Style(color="#d7c0c0", bold=True), justify="center")
+    def _build_wordmark_text(self, phase: int) -> Text:
+        palette = ("#7dd3fc", "#38bdf8", "#22d3ee", "#06b6d4", "#0891b2")
+        sweep = (phase * 2) % 56
+        wordmark = Text(justify="center")
+
+        for row_index, row in enumerate(self.WORDMARK):
+            base = palette[(row_index + phase // 4) % len(palette)]
+            row_text = Text()
+            for col_index, char in enumerate(row):
+                if char == " ":
+                    row_text.append(char)
+                    continue
+
+                dist = abs(col_index - sweep)
+                if dist <= 1:
+                    style = Style(color="#ecfeff", bold=True)
+                elif dist <= 3:
+                    style = Style(color="#bae6fd", bold=True)
+                else:
+                    style = Style(color=base, bold=True)
+                row_text.append(char, style=style)
+
+            wordmark.append_text(row_text)
+            if row_index < len(self.WORDMARK) - 1:
+                wordmark.append("\n")
+        return wordmark
 
     def _build_ghost_text(self, phase: int) -> Text:
         frame = self.GHOST_FRAMES[phase % len(self.GHOST_FRAMES)]
@@ -222,13 +245,13 @@ class SplashScreen(Static):  # type: ignore[misc]
             while i < len(line):
                 chunk = line[i : i + 2]
                 if chunk == "[]":
-                    line_text.append("[]", style=Style(color=self.PRIMARY_GREEN, bold=True))
+                    line_text.append("██", style=Style(color="#22d3ee", bold=True))
                     i += 2
                     continue
 
                 char = line[i]
                 if char == "*":
-                    sparkle = "#67e8f9" if (phase + line_index + i) % 2 == 0 else "#38bdf8"
+                    sparkle = "#a5f3fc" if (phase + line_index + i) % 2 == 0 else "#38bdf8"
                     line_text.append(char, style=Style(color=sparkle, bold=True))
                 else:
                     line_text.append(char)
