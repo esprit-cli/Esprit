@@ -16,8 +16,9 @@ def test_running_ghost_indicator_pulses_with_spinner_frame() -> None:
     app._spinner_frame_index = 1
     frame_1 = EspritTUIApp._build_running_ghost_indicator(app).plain
 
-    assert frame_0.startswith("👻")
-    assert frame_1.startswith("👻")
+    assert frame_0.startswith(".-.(")
+    assert frame_1.startswith(".-.(")
+    assert "👻" not in frame_0
     assert frame_0 != frame_1
 
 
@@ -37,6 +38,7 @@ def test_running_status_text_includes_mini_ghost_indicator() -> None:
     )
 
     assert content is not None
-    assert content.plain.startswith("👻")
+    assert content.plain.startswith(".-.(")
+    assert "👻" not in content.plain
     assert "Initializing" in content.plain
     assert should_animate is True
