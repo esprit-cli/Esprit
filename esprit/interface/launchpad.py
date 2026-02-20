@@ -8,7 +8,7 @@ from typing import Any, ClassVar
 
 from rich.style import Style
 from rich.text import Text
-from textual.app import App, ComposeResult
+from textual.app import App, ComposeResult, ScreenStackError
 from textual.binding import Binding
 from textual.containers import Vertical
 from textual.reactive import reactive
@@ -122,8 +122,28 @@ class _MenuEntry:
     hint: str = ""
 
 
+@dataclass(frozen=True, slots=True)
+class _LaunchpadTheme:
+    key: str
+    label: str
+    hint: str
+    accent: str
+    selected_hint: str
+    menu_label: str
+    menu_hint: str
+    separator: str
+    info: str
+    status: str
+    brand_dim: str
+    ghost_body: str
+    ghost_face: str
+    sparkle_a: str
+    sparkle_b: str
+
+
 class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
     CSS_PATH = "assets/launchpad_styles.tcss"
+    DEFAULT_THEME = "esprit"
 
     BINDINGS: ClassVar[list[Binding]] = [  # type: ignore[assignment]
         Binding("up", "cursor_up", "Up", show=False, priority=True),
@@ -186,8 +206,79 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
         _MenuEntry("model", "Model Config", "Choose default model"),
         _MenuEntry("provider", "Provider Config", "Connect providers (incl. free Antigravity)"),
         _MenuEntry("scan_mode", "Scan Mode", "Set quick, standard, or deep"),
+        _MenuEntry("theme", "Theme", "Select launchpad theme"),
         _MenuEntry("exit", "Exit", "Close launchpad"),
     ]
+    THEMES: ClassVar[dict[str, _LaunchpadTheme]] = {
+        "esprit": _LaunchpadTheme(
+            key="esprit",
+            label="Esprit",
+            hint="Neon cyan + noir",
+            accent="#22d3ee",
+            selected_hint="#0e7490",
+            menu_label="#8a8a8a",
+            menu_hint="#555555",
+            separator="#67e8f9",
+            info="#8a8a8a",
+            status="#b89292",
+            brand_dim="#555555",
+            ghost_body="#22d3ee",
+            ghost_face="#0a0a0a",
+            sparkle_a="#67e8f9",
+            sparkle_b="#38bdf8",
+        ),
+        "ember": _LaunchpadTheme(
+            key="ember",
+            label="Ember",
+            hint="Molten amber + charcoal",
+            accent="#f97316",
+            selected_hint="#ea580c",
+            menu_label="#c6b8a5",
+            menu_hint="#6f5e4f",
+            separator="#fdba74",
+            info="#c6b8a5",
+            status="#d6a07b",
+            brand_dim="#7d6857",
+            ghost_body="#fb923c",
+            ghost_face="#1c140f",
+            sparkle_a="#fdba74",
+            sparkle_b="#f97316",
+        ),
+        "matrix": _LaunchpadTheme(
+            key="matrix",
+            label="Matrix",
+            hint="Signal green + black",
+            accent="#22c55e",
+            selected_hint="#15803d",
+            menu_label="#9fbfa7",
+            menu_hint="#4f6b57",
+            separator="#86efac",
+            info="#9fbfa7",
+            status="#7fb48b",
+            brand_dim="#4f6b57",
+            ghost_body="#22c55e",
+            ghost_face="#05140b",
+            sparkle_a="#86efac",
+            sparkle_b="#22c55e",
+        ),
+        "glacier": _LaunchpadTheme(
+            key="glacier",
+            label="Glacier",
+            hint="Ice blue + deep navy",
+            accent="#38bdf8",
+            selected_hint="#0c4a6e",
+            menu_label="#9cb4c8",
+            menu_hint="#5a6f82",
+            separator="#7dd3fc",
+            info="#9cb4c8",
+            status="#9ab9d3",
+            brand_dim="#5a6f82",
+            ghost_body="#38bdf8",
+            ghost_face="#04131c",
+            sparkle_a="#7dd3fc",
+            sparkle_b="#38bdf8",
+        ),
+    }
 
     selected_index: reactive[int] = reactive(0)
 
@@ -209,6 +300,7 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
         self._ghost_timer: Any | None = None
         self._model_filter = ""
         self._pending_scan_target: str | None = None
+        self._theme_id = self._normalize_theme_id(Config.get_launchpad_theme())
 
         # Detect current project
         self._cwd = os.getcwd()
@@ -229,6 +321,7 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
 
     def on_mount(self) -> None:
         self.title = "esprit"
+        self._apply_theme_class()
         input_widget = self.query_one("#launchpad_input", Input)
         input_widget.display = False
         self._set_view("main", push=False)
@@ -242,11 +335,52 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
         self._animation_step += 1
         self._render_ghost()
 
+    def _normalize_theme_id(self, theme_id: str | None) -> str:
+        if theme_id and theme_id in self.THEMES:
+            return theme_id
+        return self.DEFAULT_THEME
+
+    def _active_theme(self) -> _LaunchpadTheme:
+        return self.THEMES[self._theme_id]
+
+    def _has_active_screen(self) -> bool:
+        try:
+            _ = self.screen
+        except ScreenStackError:
+            return False
+        return True
+
+    def _apply_theme_class(self) -> None:
+        if not self._has_active_screen():
+            return
+        screen = self.screen
+        for theme_id in self.THEMES:
+            screen.remove_class(f"theme-{theme_id}")
+        screen.add_class(f"theme-{self._theme_id}")
+
+    def _set_theme(self, theme_id: str, persist: bool = True) -> bool:
+        next_theme = self._normalize_theme_id(theme_id)
+        changed = next_theme != self._theme_id
+        self._theme_id = next_theme
+
+        if self._has_active_screen():
+            self._apply_theme_class()
+            self._render_panel()
+
+        if persist and changed:
+            if Config.save_launchpad_theme(next_theme):
+                self._set_status(f"Theme set: {self._active_theme().label}")
+            else:
+                self._set_status("Failed to save theme")
+
+        return changed
+
     def _render_ghost(self) -> None:
         ghost = self._build_ghost_text(self._animation_step)
         self.query_one("#launchpad_ghost", Static).update(ghost)
 
     def _build_ghost_text(self, phase: int) -> Text:
+        theme = self._active_theme()
         frame = self.GHOST_FRAMES[phase % len(self.GHOST_FRAMES)]
         ghost = Text()
         for line_index, line in enumerate(frame):
@@ -255,17 +389,17 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
             while i < len(line):
                 chunk = line[i : i + 2]
                 if chunk == "[]":
-                    line_text.append("  ", style=Style(bgcolor="#22d3ee"))
+                    line_text.append("  ", style=Style(bgcolor=theme.ghost_body))
                     i += 2
                     continue
                 if chunk == "..":
-                    line_text.append("  ", style=Style(bgcolor="#0a0a0a"))
+                    line_text.append("  ", style=Style(bgcolor=theme.ghost_face))
                     i += 2
                     continue
 
                 char = line[i]
                 if char == "*":
-                    sparkle = "#67e8f9" if (phase + line_index + i) % 2 == 0 else "#38bdf8"
+                    sparkle = theme.sparkle_a if (phase + line_index + i) % 2 == 0 else theme.sparkle_b
                     line_text.append("\u2727", style=Style(color=sparkle, bold=True))
                 elif char == " ":
                     line_text.append(" ")
@@ -279,17 +413,19 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
         return ghost
 
     def _build_brand_text(self) -> Text:
+        theme = self._active_theme()
         version = get_package_version()
         brand = Text()
-        brand.append("esprit", style=Style(color="#22d3ee", bold=True))
-        brand.append("  v" + version, style=Style(color="#555555"))
+        brand.append("esprit", style=Style(color=theme.accent, bold=True))
+        brand.append("  v" + version, style=Style(color=theme.brand_dim))
         return brand
 
     def _set_status(self, message: str) -> None:
+        theme = self._active_theme()
         self._status = message
         status_widget = self.query_one("#launchpad_status", Static)
         if message:
-            status_widget.update(Text(message, style=Style(color="#b89292")))
+            status_widget.update(Text(message, style=Style(color=theme.status)))
         else:
             status_widget.update("")
 
@@ -316,7 +452,8 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
             for i, e in enumerate(entries):
                 if e.key == "scan":
                     entries[i] = _MenuEntry("scan", "Scan", project_hint)
-                    break
+                elif e.key == "theme":
+                    entries[i] = _MenuEntry("theme", "Theme", self._active_theme().label)
             self._current_entries = entries
             self._current_title = ""
             self._current_hint = "up/down to navigate  enter to select  q to quit"
@@ -350,6 +487,10 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
             self._current_entries = self._build_scan_mode_entries()
             self._current_title = "Scan Mode"
             self._current_hint = "quick = fast  deep = thorough  esc to go back"
+        elif view == "theme":
+            self._current_entries = self._build_theme_entries()
+            self._current_title = "Theme"
+            self._current_hint = "choose a launchpad theme  esc to go back"
         elif view == "scan_target":
             self._current_entries = []
             self._current_title = "Scan Target"
@@ -503,6 +644,14 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
         entries.append(_MenuEntry("back", "\u2190 Back"))
         return entries
 
+    def _build_theme_entries(self) -> list[_MenuEntry]:
+        entries: list[_MenuEntry] = []
+        for theme_id, theme in self.THEMES.items():
+            marker = "\u25cf" if theme_id == self._theme_id else "\u25cb"
+            entries.append(_MenuEntry(f"theme:{theme_id}", f"{marker} {theme.label}", theme.hint))
+        entries.append(_MenuEntry("back", "\u2190 Back"))
+        return entries
+
     def _build_scan_target_entries(self) -> list[_MenuEntry]:
         entries: list[_MenuEntry] = []
 
@@ -630,6 +779,7 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
         )
 
     def _render_panel(self) -> None:
+        theme = self._active_theme()
         # Brand (only on main view)
         brand_widget = self.query_one("#launchpad_brand", Static)
         if self._view == "main":
@@ -649,22 +799,21 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
         # Title
         title_widget = self.query_one("#launchpad_title", Static)
         if self._current_title:
-            title_widget.update(
-                Text(self._current_title, style=Style(color="#22d3ee", bold=True))
-            )
+            title_widget.update(Text(self._current_title, style=Style(color=theme.accent, bold=True)))
             title_widget.display = True
         else:
             title_widget.display = False
 
         # Hint
         self.query_one("#launchpad_hint", Static).update(
-            Text(self._current_hint, style=Style(color="#555555", italic=True))
+            Text(self._current_hint, style=Style(color=theme.menu_hint, italic=True))
         )
 
         # Menu
         self._render_menu()
 
     def _render_menu(self) -> None:
+        theme = self._active_theme()
         menu_widget = self.query_one("#launchpad_menu", Static)
         if not self._current_entries:
             menu_widget.update("")
@@ -678,26 +827,26 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
 
             if is_separator:
                 # Provider group header — not selectable
-                menu_text.append(entry.label, style=Style(color="#67e8f9", bold=True))
+                menu_text.append(entry.label, style=Style(color=theme.separator, bold=True))
                 if entry.hint:
-                    menu_text.append(f"  {entry.hint}", style=Style(color="#555555"))
+                    menu_text.append(f"  {entry.hint}", style=Style(color=theme.menu_hint))
             elif is_info:
-                menu_text.append("  ", style=Style(color="#8a8a8a"))
-                menu_text.append(entry.label, style=Style(color="#8a8a8a"))
+                menu_text.append("  ", style=Style(color=theme.info))
+                menu_text.append(entry.label, style=Style(color=theme.info))
                 if entry.hint:
-                    menu_text.append(f"  {entry.hint}", style=Style(color="#555555"))
+                    menu_text.append(f"  {entry.hint}", style=Style(color=theme.menu_hint))
             elif is_selected:
                 prefix = "\u276f "
-                label_style = Style(color="#22d3ee", bold=True)
-                hint_style = Style(color="#0e7490")
+                label_style = Style(color=theme.accent, bold=True)
+                hint_style = Style(color=theme.selected_hint)
                 menu_text.append(prefix, style=label_style)
                 menu_text.append(entry.label, style=label_style)
                 if entry.hint:
                     menu_text.append(f"  {entry.hint}", style=hint_style)
             else:
                 prefix = "  "
-                label_style = Style(color="#8a8a8a")
-                hint_style = Style(color="#555555")
+                label_style = Style(color=theme.menu_label)
+                hint_style = Style(color=theme.menu_hint)
                 menu_text.append(prefix, style=label_style)
                 menu_text.append(entry.label, style=label_style)
                 if entry.hint:
@@ -782,6 +931,9 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
         if key == "scan_mode":
             self._set_view("scan_mode")
             return
+        if key == "theme":
+            self._set_view("theme")
+            return
         if key == "scan":
             self._set_view("scan_choose")
             return
@@ -816,6 +968,12 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
                 self._set_view("pre_scan", push=False)
             else:
                 self._set_view("scan_mode", push=False)
+            return
+
+        if key.startswith("theme:"):
+            theme_id = key.split(":", 1)[1]
+            self._set_theme(theme_id, persist=True)
+            self._set_view("theme", push=False)
             return
 
         if key == "scan_cwd":

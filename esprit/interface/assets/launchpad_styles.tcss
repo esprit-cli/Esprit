@@ -1,6 +1,4 @@
 Screen {
-    background: #0a0a0a;
-    color: #c0c0c0;
     align: center middle;
 }
 
@@ -9,8 +7,6 @@ Screen {
     max-width: 95%;
     height: auto;
     max-height: 90%;
-    background: #111111;
-    border: round #2a1515;
     padding: 1 3;
     align: center middle;
 }
@@ -35,7 +31,6 @@ Screen {
     width: 100%;
     height: auto;
     text-style: bold;
-    color: #22d3ee;
     margin-bottom: 1;
 }
 
@@ -43,20 +38,11 @@ Screen {
     width: 100%;
     height: auto;
     padding: 1 2;
-    background: #161616;
-    border: round #2a1515;
 }
 
 #launchpad_input {
     width: 100%;
     margin-top: 1;
-    background: #161616;
-    border: round #2a1515;
-    color: #c0c0c0;
-}
-
-#launchpad_input:focus {
-    border: round #22d3ee;
 }
 
 #launchpad_status {
@@ -69,7 +55,106 @@ Screen {
 #launchpad_hint {
     width: 100%;
     height: auto;
-    color: #555555;
     text-style: italic;
     margin-top: 1;
+}
+
+Screen.theme-esprit {
+    background: #0a0a0a;
+    color: #c0c0c0;
+}
+
+Screen.theme-esprit #launchpad_root {
+    background: #111111;
+    border: round #2a1515;
+}
+
+Screen.theme-esprit #launchpad_menu {
+    background: #161616;
+    border: round #2a1515;
+}
+
+Screen.theme-esprit #launchpad_input {
+    background: #161616;
+    border: round #2a1515;
+    color: #c0c0c0;
+}
+
+Screen.theme-esprit #launchpad_input:focus {
+    border: round #22d3ee;
+}
+
+Screen.theme-ember {
+    background: #110d09;
+    color: #d7c2ad;
+}
+
+Screen.theme-ember #launchpad_root {
+    background: #1b1410;
+    border: round #4b2a16;
+}
+
+Screen.theme-ember #launchpad_menu {
+    background: #221913;
+    border: round #4b2a16;
+}
+
+Screen.theme-ember #launchpad_input {
+    background: #221913;
+    border: round #4b2a16;
+    color: #d7c2ad;
+}
+
+Screen.theme-ember #launchpad_input:focus {
+    border: round #f97316;
+}
+
+Screen.theme-matrix {
+    background: #060b07;
+    color: #b3d3bc;
+}
+
+Screen.theme-matrix #launchpad_root {
+    background: #0b140d;
+    border: round #1f3d27;
+}
+
+Screen.theme-matrix #launchpad_menu {
+    background: #0f1811;
+    border: round #1f3d27;
+}
+
+Screen.theme-matrix #launchpad_input {
+    background: #0f1811;
+    border: round #1f3d27;
+    color: #b3d3bc;
+}
+
+Screen.theme-matrix #launchpad_input:focus {
+    border: round #22c55e;
+}
+
+Screen.theme-glacier {
+    background: #070d12;
+    color: #bfd1e2;
+}
+
+Screen.theme-glacier #launchpad_root {
+    background: #0e171f;
+    border: round #1a344d;
+}
+
+Screen.theme-glacier #launchpad_menu {
+    background: #121d26;
+    border: round #1a344d;
+}
+
+Screen.theme-glacier #launchpad_input {
+    background: #121d26;
+    border: round #1a344d;
+    color: #bfd1e2;
+}
+
+Screen.theme-glacier #launchpad_input:focus {
+    border: round #38bdf8;
 }
