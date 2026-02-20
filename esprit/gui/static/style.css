@@ -194,6 +194,8 @@ svg[data-lucide] { display: inline-flex; vertical-align: middle; }
 .status-connected   { background: #064e3b; color: #22c55e; }
 .status-disconnected { background: #451a03; color: #fbbf24; }
 .status-completed   { background: #064e3b; color: #22c55e; animation: none; }
+.status-failed      { background: #450a0a; color: #fca5a5; animation: none; }
+.status-stopped     { background: #3f2a06; color: #fbbf24; animation: none; }
 
 .header-stats {
   display: flex;

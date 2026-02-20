@@ -285,6 +285,30 @@ class TracerBridge:
             tools.append(tool_entry)
         return tools
 
+    def _derive_run_status(self) -> str:
+        t = self._tracer
+        metadata_status = str(t.run_metadata.get("status", "running") or "running")
+        if metadata_status != "running":
+            return metadata_status
+
+        if t.final_scan_result:
+            return "completed"
+
+        root_statuses = [
+            data.get("status", "")
+            for data in t.agents.values()
+            if data.get("parent_id") is None
+        ]
+        if any(s in {"failed", "error", "sandbox_failed", "llm_failed"} for s in root_statuses):
+            return "failed"
+        if any(s == "stopped" for s in root_statuses):
+            return "stopped"
+        if t.end_time and any(s == "completed" for s in root_statuses):
+            return "completed"
+        if t.end_time:
+            return "stopped"
+        return "running"
+
     def _get_stats(self) -> dict[str, Any]:
         try:
             stats = self._tracer.get_total_llm_stats()
@@ -323,7 +347,7 @@ class TracerBridge:
             "vuln_count": len(t.vulnerability_reports),
             "start_time": t.start_time,
             "end_time": t.end_time,
-            "status": t.run_metadata.get("status", "running"),
+            "status": self._derive_run_status(),
             "max_context_tokens": stats.get("max_context_tokens", 0),
             "context_limit": context_limit,
             "tokens_per_second": tokens_per_second,
