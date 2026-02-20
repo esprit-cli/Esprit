@@ -841,6 +841,7 @@ class EspritTUIApp(App):  # type: ignore[misc]
 
     LEFT_ONLY_LAYOUT_MIN_WIDTH = 120
     THREE_PANE_LAYOUT_MIN_WIDTH = 170
+    MINI_GHOST_PULSE_FRAMES: ClassVar[tuple[str, ...]] = ("·", "•", "◦", "•")
 
     selected_agent_id: reactive[str | None] = reactive(default=None)
     show_splash: reactive[bool] = reactive(default=True)
@@ -1652,6 +1653,7 @@ class EspritTUIApp(App):  # type: ignore[misc]
             # Check if this agent is compacting memory
             if agent_id in self.tracer.compacting_agents:
                 animated_text = Text()
+                animated_text.append_text(self._build_running_ghost_indicator())
                 animated_text.append_text(
                     self._get_sweep_animation(self._compact_sweep_colors)
                 )
@@ -1660,15 +1662,29 @@ class EspritTUIApp(App):  # type: ignore[misc]
                 return (animated_text, keymap_styled([("ctrl-q", "quit")]), True)
             if self._agent_has_real_activity(agent_id):
                 animated_text = Text()
+                animated_text.append_text(self._build_running_ghost_indicator())
                 animated_text.append_text(self._get_sweep_animation(self._sweep_colors))
                 animated_text.append("esc", style="white")
                 animated_text.append(" ", style="dim")
                 animated_text.append("stop", style="dim")
                 return (animated_text, keymap_styled([("ctrl-q", "quit")]), True)
-            animated_text = self._get_animated_verb_text(agent_id, "Initializing")
+            animated_text = Text()
+            animated_text.append_text(self._build_running_ghost_indicator())
+            animated_text.append_text(self._get_animated_verb_text(agent_id, "Initializing"))
             return (animated_text, keymap_styled([("ctrl-q", "quit")]), True)
 
         return (None, Text(), False)
+
+    def _build_running_ghost_indicator(self) -> Text:
+        """Render a tiny ghost pulse for running-status affordance."""
+        pulse = self.MINI_GHOST_PULSE_FRAMES[
+            self._spinner_frame_index % len(self.MINI_GHOST_PULSE_FRAMES)
+        ]
+        text = Text()
+        text.append("👻", style="#67e8f9")
+        text.append(pulse, style="#22d3ee")
+        text.append(" ", style="dim")
+        return text
 
     def _update_agent_status_display(self) -> None:
         try:
