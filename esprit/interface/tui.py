@@ -34,6 +34,12 @@ from esprit.interface.streaming_parser import parse_streaming_content
 from esprit.interface.tool_components.agent_message_renderer import AgentMessageRenderer
 from esprit.interface.tool_components.registry import get_tool_renderer
 from esprit.interface.tool_components.user_message_renderer import UserMessageRenderer
+from esprit.interface.theme_tokens import (
+    DEFAULT_THEME_ID,
+    SUPPORTED_THEME_IDS,
+    get_theme_tokens,
+    normalize_theme_id,
+)
 from esprit.interface.utils import build_tui_stats_text, _ACTIVITY_SPINNER
 from esprit.llm.config import LLMConfig
 from esprit.telemetry.tracer import Tracer, set_global_tracer
@@ -862,120 +868,8 @@ class QuitScreen(ModalScreen):  # type: ignore[misc]
 
 class EspritTUIApp(App):  # type: ignore[misc]
     CSS_PATH = "assets/tui_styles.tcss"
-    DEFAULT_THEME = "esprit"
-    SUPPORTED_THEMES: ClassVar[tuple[str, ...]] = ("esprit", "ember", "matrix", "glacier", "crt")
-    _THEME_PALETTES: ClassVar[dict[str, dict[str, Any]]] = {
-        "esprit": {
-            "subagent_header": "#22d3ee",
-            "status_running": "#22d3ee",
-            "status_waiting": "#fbbf24",
-            "status_completed": "#22c55e",
-            "status_failed": "#ef4444",
-            "status_idle": "#a1a1aa",
-            "vuln_badge": "#ef4444",
-            "compacting_primary": "#fbbf24",
-            "compacting_secondary": "#d97706",
-            "keymap_key": "white",
-            "keymap_text": "dim",
-            "verb_primary": "white",
-            "verb_secondary": "dim",
-            "ghost_outline": "#67e8f9",
-            "ghost_paren": "#38bdf8",
-            "ghost_eyes": "#e2e8f0",
-            "ghost_tail": "#22d3ee",
-            "sweep_dot_color": "#0a3d1f",
-            "sweep_colors": (
-                "#000000",
-                "#001014",
-                "#03232d",
-                "#0b3a47",
-                "#0f5b6f",
-                "#0f7993",
-                "#22d3ee",
-                "#67e8f9",
-            ),
-            "compact_sweep_colors": (
-                "#000000",
-                "#1a0f00",
-                "#3d2400",
-                "#5c3a00",
-                "#7a5200",
-                "#a36e00",
-                "#e09b00",
-                "#fbbf24",
-            ),
-            "shimmer_colors": (
-                "#3f3f46",
-                "#52525b",
-                "#71717a",
-                "#a1a1aa",
-                "#d4d4d8",
-                "#f4f4f5",
-                "#ffffff",
-                "#f4f4f5",
-                "#d4d4d8",
-                "#a1a1aa",
-                "#71717a",
-                "#52525b",
-                "#3f3f46",
-            ),
-        },
-        "crt": {
-            "subagent_header": "#33ff33",
-            "status_running": "#33ff33",
-            "status_waiting": "#7ddb50",
-            "status_completed": "#66ff66",
-            "status_failed": "#ff5555",
-            "status_idle": "#6ea66e",
-            "vuln_badge": "#ff5555",
-            "compacting_primary": "#66ff66",
-            "compacting_secondary": "#2ecc2e",
-            "keymap_key": "#e6ffe6",
-            "keymap_text": "#7dcb7d",
-            "verb_primary": "#e6ffe6",
-            "verb_secondary": "#7dcb7d",
-            "ghost_outline": "#99ff99",
-            "ghost_paren": "#66ff66",
-            "ghost_eyes": "#eaffea",
-            "ghost_tail": "#33ff33",
-            "sweep_dot_color": "#0a240a",
-            "sweep_colors": (
-                "#000000",
-                "#061406",
-                "#0a290a",
-                "#0f3d0f",
-                "#145214",
-                "#1c7a1c",
-                "#33cc33",
-                "#66ff66",
-            ),
-            "compact_sweep_colors": (
-                "#000000",
-                "#071807",
-                "#0d2c0d",
-                "#134013",
-                "#1a5a1a",
-                "#258525",
-                "#33cc33",
-                "#66ff66",
-            ),
-            "shimmer_colors": (
-                "#123412",
-                "#185218",
-                "#1e711e",
-                "#289328",
-                "#37b337",
-                "#52d052",
-                "#87f587",
-                "#52d052",
-                "#37b337",
-                "#289328",
-                "#1e711e",
-                "#185218",
-                "#123412",
-            ),
-        },
-    }
+    DEFAULT_THEME = DEFAULT_THEME_ID
+    SUPPORTED_THEMES: ClassVar[tuple[str, ...]] = SUPPORTED_THEME_IDS
 
     LEFT_ONLY_LAYOUT_MIN_WIDTH = 120
     THREE_PANE_LAYOUT_MIN_WIDTH = 170
@@ -1032,13 +926,11 @@ class EspritTUIApp(App):  # type: ignore[misc]
 
     @classmethod
     def _normalize_theme_id(cls, theme_id: str | None) -> str:
-        if isinstance(theme_id, str) and theme_id in cls.SUPPORTED_THEMES:
-            return theme_id
-        return cls.DEFAULT_THEME
+        return normalize_theme_id(theme_id)
 
     def _theme_palette(self) -> dict[str, Any]:
         theme_id = self._normalize_theme_id(getattr(self, "_theme_id", self.DEFAULT_THEME))
-        return self._THEME_PALETTES.get(theme_id, self._THEME_PALETTES[self.DEFAULT_THEME])
+        return get_theme_tokens(theme_id)
 
     def _apply_theme_class(self) -> None:
         try:
