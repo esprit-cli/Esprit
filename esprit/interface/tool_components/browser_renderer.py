@@ -7,6 +7,8 @@ from rich.console import Group
 from rich.text import Text
 from textual.widgets import Static
 
+from esprit.interface.theme_tokens import get_theme_tokens_from_tool_data
+
 from .base_renderer import BaseToolRenderer
 from .registry import register_tool_renderer
 
@@ -64,15 +66,16 @@ class BrowserRenderer(BaseToolRenderer):
     def render(cls, tool_data: dict[str, Any]) -> Static:
         args = tool_data.get("args", {})
         status = tool_data.get("status", "unknown")
+        tokens = get_theme_tokens_from_tool_data(tool_data)
 
         action = args.get("action", "")
-        content = cls._build_content(action, args)
+        content = cls._build_content(action, args, tokens)
 
         css_classes = cls.get_css_classes(status)
 
         # Show screenshot preview when the action is completed
         if status == "completed":
-            preview = cls._build_screenshot_preview(tool_data, args)
+            preview = cls._build_screenshot_preview(tool_data, args, tokens)
             if preview is not None:
                 return Static(Group(content, Text(""), preview), classes=css_classes)
 
@@ -80,7 +83,7 @@ class BrowserRenderer(BaseToolRenderer):
 
     @classmethod
     def _build_screenshot_preview(
-        cls, tool_data: dict[str, Any], args: dict[str, Any]
+        cls, tool_data: dict[str, Any], args: dict[str, Any], tokens: dict[str, Any]
     ) -> Text | None:
         """Try to render a screenshot preview from the tool result."""
         result = tool_data.get("result")
@@ -95,25 +98,30 @@ class BrowserRenderer(BaseToolRenderer):
             from esprit.interface.image_renderer import screenshot_to_rich_text
 
             url_label = result.get("url") or args.get("url") or ""
-            return screenshot_to_rich_text(screenshot_b64, max_width=0, url_label=url_label)
+            return screenshot_to_rich_text(
+                screenshot_b64, max_width=0, url_label=url_label, theme_tokens=tokens
+            )
         except Exception:
             return None
 
     @classmethod
-    def _build_url_action(cls, text: Text, label: str, url: str | None, suffix: str = "") -> None:
-        text.append(label, style="#06b6d4")
+    def _build_url_action(
+        cls, text: Text, label: str, url: str | None, color: str, suffix: str = ""
+    ) -> None:
+        text.append(label, style=color)
         if url:
-            text.append(url, style="#06b6d4")
+            text.append(url, style=color)
             if suffix:
-                text.append(suffix, style="#06b6d4")
+                text.append(suffix, style=color)
 
     @classmethod
-    def _build_content(cls, action: str, args: dict[str, Any]) -> Text:
+    def _build_content(cls, action: str, args: dict[str, Any], tokens: dict[str, Any]) -> Text:
+        info = str(tokens.get("info", "#06b6d4"))
         text = Text()
-        text.append("🌐 ")
+        text.append("[web] ", style=f"bold {info}")
 
         if action in cls.SIMPLE_ACTIONS:
-            text.append(cls.SIMPLE_ACTIONS[action], style="#06b6d4")
+            text.append(cls.SIMPLE_ACTIONS[action], style=info)
             return text
 
         url = args.get("url")
@@ -126,9 +134,9 @@ class BrowserRenderer(BaseToolRenderer):
         if action in url_actions:
             label, suffix = url_actions[action]
             if action == "launch" and not url:
-                text.append("launching browser", style="#06b6d4")
+                text.append("launching browser", style=info)
             else:
-                cls._build_url_action(text, label, url, suffix)
+                cls._build_url_action(text, label, url, info, suffix)
             return text
 
         click_actions = {
@@ -137,7 +145,7 @@ class BrowserRenderer(BaseToolRenderer):
             "hover": "hovering",
         }
         if action in click_actions:
-            text.append(click_actions[action], style="#06b6d4")
+            text.append(click_actions[action], style=info)
             return text
 
         handlers: dict[str, tuple[str, str | None]] = {
@@ -147,13 +155,13 @@ class BrowserRenderer(BaseToolRenderer):
         }
         if action in handlers:
             label, value = handlers[action]
-            text.append(label, style="#06b6d4")
+            text.append(label, style=info)
             if value:
-                text.append(str(value), style="#06b6d4")
+                text.append(str(value), style=info)
             return text
 
         if action == "execute_js":
-            text.append("executing javascript", style="#06b6d4")
+            text.append("executing javascript", style=info)
             js_code = args.get("js_code")
             if js_code:
                 text.append("\n")
@@ -161,5 +169,5 @@ class BrowserRenderer(BaseToolRenderer):
             return text
 
         if action:
-            text.append(action, style="#06b6d4")
+            text.append(action, style=info)
         return text

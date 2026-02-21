@@ -40,7 +40,7 @@ from esprit.interface.theme_tokens import (
     get_theme_tokens,
     normalize_theme_id,
 )
-from esprit.interface.utils import build_tui_stats_text, _ACTIVITY_SPINNER
+from esprit.interface.utils import build_tui_stats_text
 from esprit.llm.config import LLMConfig
 from esprit.telemetry.tracer import Tracer, set_global_tracer
 
@@ -319,7 +319,7 @@ class StopAgentScreen(ModalScreen):  # type: ignore[misc]
 
     def compose(self) -> ComposeResult:
         yield Grid(
-            Label(f"🛑 Stop '{self.agent_name}'?", id="stop_agent_title"),
+            Label(f"[warn] Stop '{self.agent_name}'?", id="stop_agent_title"),
             Grid(
                 Button("Yes", variant="error", id="stop_agent"),
                 Button("No", variant="default", id="cancel_stop"),
@@ -436,7 +436,7 @@ class VulnerabilityDetailScreen(ModalScreen):  # type: ignore[misc]
         vuln = self.vulnerability
         text = Text()
 
-        text.append("🐞 ")
+        text.append("[bug] ", style="bold #dc2626")
         text.append("Vulnerability Report", style="bold #ea580c")
 
         agent_name = vuln.get("agent_name", "")
@@ -873,8 +873,7 @@ class EspritTUIApp(App):  # type: ignore[misc]
 
     LEFT_ONLY_LAYOUT_MIN_WIDTH = 120
     THREE_PANE_LAYOUT_MIN_WIDTH = 170
-    MINI_GHOST_EYE_FRAMES: ClassVar[tuple[str, ...]] = ("o o", "O O", "o o", "- -")
-    MINI_GHOST_TAIL_FRAMES: ClassVar[tuple[str, ...]] = ("~", "^", "~", "-")
+    RUN_STATUS_FRAMES: ClassVar[tuple[str, ...]] = ("|", "/", "-", "\\")
 
     selected_agent_id: reactive[str | None] = reactive(default=None)
     show_splash: reactive[bool] = reactive(default=True)
@@ -1187,6 +1186,22 @@ class EspritTUIApp(App):  # type: ignore[misc]
                 if isinstance(result, dict) and result.get("screenshot"):
                     result["screenshot"] = "[rendered]"
 
+    def _running_status_frame(self) -> str:
+        frame_index = self._stats_spinner_frame % len(self.RUN_STATUS_FRAMES)
+        return self.RUN_STATUS_FRAMES[frame_index]
+
+    def _agent_status_marker(self, status: str) -> str:
+        status_markers = {
+            "running": self._running_status_frame(),
+            "waiting": "~",
+            "completed": "+",
+            "failed": "x",
+            "stopped": "-",
+            "stopping": ".",
+            "llm_failed": "x",
+        }
+        return status_markers.get(status, ".")
+
     def _update_agent_node(self, agent_id: str, agent_data: dict[str, Any]) -> bool:
         if agent_id not in self.agent_nodes:
             return False
@@ -1195,18 +1210,7 @@ class EspritTUIApp(App):  # type: ignore[misc]
             agent_node = self.agent_nodes[agent_id]
             agent_name_raw = agent_data.get("name", "Agent")
             status = agent_data.get("status", "running")
-
-            status_indicators = {
-                "running": _ACTIVITY_SPINNER[self._stats_spinner_frame % len(_ACTIVITY_SPINNER)],
-                "waiting": "⏸",
-                "completed": "✓",
-                "failed": "✗",
-                "stopped": "■",
-                "stopping": "○",
-                "llm_failed": "✗",
-            }
-
-            status_icon = status_indicators.get(status, "○")
+            status_icon = self._agent_status_marker(status)
             vuln_count = self._agent_vulnerability_count(agent_id)
             vuln_indicator = f" ({vuln_count})" if vuln_count > 0 else ""
             agent_name = f"{status_icon} {agent_name_raw}{vuln_indicator}"
@@ -1466,24 +1470,23 @@ class EspritTUIApp(App):  # type: ignore[misc]
         header.append("─" * 40, style=f"dim {header_color}")
         renderables.append(header)
 
-        spinner_frames = _ACTIVITY_SPINNER
-        spinner = spinner_frames[self._stats_spinner_frame % len(spinner_frames)]
+        spinner = self._running_status_frame()
 
         status_styles: dict[str, tuple[str, str]] = {
-            "running": (spinner, str(palette.get("status_running", "#22d3ee"))),
-            "waiting": ("⏸", str(palette.get("status_waiting", "#fbbf24"))),
-            "completed": ("✓", str(palette.get("status_completed", "#22c55e"))),
-            "failed": ("✗", str(palette.get("status_failed", "#ef4444"))),
-            "stopped": ("■", str(palette.get("status_idle", "#a1a1aa"))),
-            "stopping": ("○", str(palette.get("status_idle", "#a1a1aa"))),
-            "llm_failed": ("✗", str(palette.get("status_failed", "#ef4444"))),
+            "running": (f"[{spinner}]", str(palette.get("status_running", "#22d3ee"))),
+            "waiting": ("[run]", str(palette.get("status_waiting", "#f59e0b"))),
+            "completed": ("[ok]", str(palette.get("status_completed", "#22c55e"))),
+            "failed": ("[err]", str(palette.get("status_failed", "#ef4444"))),
+            "stopped": ("[idle]", str(palette.get("status_idle", "#947575"))),
+            "stopping": ("[run]", str(palette.get("status_idle", "#947575"))),
+            "llm_failed": ("[err]", str(palette.get("status_failed", "#ef4444"))),
         }
 
         for child in children:
             agent_id = child["id"]
             agent_name = child.get("name", "Agent")
             status = child.get("status", "running")
-            icon, color = status_styles.get(status, ("○", "#a1a1aa"))
+            icon, color = status_styles.get(status, ("[idle]", "#947575"))
             is_active = status in ("running", "waiting")
 
             card = Text()
@@ -1494,7 +1497,7 @@ class EspritTUIApp(App):  # type: ignore[misc]
             vuln_count = self._agent_vulnerability_count(agent_id)
             if vuln_count > 0:
                 card.append(
-                    f"  ⚡{vuln_count}",
+                    f"  [warn:{vuln_count}]",
                     style=f"bold {str(palette.get('vuln_badge', '#ef4444'))}",
                 )
 
@@ -1571,11 +1574,14 @@ class EspritTUIApp(App):  # type: ignore[misc]
     def _render_streaming_tool(
         self, tool_name: str, args: dict[str, str], is_complete: bool
     ) -> Any:
+        palette = self._theme_palette()
         tool_data = {
             "tool_name": tool_name,
             "args": args,
             "status": "completed" if is_complete else "running",
             "result": None,
+            "_theme_id": self._theme_id,
+            "_theme_tokens": palette,
         }
 
         # For completed browser actions, try to find the actual result from the tracer
@@ -1615,20 +1621,26 @@ class EspritTUIApp(App):  # type: ignore[misc]
     def _render_default_streaming_tool(
         self, tool_name: str, args: dict[str, str], is_complete: bool
     ) -> Text:
+        palette = self._theme_palette()
+        running_style = str(palette.get("status_running", "#f59e0b"))
+        success_style = str(palette.get("status_completed", "#22c55e"))
+        muted_style = str(palette.get("muted", "#9ca3af"))
+        info_style = str(palette.get("info", "#60a5fa"))
         text = Text()
 
         if is_complete:
-            text.append("✓ ", style="green")
+            text.append("[ok] ", style=f"bold {success_style}")
         else:
-            text.append("● ", style="yellow")
+            frame = self.RUN_STATUS_FRAMES[self._spinner_frame_index % len(self.RUN_STATUS_FRAMES)]
+            text.append(f"[{frame}] ", style=f"bold {running_style}")
 
-        text.append("Using tool ", style="dim")
-        text.append(tool_name, style="bold blue")
+        text.append("Using tool ", style=f"dim {muted_style}")
+        text.append(tool_name, style=f"bold {info_style}")
 
         if args:
             for key, value in list(args.items())[:3]:
                 text.append("\n  ")
-                text.append(key, style="dim")
+                text.append(key, style=f"dim {muted_style}")
                 text.append(": ")
                 display_value = value if len(value) <= 100 else value[:97] + "..."
                 text.append(display_value, style="italic" if not is_complete else None)
@@ -1657,9 +1669,9 @@ class EspritTUIApp(App):  # type: ignore[misc]
             return t
 
         simple_statuses: dict[str, tuple[str, str]] = {
-            "stopping": ("Agent stopping...", ""),
-            "stopped": ("Agent stopped", ""),
-            "completed": ("Agent completed", ""),
+            "stopping": ("[run] Agent stopping...", ""),
+            "stopped": ("[ok] Agent stopped", ""),
+            "completed": ("[ok] Agent completed", ""),
         }
 
         if status in simple_statuses:
@@ -1672,9 +1684,10 @@ class EspritTUIApp(App):  # type: ignore[misc]
             error_msg = agent_data.get("error_message", "")
             text = Text()
             if error_msg:
+                text.append("[err] ", style=f"bold {failed_style}")
                 text.append(error_msg, style=failed_style)
             else:
-                text.append("LLM request failed", style=failed_style)
+                text.append("[err] LLM request failed", style=failed_style)
             self._stop_dot_animation()
             keymap = Text()
             keymap.append("Send message to retry", style=text_style)
@@ -1689,7 +1702,7 @@ class EspritTUIApp(App):  # type: ignore[misc]
             # Check if this agent is compacting memory
             if agent_id in self.tracer.compacting_agents:
                 animated_text = Text()
-                animated_text.append_text(self._build_running_ghost_indicator())
+                animated_text.append_text(self._build_running_spinner_indicator())
                 animated_text.append_text(
                     self._get_sweep_animation(self._compact_sweep_colors)
                 )
@@ -1698,32 +1711,30 @@ class EspritTUIApp(App):  # type: ignore[misc]
                 return (animated_text, keymap_styled([("ctrl-q", "quit")]), True)
             if self._agent_has_real_activity(agent_id):
                 animated_text = Text()
-                animated_text.append_text(self._build_running_ghost_indicator())
+                animated_text.append_text(self._build_running_spinner_indicator())
                 animated_text.append_text(self._get_sweep_animation(self._sweep_colors))
                 animated_text.append("esc", style=key_style)
                 animated_text.append(" ", style=text_style)
                 animated_text.append("stop", style=text_style)
                 return (animated_text, keymap_styled([("ctrl-q", "quit")]), True)
             animated_text = Text()
-            animated_text.append_text(self._build_running_ghost_indicator())
+            animated_text.append_text(self._build_running_spinner_indicator())
             animated_text.append_text(self._get_animated_verb_text(agent_id, "Initializing"))
             return (animated_text, keymap_styled([("ctrl-q", "quit")]), True)
 
         return (None, Text(), False)
 
-    def _build_running_ghost_indicator(self) -> Text:
-        """Render a tiny ghost pulse for running-status affordance."""
+    def _build_running_spinner_indicator(self) -> Text:
+        """Render a stable-width spinner prefix for running-status affordance."""
         palette = self._theme_palette()
-        frame_index = self._spinner_frame_index % len(self.MINI_GHOST_EYE_FRAMES)
-        eyes = self.MINI_GHOST_EYE_FRAMES[frame_index]
-        tail = self.MINI_GHOST_TAIL_FRAMES[frame_index % len(self.MINI_GHOST_TAIL_FRAMES)]
+        frame = self.RUN_STATUS_FRAMES[self._spinner_frame_index % len(self.RUN_STATUS_FRAMES)]
+        running_style = str(palette.get("status_running", "#22d3ee"))
+        muted_style = str(palette.get("muted", "#9ca3af"))
         text = Text()
-        text.append(".-.", style=str(palette.get("ghost_outline", "#67e8f9")))
-        text.append("(", style=str(palette.get("ghost_paren", "#38bdf8")))
-        text.append(eyes, style=str(palette.get("ghost_eyes", "#e2e8f0")))
-        text.append(")", style=str(palette.get("ghost_paren", "#38bdf8")))
-        text.append(tail, style=str(palette.get("ghost_tail", "#22d3ee")))
-        text.append(" ", style=str(palette.get("keymap_text", "dim")))
+        text.append("[", style=running_style)
+        text.append(frame, style=f"bold {running_style}")
+        text.append("]", style=running_style)
+        text.append(" ", style=muted_style)
         return text
 
     def _update_agent_status_display(self) -> None:
@@ -1803,6 +1814,7 @@ class EspritTUIApp(App):  # type: ignore[misc]
             scan_completed=scan_done,
             scan_failed=scan_failed,
             spinner_frame=self._stats_spinner_frame,
+            theme_tokens=self._theme_palette(),
         )
         if stats_text:
             stats_content.append(stats_text)
@@ -2065,18 +2077,7 @@ class EspritTUIApp(App):  # type: ignore[misc]
             return
 
         agent_name_raw = agent_data.get("name", "Agent")
-
-        status_indicators = {
-            "running": "◐",
-            "waiting": "⏸",
-            "completed": "✓",
-            "failed": "✗",
-            "stopped": "■",
-            "stopping": "○",
-            "llm_failed": "✗",
-        }
-
-        status_icon = status_indicators.get(status, "○")
+        status_icon = self._agent_status_marker(status)
         vuln_count = self._agent_vulnerability_count(agent_id)
         vuln_indicator = f" ({vuln_count})" if vuln_count > 0 else ""
         agent_name = f"{status_icon} {agent_name_raw}{vuln_indicator}"
@@ -2138,18 +2139,7 @@ class EspritTUIApp(App):  # type: ignore[misc]
         agent_data = self.tracer.agents.get(agent_id, {})
         agent_name_raw = agent_data.get("name", "Agent")
         status = agent_data.get("status", "running")
-
-        status_indicators = {
-            "running": "◐",
-            "waiting": "⏸",
-            "completed": "✓",
-            "failed": "✗",
-            "stopped": "■",
-            "stopping": "○",
-            "llm_failed": "✗",
-        }
-
-        status_icon = status_indicators.get(status, "○")
+        status_icon = self._agent_status_marker(status)
         vuln_count = self._agent_vulnerability_count(agent_id)
         vuln_indicator = f" ({vuln_count})" if vuln_count > 0 else ""
         agent_name = f"{status_icon} {agent_name_raw}{vuln_indicator}"
@@ -2210,11 +2200,15 @@ class EspritTUIApp(App):  # type: ignore[misc]
             return UserMessageRenderer.render_simple(content)
 
         if metadata.get("interrupted"):
+            palette = self._theme_palette()
             streaming_result = self._render_streaming_content(content)
             interrupted_text = Text()
             interrupted_text.append("\n")
-            interrupted_text.append("⚠ ", style="yellow")
-            interrupted_text.append("Interrupted by user", style="yellow dim")
+            interrupted_text.append("[warn] ", style=f"bold {str(palette.get('warning', '#f59e0b'))}")
+            interrupted_text.append(
+                "Interrupted by user",
+                style=f"dim {str(palette.get('warning', '#f59e0b'))}",
+            )
             return Group(streaming_result, interrupted_text)
 
         return AgentMessageRenderer.render_simple(content)
@@ -2228,24 +2222,34 @@ class EspritTUIApp(App):  # type: ignore[misc]
         renderer = get_tool_renderer(tool_name)
 
         if renderer:
-            widget = renderer.render(tool_data)
+            renderer_payload = dict(tool_data)
+            renderer_payload["_theme_id"] = self._theme_id
+            renderer_payload["_theme_tokens"] = self._theme_palette()
+            widget = renderer.render(renderer_payload)
             return widget.renderable
 
         text = Text()
+        palette = self._theme_palette()
+        muted_style = str(palette.get("muted", "#9ca3af"))
+        info_style = str(palette.get("info", "#60a5fa"))
+        success_style = str(palette.get("status_completed", "#22c55e"))
+        warning_style = str(palette.get("warning", "#f59e0b"))
+        error_style = str(palette.get("status_failed", "#ef4444"))
 
         if tool_name in ("llm_error_details", "sandbox_error_details"):
             return self._render_error_details(text, tool_name, args)
 
-        text.append("→ Using tool ")
-        text.append(tool_name, style="bold blue")
+        text.append("[run] ", style=f"bold {warning_style}")
+        text.append("Using tool ", style=f"dim {muted_style}")
+        text.append(tool_name, style=f"bold {info_style}")
 
         status_styles = {
-            "running": ("●", "yellow"),
-            "completed": ("✓", "green"),
-            "failed": ("✗", "red"),
-            "error": ("✗", "red"),
+            "running": ("[run]", warning_style),
+            "completed": ("[ok]", success_style),
+            "failed": ("[err]", error_style),
+            "error": ("[err]", error_style),
         }
-        icon, style = status_styles.get(status, ("○", "dim"))
+        icon, style = status_styles.get(status, ("[run]", muted_style))
         text.append(" ")
         text.append(icon, style=style)
 
@@ -2255,7 +2259,7 @@ class EspritTUIApp(App):  # type: ignore[misc]
                 if len(str_v) > 500:
                     str_v = str_v[:497] + "..."
                 text.append("\n  ")
-                text.append(k, style="dim")
+                text.append(k, style=f"dim {muted_style}")
                 text.append(": ")
                 text.append(str_v)
 
@@ -2270,17 +2274,20 @@ class EspritTUIApp(App):  # type: ignore[misc]
         return text
 
     def _render_error_details(self, text: Any, tool_name: str, args: dict[str, Any]) -> Any:
+        palette = self._theme_palette()
+        error_style = str(palette.get("status_failed", "#ef4444"))
+        muted_style = str(palette.get("muted", "#9ca3af"))
         if tool_name == "llm_error_details":
-            text.append("✗ LLM Request Failed", style="red")
+            text.append("[err] LLM request failed", style=f"bold {error_style}")
         else:
-            text.append("✗ Sandbox Initialization Failed", style="red")
+            text.append("[err] Sandbox initialization failed", style=f"bold {error_style}")
             if args.get("error"):
-                text.append(f"\n{args['error']}", style="bold red")
+                text.append(f"\n{args['error']}", style=f"bold {error_style}")
         if args.get("details"):
             details = str(args["details"])
             if len(details) > 1000:
                 details = details[:997] + "..."
-            text.append("\nDetails: ", style="dim")
+            text.append("\nDetails: ", style=f"dim {muted_style}")
             text.append(details)
         return text
 
