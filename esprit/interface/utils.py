@@ -298,6 +298,27 @@ def build_final_stats_text(tracer: Any) -> Text:
     return stats_text
 
 
+def _resolve_session_cost(total_stats: dict[str, Any], model: str) -> float:
+    """Resolve session cost from tracer totals, with token-based fallback."""
+    cost = total_stats.get("cost")
+    if isinstance(cost, int | float):
+        return float(cost)
+
+    if not model:
+        return 0.0
+
+    from esprit.llm.pricing import get_pricing_db
+
+    return float(
+        get_pricing_db().get_cost(
+            model,
+            int(total_stats.get("input_tokens", 0)),
+            int(total_stats.get("output_tokens", 0)),
+            int(total_stats.get("cached_tokens", 0)),
+        ),
+    )
+
+
 def build_live_stats_text(tracer: Any, agent_config: dict[str, Any] | None = None) -> Text:
     stats_text = Text()
     if not tracer:
@@ -372,14 +393,7 @@ def build_live_stats_text(tracer: Any, agent_config: dict[str, Any] | None = Non
         llm_config = agent_config["llm_config"]
         model = getattr(llm_config, "model_name", "")
 
-    from esprit.llm.pricing import get_pricing_db
-
-    session_cost = get_pricing_db().get_cost(
-        model,
-        total_stats["input_tokens"],
-        total_stats["output_tokens"],
-        total_stats["cached_tokens"],
-    ) if model else 0.0
+    session_cost = _resolve_session_cost(total_stats, model)
 
     stats_text.append("Cost ", style="dim")
     if session_cost >= 0.005:
@@ -618,9 +632,7 @@ def build_tui_stats_text(
     stats_text.append("\n")
     stats_text.append("─" * 28, style="dim #3f3f3f")
 
-    session_cost = get_pricing_db().get_cost(
-        model, input_tokens, output_tokens, cached_tokens,
-    ) if model else 0.0
+    session_cost = _resolve_session_cost(total_stats, model)
     lifetime_cost = get_lifetime_cost()
 
     stats_text.append("\n")
