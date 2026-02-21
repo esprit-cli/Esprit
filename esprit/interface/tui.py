@@ -1648,7 +1648,7 @@ class EspritTUIApp(App):  # type: ignore[misc]
         status_markers = {
             "running": self._running_status_frame(),
             "waiting": "~",
-            "completed": "+",
+            "completed": "●",
             "failed": "x",
             "stopped": "-",
             "stopping": ".",

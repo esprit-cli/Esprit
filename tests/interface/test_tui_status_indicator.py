@@ -48,3 +48,10 @@ def test_tui_theme_normalization_accepts_crt() -> None:
 
 def test_tui_theme_normalization_falls_back_to_default() -> None:
     assert EspritTUIApp._normalize_theme_id("not-a-theme") == EspritTUIApp.DEFAULT_THEME
+
+
+def test_completed_agent_marker_uses_solid_circle() -> None:
+    app = EspritTUIApp.__new__(EspritTUIApp)
+    app._stats_spinner_frame = 0
+
+    assert EspritTUIApp._agent_status_marker(app, "completed") == "●"
