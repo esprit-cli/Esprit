@@ -3,7 +3,7 @@ from typing import Any, ClassVar
 from rich.text import Text
 from textual.widgets import Static
 
-from esprit.interface.theme_tokens import get_theme_tokens_from_tool_data
+from esprit.interface.theme_tokens import get_marker_color, get_theme_tokens_from_tool_data
 
 from .base_renderer import BaseToolRenderer
 from .registry import register_tool_renderer
@@ -20,10 +20,11 @@ class ThinkRenderer(BaseToolRenderer):
         thought = args.get("thought", "")
         tokens = get_theme_tokens_from_tool_data(tool_data)
         accent = str(tokens.get("accent", "#a855f7"))
+        marker_color = get_marker_color(tokens, "think")
         muted = str(tokens.get("muted", "#9ca3af"))
 
         text = Text()
-        text.append("[think] ", style=f"bold {accent}")
+        text.append("[think] ", style=f"bold {marker_color}")
         text.append("Thinking", style=f"bold {accent}")
         text.append("\n  ")
 

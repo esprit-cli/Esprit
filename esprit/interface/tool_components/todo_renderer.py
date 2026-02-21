@@ -3,7 +3,7 @@ from typing import Any, ClassVar
 from rich.text import Text
 from textual.widgets import Static
 
-from esprit.interface.theme_tokens import get_theme_tokens_from_tool_data
+from esprit.interface.theme_tokens import get_marker_color, get_theme_tokens_from_tool_data
 
 from .base_renderer import BaseToolRenderer
 from .registry import register_tool_renderer
@@ -43,11 +43,11 @@ def _format_todo_lines(text: Text, result: dict[str, Any]) -> None:
 
 def _theme_styles(tool_data: dict[str, Any]) -> tuple[str, str, str, str]:
     tokens = get_theme_tokens_from_tool_data(tool_data)
-    accent = str(tokens.get("accent", "#a78bfa"))
+    todo_marker = get_marker_color(tokens, "todo")
     warning = str(tokens.get("warning", "#f59e0b"))
     error_color = str(tokens.get("error", "#ef4444"))
     muted = str(tokens.get("muted", "#9ca3af"))
-    return accent, warning, error_color, muted
+    return todo_marker, warning, error_color, muted
 
 
 @register_tool_renderer
@@ -58,11 +58,11 @@ class CreateTodoRenderer(BaseToolRenderer):
     @classmethod
     def render(cls, tool_data: dict[str, Any]) -> Static:
         result = tool_data.get("result")
-        accent, _warning, error_color, muted = _theme_styles(tool_data)
+        todo_marker, _warning, error_color, muted = _theme_styles(tool_data)
 
         text = Text()
-        text.append("[todo] ", style=f"bold {accent}")
-        text.append("Todo", style=f"bold {accent}")
+        text.append("[todo] ", style=f"bold {todo_marker}")
+        text.append("Todo", style=f"bold {todo_marker}")
 
         if isinstance(result, str) and result.strip():
             text.append("\n  ")
@@ -90,11 +90,11 @@ class ListTodosRenderer(BaseToolRenderer):
     @classmethod
     def render(cls, tool_data: dict[str, Any]) -> Static:
         result = tool_data.get("result")
-        accent, _warning, error_color, muted = _theme_styles(tool_data)
+        todo_marker, _warning, error_color, muted = _theme_styles(tool_data)
 
         text = Text()
-        text.append("[todo] ", style=f"bold {accent}")
-        text.append("Todos", style=f"bold {accent}")
+        text.append("[todo] ", style=f"bold {todo_marker}")
+        text.append("Todos", style=f"bold {todo_marker}")
 
         if isinstance(result, str) and result.strip():
             text.append("\n  ")
@@ -122,11 +122,11 @@ class UpdateTodoRenderer(BaseToolRenderer):
     @classmethod
     def render(cls, tool_data: dict[str, Any]) -> Static:
         result = tool_data.get("result")
-        accent, _warning, error_color, muted = _theme_styles(tool_data)
+        todo_marker, _warning, error_color, muted = _theme_styles(tool_data)
 
         text = Text()
-        text.append("[todo] ", style=f"bold {accent}")
-        text.append("Todo Updated", style=f"bold {accent}")
+        text.append("[todo] ", style=f"bold {todo_marker}")
+        text.append("Todo Updated", style=f"bold {todo_marker}")
 
         if isinstance(result, str) and result.strip():
             text.append("\n  ")
@@ -154,11 +154,11 @@ class MarkTodoDoneRenderer(BaseToolRenderer):
     @classmethod
     def render(cls, tool_data: dict[str, Any]) -> Static:
         result = tool_data.get("result")
-        accent, _warning, error_color, muted = _theme_styles(tool_data)
+        todo_marker, _warning, error_color, muted = _theme_styles(tool_data)
 
         text = Text()
-        text.append("[todo] ", style=f"bold {accent}")
-        text.append("Todo Completed", style=f"bold {accent}")
+        text.append("[todo] ", style=f"bold {todo_marker}")
+        text.append("Todo Completed", style=f"bold {todo_marker}")
 
         if isinstance(result, str) and result.strip():
             text.append("\n  ")
@@ -186,10 +186,10 @@ class MarkTodoPendingRenderer(BaseToolRenderer):
     @classmethod
     def render(cls, tool_data: dict[str, Any]) -> Static:
         result = tool_data.get("result")
-        _accent, warning, error_color, muted = _theme_styles(tool_data)
+        todo_marker, warning, error_color, muted = _theme_styles(tool_data)
 
         text = Text()
-        text.append("[todo] ", style=f"bold {warning}")
+        text.append("[todo] ", style=f"bold {todo_marker}")
         text.append("Todo Reopened", style=f"bold {warning}")
 
         if isinstance(result, str) and result.strip():
@@ -218,11 +218,11 @@ class DeleteTodoRenderer(BaseToolRenderer):
     @classmethod
     def render(cls, tool_data: dict[str, Any]) -> Static:
         result = tool_data.get("result")
-        accent, _warning, error_color, muted = _theme_styles(tool_data)
+        todo_marker, _warning, error_color, muted = _theme_styles(tool_data)
 
         text = Text()
-        text.append("[todo] ", style=f"bold {accent}")
-        text.append("Todo Removed", style=f"bold {accent}")
+        text.append("[todo] ", style=f"bold {todo_marker}")
+        text.append("Todo Removed", style=f"bold {todo_marker}")
 
         if isinstance(result, str) and result.strip():
             text.append("\n  ")

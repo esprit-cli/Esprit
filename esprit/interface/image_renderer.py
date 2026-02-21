@@ -11,6 +11,8 @@ from collections.abc import Mapping
 from rich.style import Style
 from rich.text import Text
 
+from esprit.interface.theme_tokens import get_marker_color
+
 logger = logging.getLogger(__name__)
 
 _PILLOW_AVAILABLE: bool | None = None
@@ -121,7 +123,10 @@ def screenshot_to_rich_text(
         if url_label:
             muted = str(theme_tokens.get("muted", "#9ca3af")) if theme_tokens else "#9ca3af"
             info = str(theme_tokens.get("info", "#06b6d4")) if theme_tokens else "#06b6d4"
-            text.append("  [web] ", style=f"dim {muted}")
+            web_marker = (
+                get_marker_color(theme_tokens, "web") if theme_tokens else "#06b6d4"
+            )
+            text.append("  [web] ", style=f"bold {web_marker}")
             max_label = max(8, target_w - 9)
             label = url_label if len(url_label) <= max_label else url_label[: max_label - 1] + "…"
             text.append(label, style=f"dim {info}")

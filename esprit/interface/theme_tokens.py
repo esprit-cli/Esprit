@@ -21,6 +21,17 @@ REQUIRED_SEMANTIC_KEYS: tuple[str, ...] = (
     "status_idle",
 )
 
+MARKER_KEYS: tuple[str, ...] = (
+    "run",
+    "ok",
+    "warn",
+    "err",
+    "bug",
+    "todo",
+    "web",
+    "think",
+)
+
 
 _THEME_TOKENS: dict[str, dict[str, Any]] = {
     "esprit": {
@@ -37,6 +48,14 @@ _THEME_TOKENS: dict[str, dict[str, Any]] = {
         "status_completed": "#22c55e",
         "status_failed": "#ef4444",
         "status_idle": "#947575",
+        "marker_run": "#22d3ee",
+        "marker_ok": "#22c55e",
+        "marker_warn": "#f59e0b",
+        "marker_err": "#ef4444",
+        "marker_bug": "#f97316",
+        "marker_todo": "#a78bfa",
+        "marker_web": "#38bdf8",
+        "marker_think": "#14b8a6",
         "subagent_header": "#22d3ee",
         "vuln_badge": "#ef4444",
         "compacting_primary": "#f59e0b",
@@ -100,6 +119,14 @@ _THEME_TOKENS: dict[str, dict[str, Any]] = {
         "status_completed": "#65a30d",
         "status_failed": "#dc2626",
         "status_idle": "#b18a6b",
+        "marker_run": "#f97316",
+        "marker_ok": "#84cc16",
+        "marker_warn": "#fbbf24",
+        "marker_err": "#ef4444",
+        "marker_bug": "#c2410c",
+        "marker_todo": "#c084fc",
+        "marker_web": "#fb923c",
+        "marker_think": "#22d3ee",
         "subagent_header": "#f97316",
         "vuln_badge": "#dc2626",
         "compacting_primary": "#f59e0b",
@@ -163,6 +190,14 @@ _THEME_TOKENS: dict[str, dict[str, Any]] = {
         "status_completed": "#22c55e",
         "status_failed": "#ef4444",
         "status_idle": "#7fb48b",
+        "marker_run": "#22c55e",
+        "marker_ok": "#4ade80",
+        "marker_warn": "#84cc16",
+        "marker_err": "#ef4444",
+        "marker_bug": "#f59e0b",
+        "marker_todo": "#2dd4bf",
+        "marker_web": "#38bdf8",
+        "marker_think": "#a3e635",
         "subagent_header": "#22c55e",
         "vuln_badge": "#ef4444",
         "compacting_primary": "#84cc16",
@@ -226,6 +261,14 @@ _THEME_TOKENS: dict[str, dict[str, Any]] = {
         "status_completed": "#34d399",
         "status_failed": "#f87171",
         "status_idle": "#9ab9d3",
+        "marker_run": "#38bdf8",
+        "marker_ok": "#34d399",
+        "marker_warn": "#fbbf24",
+        "marker_err": "#f87171",
+        "marker_bug": "#f97316",
+        "marker_todo": "#a78bfa",
+        "marker_web": "#7dd3fc",
+        "marker_think": "#22d3ee",
         "subagent_header": "#38bdf8",
         "vuln_badge": "#f87171",
         "compacting_primary": "#fbbf24",
@@ -289,6 +332,14 @@ _THEME_TOKENS: dict[str, dict[str, Any]] = {
         "status_completed": "#66ff66",
         "status_failed": "#ff5555",
         "status_idle": "#7fd27f",
+        "marker_run": "#33ff33",
+        "marker_ok": "#66ff66",
+        "marker_warn": "#7ddb50",
+        "marker_err": "#ff5555",
+        "marker_bug": "#ff8844",
+        "marker_todo": "#99ffee",
+        "marker_web": "#66ff99",
+        "marker_think": "#ccff66",
         "subagent_header": "#33ff33",
         "vuln_badge": "#ff5555",
         "compacting_primary": "#66ff66",
@@ -360,3 +411,27 @@ def get_theme_tokens_from_tool_data(
         return dict(raw_tokens)
     theme_id = tool_data.get("_theme_id") or fallback_theme_id
     return get_theme_tokens(str(theme_id) if theme_id is not None else None)
+
+
+def get_marker_color(theme_tokens: Mapping[str, Any], marker: str) -> str:
+    marker_id = marker.strip().lower().strip("[]")
+    token_key = f"marker_{marker_id}"
+    configured = theme_tokens.get(token_key)
+    if isinstance(configured, str) and configured:
+        return configured
+
+    role_fallback: dict[str, str] = {
+        "run": "status_running",
+        "ok": "status_completed",
+        "warn": "warning",
+        "err": "status_failed",
+        "bug": "error",
+        "todo": "accent",
+        "web": "info",
+        "think": "accent",
+    }
+    role_key = role_fallback.get(marker_id, "accent")
+    role_color = theme_tokens.get(role_key)
+    if isinstance(role_color, str) and role_color:
+        return role_color
+    return str(theme_tokens.get("accent", "#22d3ee"))

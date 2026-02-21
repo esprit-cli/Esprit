@@ -18,6 +18,8 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.text import Text
 
+from esprit.interface.theme_tokens import get_marker_color, get_theme_tokens
+
 
 # Token formatting utilities
 def format_token_count(count: float) -> str:
@@ -414,7 +416,7 @@ def build_tui_stats_text(
     stats_text = Text()
     if not tracer:
         return stats_text
-    tokens = theme_tokens or {}
+    tokens = theme_tokens or get_theme_tokens(None)
     accent = str(tokens.get("accent", "#22d3ee"))
     info = str(tokens.get("info", "#60a5fa"))
     success = str(tokens.get("success", "#22c55e"))
@@ -422,6 +424,7 @@ def build_tui_stats_text(
     error = str(tokens.get("error", "#ef4444"))
     muted = str(tokens.get("muted", "#9ca3af"))
     text_color = str(tokens.get("text", "white"))
+    marker_colors = {marker: get_marker_color(tokens, marker) for marker in ("run", "ok", "warn", "err", "web")}
 
     model = ""
     # Model name with provider badge
@@ -465,13 +468,13 @@ def build_tui_stats_text(
     if elapsed_str:
         stats_text.append("\n")
         if scan_failed:
-            stats_text.append("[err] ", style=f"bold {error}")
+            stats_text.append("[err] ", style=f"bold {marker_colors['err']}")
             stats_text.append(f"Failed  {elapsed_str}", style=error)
         elif scan_completed:
-            stats_text.append("[ok] ", style=f"bold {success}")
+            stats_text.append("[ok] ", style=f"bold {marker_colors['ok']}")
             stats_text.append(f"Completed  {elapsed_str}", style=success)
         else:
-            stats_text.append("[run] ", style=f"bold {accent}")
+            stats_text.append("[run] ", style=f"bold {marker_colors['run']}")
             stats_text.append(f"Scanning  {elapsed_str}", style=accent)
 
     # Divider
@@ -510,14 +513,12 @@ def build_tui_stats_text(
     stats_text.append("\n")
     if scan_failed:
         activity_char = "[err]"
-        activity_style = error
     elif scan_completed:
         activity_char = "[ok]"
-        activity_style = success
     else:
         activity_char = "[run]"
-        activity_style = accent
-    stats_text.append(f"{activity_char} ", style=activity_style)
+    marker_key = "err" if scan_failed else "ok" if scan_completed else "run"
+    stats_text.append(f"{activity_char} ", style=f"bold {marker_colors[marker_key]}")
     stats_text.append(f"{agent_count}", style=f"bold {text_color}")
     stats_text.append(" agents  ", style=f"dim {muted}")
     stats_text.append(f"{tool_count}", style=f"bold {text_color}")
@@ -601,7 +602,7 @@ def build_tui_stats_text(
         stats_text.append("\n")
         stats_text.append("─" * 28, style="dim #3f3f3f")
         stats_text.append("\n")
-        stats_text.append("[warn] ", style=f"bold {error}")
+        stats_text.append("[warn] ", style=f"bold {marker_colors['warn']}")
         stats_text.append(f"{vuln_count} ", style=f"bold {error}")
         stats_text.append("vulns found", style=error)
 
@@ -640,7 +641,9 @@ def build_tui_stats_text(
     stats_text.append("\n")
     stats_text.append("─" * 28, style="dim #3f3f3f")
     stats_text.append("\n")
-    stats_text.append(f"{marker} ", style=f"bold {info}")
+    marker_key = marker.strip("[]").lower()
+    marker_color = marker_colors.get(marker_key, marker_colors["run"])
+    stats_text.append(f"{marker} ", style=f"bold {marker_color}")
     stats_text.append(title, style=text_color)
     stats_text.append(f"\n  {desc}", style=f"dim {muted}")
 

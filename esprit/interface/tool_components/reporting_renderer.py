@@ -7,7 +7,7 @@ from rich.padding import Padding
 from rich.text import Text
 from textual.widgets import Static
 
-from esprit.interface.theme_tokens import get_theme_tokens_from_tool_data
+from esprit.interface.theme_tokens import get_marker_color, get_theme_tokens_from_tool_data
 
 from .base_renderer import BaseToolRenderer
 from .registry import register_tool_renderer
@@ -77,7 +77,7 @@ class CreateVulnerabilityReportRenderer(BaseToolRenderer):
         field_style = f"bold {str(tokens.get('success', '#4ade80'))}"
         muted_style = f"dim {str(tokens.get('muted', '#9ca3af'))}"
         header_style = str(tokens.get("warning", "#ea580c"))
-        bug_style = str(tokens.get("error", "#dc2626"))
+        bug_style = get_marker_color(tokens, "bug")
 
         title = args.get("title", "")
         description = args.get("description", "")

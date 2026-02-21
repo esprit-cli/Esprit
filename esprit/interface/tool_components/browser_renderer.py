@@ -7,7 +7,7 @@ from rich.console import Group
 from rich.text import Text
 from textual.widgets import Static
 
-from esprit.interface.theme_tokens import get_theme_tokens_from_tool_data
+from esprit.interface.theme_tokens import get_marker_color, get_theme_tokens_from_tool_data
 
 from .base_renderer import BaseToolRenderer
 from .registry import register_tool_renderer
@@ -117,8 +117,9 @@ class BrowserRenderer(BaseToolRenderer):
     @classmethod
     def _build_content(cls, action: str, args: dict[str, Any], tokens: dict[str, Any]) -> Text:
         info = str(tokens.get("info", "#06b6d4"))
+        web_marker = get_marker_color(tokens, "web")
         text = Text()
-        text.append("[web] ", style=f"bold {info}")
+        text.append("[web] ", style=f"bold {web_marker}")
 
         if action in cls.SIMPLE_ACTIONS:
             text.append(cls.SIMPLE_ACTIONS[action], style=info)
