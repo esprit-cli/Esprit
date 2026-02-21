@@ -32,6 +32,56 @@ _INHERIT_SUMMARIZE_THRESHOLD = 15  # Summarize if parent history exceeds this
 _RECENT_MESSAGES_TO_KEEP = 10  # Keep last N messages verbatim after summary
 
 
+def _snapshot_inherited_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Create a stable inherited-history snapshot safe for provider replay.
+
+    Subagents can be spawned while the parent is still resolving tool calls.
+    If we inherit the live list directly, we may capture an assistant tool call
+    before its matching role=tool result is appended, which breaks Anthropic's
+    strict tool_use/tool_result sequencing.
+    """
+    snapshot = deepcopy(list(messages))
+
+    sanitized: list[dict[str, Any]] = []
+    pending_tool_ids: set[str] = set()
+
+    for msg in snapshot:
+        role = str(msg.get("role", ""))
+
+        if pending_tool_ids:
+            if role != "tool":
+                break
+            tool_call_id = str(msg.get("tool_call_id") or "")
+            if tool_call_id not in pending_tool_ids:
+                break
+            pending_tool_ids.discard(tool_call_id)
+            sanitized.append(msg)
+            continue
+
+        tool_calls = msg.get("tool_calls")
+        if role == "assistant" and isinstance(tool_calls, list) and tool_calls:
+            candidate_ids = {
+                str(tc.get("id") or "")
+                for tc in tool_calls
+                if isinstance(tc, dict)
+            }
+            candidate_ids.discard("")
+            if candidate_ids and len(candidate_ids) == len(tool_calls):
+                pending_tool_ids = set(candidate_ids)
+            sanitized.append(msg)
+            continue
+
+        sanitized.append(msg)
+
+    if pending_tool_ids:
+        while sanitized:
+            removed = sanitized.pop()
+            if removed.get("role") == "assistant" and removed.get("tool_calls"):
+                break
+
+    return sanitized
+
+
 def _format_messages_as_text(messages: list[dict[str, Any]]) -> str:
     """Format messages as readable text with role labels."""
     from esprit.llm.memory_compressor import extract_message_text
@@ -364,7 +414,9 @@ def create_agent(
 
         inherited_messages = []
         if inherit_context:
-            inherited_messages = agent_state.get_conversation_history()
+            inherited_messages = _snapshot_inherited_messages(
+                agent_state.get_conversation_history()
+            )
 
         _agent_instances[state.agent_id] = agent
 
