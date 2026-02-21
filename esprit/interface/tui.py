@@ -92,9 +92,9 @@ class ChatTextArea(TextArea):  # type: ignore[misc]
             return
 
         line_count = self.document.line_count
-        target_lines = min(max(1, line_count), 8)
+        target_lines = min(max(1, line_count), 6)
 
-        new_height = target_lines + 2
+        new_height = max(3, target_lines + 2)
 
         if self.parent.styles.height != new_height:
             self.parent.styles.height = new_height
@@ -102,7 +102,6 @@ class ChatTextArea(TextArea):  # type: ignore[misc]
 
 
 class SplashScreen(Static):  # type: ignore[misc]
-    PRIMARY_GREEN = "#32d9ff"
     WORDMARK = (
         "███████ ███████ ██████  ██████  ██ ████████",
         "██      ██      ██   ██ ██   ██ ██    ██",
@@ -161,6 +160,10 @@ class SplashScreen(Static):  # type: ignore[misc]
         self._animation_timer: Timer | None = None
         self._panel_static: Static | None = None
         self._version = "dev"
+        self._theme_id = normalize_theme_id(Config.get_launchpad_theme())
+
+    def _theme_tokens(self) -> dict[str, Any]:
+        return get_theme_tokens(self._theme_id)
 
     def compose(self) -> ComposeResult:
         self._version = get_package_version()
@@ -190,6 +193,7 @@ class SplashScreen(Static):  # type: ignore[misc]
         self._panel_static.update(panel)
 
     def _build_panel(self, start_line: Text) -> Panel:
+        tokens = self._theme_tokens()
         content = Group(
             Align.center(self._build_ghost_text(self._animation_step)),
             Align.center(Text(" ")),
@@ -202,21 +206,36 @@ class SplashScreen(Static):  # type: ignore[misc]
             Align.center(start_line.copy()),
         )
 
-        return Panel.fit(content, border_style="#0b7f95", padding=(1, 4))
+        return Panel.fit(content, border_style=str(tokens.get("accent", "#22d3ee")), padding=(1, 4))
 
     def _build_welcome_text(self) -> Text:
-        text = Text("Ghost shell online: ", style=Style(color="white", bold=True))
-        text.append("Esprit", style=Style(color="#67e8f9", bold=True))
+        tokens = self._theme_tokens()
+        text = Text("Ghost shell online: ", style=Style(color=str(tokens.get("text", "white")), bold=True))
+        text.append("Esprit", style=Style(color=str(tokens.get("accent", "#22d3ee")), bold=True))
         return text
 
     def _build_version_text(self) -> Text:
-        return Text(f"v{self._version}", style=Style(color="#9ca3af", dim=True))
+        tokens = self._theme_tokens()
+        return Text(f"v{self._version}", style=Style(color=str(tokens.get("muted", "#9ca3af")), dim=True))
 
     def _build_tagline_text(self) -> Text:
-        return Text("Open-source AI hackers for your apps", style=Style(color="#94a3b8", dim=True))
+        tokens = self._theme_tokens()
+        return Text(
+            "Open-source AI hackers for your apps",
+            style=Style(color=str(tokens.get("muted", "#9ca3af")), dim=True),
+        )
 
     def _build_wordmark_text(self, phase: int) -> Text:
-        palette = ("#7dd3fc", "#38bdf8", "#22d3ee", "#06b6d4", "#0891b2")
+        tokens = self._theme_tokens()
+        palette = (
+            str(tokens.get("info", "#7dd3fc")),
+            str(tokens.get("accent", "#38bdf8")),
+            str(tokens.get("info", "#22d3ee")),
+            str(tokens.get("accent", "#06b6d4")),
+            str(tokens.get("muted", "#0891b2")),
+        )
+        highlight = str(tokens.get("text", "#ecfeff"))
+        bright = str(tokens.get("info", "#bae6fd"))
         sweep = (phase * 2) % 56
         wordmark = Text(justify="center")
 
@@ -230,9 +249,9 @@ class SplashScreen(Static):  # type: ignore[misc]
 
                 dist = abs(col_index - sweep)
                 if dist <= 1:
-                    style = Style(color="#ecfeff", bold=True)
+                    style = Style(color=highlight, bold=True)
                 elif dist <= 3:
-                    style = Style(color="#bae6fd", bold=True)
+                    style = Style(color=bright, bold=True)
                 else:
                     style = Style(color=base, bold=True)
                 row_text.append(char, style=style)
@@ -243,6 +262,10 @@ class SplashScreen(Static):  # type: ignore[misc]
         return wordmark
 
     def _build_ghost_text(self, phase: int) -> Text:
+        tokens = self._theme_tokens()
+        body_color = str(tokens.get("accent", "#22d3ee"))
+        sparkle_a = str(tokens.get("info", "#a5f3fc"))
+        sparkle_b = str(tokens.get("accent", "#38bdf8"))
         frame = self.GHOST_FRAMES[phase % len(self.GHOST_FRAMES)]
         ghost = Text()
 
@@ -252,13 +275,13 @@ class SplashScreen(Static):  # type: ignore[misc]
             while i < len(line):
                 chunk = line[i : i + 2]
                 if chunk == "[]":
-                    line_text.append("██", style=Style(color="#22d3ee", bold=True))
+                    line_text.append("██", style=Style(color=body_color, bold=True))
                     i += 2
                     continue
 
                 char = line[i]
                 if char == "*":
-                    sparkle = "#a5f3fc" if (phase + line_index + i) % 2 == 0 else "#38bdf8"
+                    sparkle = sparkle_a if (phase + line_index + i) % 2 == 0 else sparkle_b
                     line_text.append(char, style=Style(color=sparkle, bold=True))
                 else:
                     line_text.append(char)
@@ -271,6 +294,10 @@ class SplashScreen(Static):  # type: ignore[misc]
         return ghost
 
     def _build_start_line_text(self, phase: int) -> Text:
+        tokens = self._theme_tokens()
+        text_color = str(tokens.get("text", "#f5f5f5"))
+        info_color = str(tokens.get("info", "#d4d4d8"))
+        muted_color = str(tokens.get("muted", "#a3a3a3"))
         full_text = "Booting ghost runtime"
         text_len = len(full_text)
 
@@ -281,13 +308,13 @@ class SplashScreen(Static):  # type: ignore[misc]
             dist = abs(i - shine_pos)
 
             if dist <= 1:
-                style = Style(color="bright_white", bold=True)
+                style = Style(color=text_color, bold=True)
             elif dist <= 3:
-                style = Style(color="white", bold=True)
+                style = Style(color=info_color, bold=True)
             elif dist <= 5:
-                style = Style(color="#a3a3a3")
+                style = Style(color=muted_color)
             else:
-                style = Style(color="#525252")
+                style = Style(color=muted_color, dim=True)
 
             text.append(char, style=style)
 
