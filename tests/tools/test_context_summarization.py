@@ -15,6 +15,7 @@ from esprit.tools.agents_graph.agents_graph_actions import (
     _running_agents,
     _format_messages_as_text,
     _format_messages_brief,
+    _snapshot_inherited_messages,
     _summarize_inherited_context,
 )
 

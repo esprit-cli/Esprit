@@ -74,38 +74,86 @@ def _detect_project(directory: str) -> tuple[str, str | None]:
 class DirectorySuggester(Suggester):
     """Suggests directory paths as the user types."""
 
-    def __init__(self) -> None:
+    def __init__(self, base_dir: str | None = None) -> None:
         super().__init__(use_cache=False, case_sensitive=True)
+        self._base_dir = Path(base_dir or os.getcwd()).expanduser().resolve()
+
+    def set_base_dir(self, base_dir: str) -> None:
+        try:
+            self._base_dir = Path(base_dir).expanduser().resolve()
+        except OSError:
+            self._base_dir = Path(os.getcwd()).expanduser().resolve()
+
+    def _resolve_candidate_path(self, value: str) -> Path:
+        candidate = Path(value).expanduser()
+        if candidate.is_absolute():
+            return candidate
+        return (self._base_dir / candidate)
+
+    def _format_suggestion(self, original: str, suggestion: Path) -> str:
+        if original.startswith("~"):
+            home = Path.home()
+            try:
+                relative = suggestion.relative_to(home)
+                if relative == Path("."):
+                    return "~/"
+                return f"~/{relative.as_posix()}/"
+            except ValueError:
+                return str(suggestion) + "/"
+
+        if original.startswith("/") or original.startswith(os.sep):
+            return str(suggestion) + "/"
+
+        if "/" in original:
+            prefix = original if original.endswith("/") else original.rsplit("/", 1)[0] + "/"
+            return f"{prefix}{suggestion.name}/"
+
+        if os.sep in original and os.sep != "/":
+            prefix = original if original.endswith(os.sep) else original.rsplit(os.sep, 1)[0] + os.sep
+            return f"{prefix}{suggestion.name}{os.sep}"
+
+        try:
+            relative = suggestion.relative_to(self._base_dir)
+            return f"{relative.as_posix()}/"
+        except ValueError:
+            return suggestion.name + "/"
 
     async def get_suggestion(self, value: str) -> str | None:
         if not value:
             return None
         try:
-            p = Path(value).expanduser()
-            # If value ends with / try listing that directory
-            if value.endswith("/") or value.endswith(os.sep):
-                if p.is_dir():
-                    children = sorted(
-                        [c for c in p.iterdir() if c.is_dir() and not c.name.startswith(".")],
-                        key=lambda x: x.name,
-                    )
-                    if children:
-                        return str(children[0]) + "/"
+            raw = value.strip()
+            candidate = self._resolve_candidate_path(raw)
+
+            if raw == ".":
+                parent = self._base_dir
+                prefix = "."
+            elif raw.endswith("/") or raw.endswith(os.sep):
+                parent = candidate
+                prefix = ""
+            else:
+                parent = candidate.parent
+                prefix = candidate.name
+
+            if not parent.is_dir():
                 return None
-            # Otherwise, complete the last component
-            parent = p.parent
-            prefix = p.name
-            if parent.is_dir():
-                matches = sorted(
-                    [
-                        c
-                        for c in parent.iterdir()
-                        if c.is_dir() and c.name.startswith(prefix) and not c.name.startswith(".")
-                    ],
-                    key=lambda x: x.name,
-                )
-                if matches:
-                    return str(matches[0]) + "/"
+
+            show_hidden = prefix.startswith(".")
+            children = sorted(
+                [
+                    c for c in parent.iterdir()
+                    if c.is_dir() and (show_hidden or not c.name.startswith("."))
+                ],
+                key=lambda x: x.name.lower(),
+            )
+            if prefix:
+                children = [
+                    c for c in children
+                    if c.name.lower().startswith(prefix.lower())
+                ]
+
+            if children:
+                return self._format_suggestion(raw, children[0])
         except OSError:
             pass
         return None
@@ -282,6 +330,23 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
             sparkle_a="#7dd3fc",
             sparkle_b="#38bdf8",
         ),
+        "crt": _LaunchpadTheme(
+            key="crt",
+            label="CRT",
+            hint="Phosphor green + scanlines",
+            accent="#33ff33",
+            selected_hint="#1fcc1f",
+            menu_label="#9bcf9b",
+            menu_hint="#4f7a4f",
+            separator="#66ff66",
+            info="#9bcf9b",
+            status="#7fb47f",
+            brand_dim="#4f7a4f",
+            ghost_body="#33ff33",
+            ghost_face="#001400",
+            sparkle_a="#99ff99",
+            sparkle_b="#33ff33",
+        ),
     }
 
     selected_index: reactive[int] = reactive(0)
@@ -309,7 +374,7 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
         # Detect current project
         self._cwd = os.getcwd()
         self._project_name, self._project_type = _detect_project(self._cwd)
-        self._dir_suggester = DirectorySuggester()
+        self._dir_suggester = DirectorySuggester(self._cwd)
 
         # Preview state
         self._preview_fetch_id: int = 0  # Incremented to cancel stale async fetches
@@ -551,7 +616,7 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
         elif view == "scan_target":
             self._current_entries = []
             self._current_title = "Scan Target"
-            self._current_hint = "enter URL, repo, or path  esc to go back"
+            self._current_hint = "enter URL, repo, or local path  esc to go back"
             self._input_mode = "scan_target"
             input_widget.placeholder = "https://example.com, github.com/org/repo, or /path"
             input_widget.display = True
@@ -560,10 +625,16 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
         elif view == "scan_local":
             self._current_entries = []
             self._current_title = "Local Path"
-            self._current_hint = "type a path (tab to accept suggestion)  esc to go back"
+            self._current_hint = "tab to autocomplete  enter to use current directory  esc to go back"
             self._input_mode = "scan_local"
             input_widget.placeholder = "/path/to/project"
+            self._dir_suggester.set_base_dir(self._cwd)
             input_widget.suggester = self._dir_suggester
+            current_dir = str(Path(self._cwd).resolve())
+            if not current_dir.endswith(os.sep):
+                current_dir += os.sep
+            input_widget.value = current_dir
+            input_widget.cursor_position = len(current_dir)
             input_widget.display = True
             input_widget.focus()
         elif view == "provider_code":
@@ -775,8 +846,8 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
         entries.append(_MenuEntry("scan_cwd", label, hint=hint))
 
         # Alternatives
-        entries.append(_MenuEntry("scan_target_input", "Enter target", hint="URL, repo, or path"))
-        entries.append(_MenuEntry("scan_local_input", "Browse local", hint="with path suggestions"))
+        entries.append(_MenuEntry("scan_target_input", "Enter target", hint="URL, repo, or local path"))
+        entries.append(_MenuEntry("scan_local_input", "Browse local", hint="directory autocomplete"))
         entries.append(_MenuEntry("back", "\u2190 Back"))
         return entries
 
@@ -864,6 +935,26 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
     def _queue_scan_target(self, target: str, replace_current_view: bool = False) -> None:
         self._pending_scan_target = target
         self._set_view("pre_scan", push=not replace_current_view)
+
+    def _resolve_scan_path(self, value: str, use_cwd_if_empty: bool = False) -> str | None:
+        raw = value.strip()
+        if not raw:
+            if not use_cwd_if_empty:
+                return None
+            raw = self._cwd
+
+        path = Path(raw).expanduser()
+        if not path.is_absolute():
+            path = Path(self._cwd) / path
+
+        try:
+            resolved = path.resolve()
+        except OSError:
+            return None
+
+        if not resolved.exists():
+            return None
+        return str(resolved)
 
     def _start_scan_if_ready(self) -> None:
         if not self._configured_provider_rows():
@@ -1476,16 +1567,16 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
             if not value:
                 self._set_status("Target is required")
                 return
-            self._queue_scan_target(value, replace_current_view=True)
+            resolved_local = self._resolve_scan_path(value)
+            target = resolved_local or value
+            self._queue_scan_target(target, replace_current_view=True)
             return
 
         if self._input_mode == "scan_local":
-            if not value:
-                self._set_status("Path is required")
-                return
-            resolved = str(Path(value).expanduser().resolve())
-            if not Path(resolved).exists():
-                self._set_status(f"Path not found: {resolved}")
+            resolved = self._resolve_scan_path(value, use_cwd_if_empty=True)
+            if not resolved:
+                attempted = value or self._cwd
+                self._set_status(f"Path not found: {attempted}")
                 return
             self._queue_scan_target(resolved, replace_current_view=True)
             return

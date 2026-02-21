@@ -57,3 +57,17 @@ def test_set_theme_persists_only_when_changed(monkeypatch) -> None:
     assert app._theme_id == "glacier"
     assert saved_themes == ["glacier"]
     assert messages[-1] == "Theme set: Glacier"
+
+
+def test_crt_theme_is_listed(monkeypatch) -> None:
+    monkeypatch.setattr(
+        Config,
+        "get_launchpad_theme",
+        classmethod(lambda _cls: "esprit"),
+    )
+
+    app = LaunchpadApp()
+    entries = app._build_theme_entries()
+    crt = next(entry for entry in entries if entry.key == "theme:crt")
+
+    assert "CRT" in crt.label

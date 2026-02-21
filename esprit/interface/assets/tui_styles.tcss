@@ -286,7 +286,7 @@ VulnerabilityDetailScreen {
     content-align: right middle;
     text-style: none;
     margin: 0;
-    padding: 0;
+    padding: 0 0 0 1;
 }
 
 #chat_input_container {
@@ -295,9 +295,9 @@ VulnerabilityDetailScreen {
     border: none;
     border-top: solid #2f0f0f;
     margin-right: 0;
-    padding: 0 1;
+    padding: 0 2;
     layout: horizontal;
-    align-vertical: top;
+    align-vertical: middle;
 }
 
 #chat_input_container:focus-within {
@@ -312,9 +312,9 @@ VulnerabilityDetailScreen {
 #chat_prompt {
     width: auto;
     height: 100%;
-    padding: 0 0 0 1;
+    padding: 0 1 0 0;
     color: #947575;
-    content-align-vertical: top;
+    content-align: left middle;
 }
 
 #chat_history:focus {
@@ -329,6 +329,7 @@ VulnerabilityDetailScreen {
     color: #e8d5d5;
     padding: 0;
     margin: 0;
+    content-align: left middle;
 }
 
 #chat_input:focus {

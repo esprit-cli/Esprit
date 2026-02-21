@@ -539,7 +539,9 @@ def create_agent(
 
         inherited_messages = []
         if inherit_context:
-            inherited_messages = agent_state.get_conversation_history()
+            inherited_messages = _snapshot_inherited_messages(
+                agent_state.get_conversation_history()
+            )
 
         _agent_instances[state.agent_id] = agent
 

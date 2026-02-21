@@ -105,9 +105,9 @@ class ChatTextArea(TextArea):  # type: ignore[misc]
             return
 
         line_count = self.document.line_count
-        target_lines = min(max(1, line_count), 8)
+        target_lines = min(max(1, line_count), 6)
 
-        new_height = target_lines + 2
+        new_height = max(3, target_lines + 2)
 
         if self.parent.styles.height != new_height:
             self.parent.styles.height = new_height
@@ -115,7 +115,6 @@ class ChatTextArea(TextArea):  # type: ignore[misc]
 
 
 class SplashScreen(Static):  # type: ignore[misc]
-    PRIMARY_GREEN = "#32d9ff"
     WORDMARK = (
         "███████ ███████ ██████  ██████  ██ ████████",
         "██      ██      ██   ██ ██   ██ ██    ██",
@@ -174,6 +173,10 @@ class SplashScreen(Static):  # type: ignore[misc]
         self._animation_timer: Timer | None = None
         self._panel_static: Static | None = None
         self._version = "dev"
+        self._theme_id = normalize_theme_id(Config.get_launchpad_theme())
+
+    def _theme_tokens(self) -> dict[str, Any]:
+        return get_theme_tokens(self._theme_id)
 
     def compose(self) -> ComposeResult:
         self._version = get_package_version()
@@ -203,6 +206,7 @@ class SplashScreen(Static):  # type: ignore[misc]
         self._panel_static.update(panel)
 
     def _build_panel(self, start_line: Text) -> Panel:
+        tokens = self._theme_tokens()
         content = Group(
             Align.center(self._build_ghost_text(self._animation_step)),
             Align.center(Text(" ")),
@@ -215,21 +219,36 @@ class SplashScreen(Static):  # type: ignore[misc]
             Align.center(start_line.copy()),
         )
 
-        return Panel.fit(content, border_style="#0b7f95", padding=(1, 4))
+        return Panel.fit(content, border_style=str(tokens.get("accent", "#22d3ee")), padding=(1, 4))
 
     def _build_welcome_text(self) -> Text:
-        text = Text("Ghost shell online: ", style=Style(color="white", bold=True))
-        text.append("Esprit", style=Style(color="#67e8f9", bold=True))
+        tokens = self._theme_tokens()
+        text = Text("Ghost shell online: ", style=Style(color=str(tokens.get("text", "white")), bold=True))
+        text.append("Esprit", style=Style(color=str(tokens.get("accent", "#22d3ee")), bold=True))
         return text
 
     def _build_version_text(self) -> Text:
-        return Text(f"v{self._version}", style=Style(color="#9ca3af", dim=True))
+        tokens = self._theme_tokens()
+        return Text(f"v{self._version}", style=Style(color=str(tokens.get("muted", "#9ca3af")), dim=True))
 
     def _build_tagline_text(self) -> Text:
-        return Text("Open-source AI hackers for your apps", style=Style(color="#94a3b8", dim=True))
+        tokens = self._theme_tokens()
+        return Text(
+            "Open-source AI hackers for your apps",
+            style=Style(color=str(tokens.get("muted", "#9ca3af")), dim=True),
+        )
 
     def _build_wordmark_text(self, phase: int) -> Text:
-        palette = ("#7dd3fc", "#38bdf8", "#22d3ee", "#06b6d4", "#0891b2")
+        tokens = self._theme_tokens()
+        palette = (
+            str(tokens.get("info", "#7dd3fc")),
+            str(tokens.get("accent", "#38bdf8")),
+            str(tokens.get("info", "#22d3ee")),
+            str(tokens.get("accent", "#06b6d4")),
+            str(tokens.get("muted", "#0891b2")),
+        )
+        highlight = str(tokens.get("text", "#ecfeff"))
+        bright = str(tokens.get("info", "#bae6fd"))
         sweep = (phase * 2) % 56
         wordmark = Text(justify="center")
 
@@ -243,9 +262,9 @@ class SplashScreen(Static):  # type: ignore[misc]
 
                 dist = abs(col_index - sweep)
                 if dist <= 1:
-                    style = Style(color="#ecfeff", bold=True)
+                    style = Style(color=highlight, bold=True)
                 elif dist <= 3:
-                    style = Style(color="#bae6fd", bold=True)
+                    style = Style(color=bright, bold=True)
                 else:
                     style = Style(color=base, bold=True)
                 row_text.append(char, style=style)
@@ -256,6 +275,10 @@ class SplashScreen(Static):  # type: ignore[misc]
         return wordmark
 
     def _build_ghost_text(self, phase: int) -> Text:
+        tokens = self._theme_tokens()
+        body_color = str(tokens.get("accent", "#22d3ee"))
+        sparkle_a = str(tokens.get("info", "#a5f3fc"))
+        sparkle_b = str(tokens.get("accent", "#38bdf8"))
         frame = self.GHOST_FRAMES[phase % len(self.GHOST_FRAMES)]
         ghost = Text()
 
@@ -265,13 +288,13 @@ class SplashScreen(Static):  # type: ignore[misc]
             while i < len(line):
                 chunk = line[i : i + 2]
                 if chunk == "[]":
-                    line_text.append("██", style=Style(color="#22d3ee", bold=True))
+                    line_text.append("██", style=Style(color=body_color, bold=True))
                     i += 2
                     continue
 
                 char = line[i]
                 if char == "*":
-                    sparkle = "#a5f3fc" if (phase + line_index + i) % 2 == 0 else "#38bdf8"
+                    sparkle = sparkle_a if (phase + line_index + i) % 2 == 0 else sparkle_b
                     line_text.append(char, style=Style(color=sparkle, bold=True))
                 else:
                     line_text.append(char)
@@ -284,6 +307,10 @@ class SplashScreen(Static):  # type: ignore[misc]
         return ghost
 
     def _build_start_line_text(self, phase: int) -> Text:
+        tokens = self._theme_tokens()
+        text_color = str(tokens.get("text", "#f5f5f5"))
+        info_color = str(tokens.get("info", "#d4d4d8"))
+        muted_color = str(tokens.get("muted", "#a3a3a3"))
         full_text = "Booting ghost runtime"
         text_len = len(full_text)
 
@@ -294,13 +321,13 @@ class SplashScreen(Static):  # type: ignore[misc]
             dist = abs(i - shine_pos)
 
             if dist <= 1:
-                style = Style(color="bright_white", bold=True)
+                style = Style(color=text_color, bold=True)
             elif dist <= 3:
-                style = Style(color="white", bold=True)
+                style = Style(color=info_color, bold=True)
             elif dist <= 5:
-                style = Style(color="#a3a3a3")
+                style = Style(color=muted_color)
             else:
-                style = Style(color="#525252")
+                style = Style(color=muted_color, dim=True)
 
             text.append(char, style=style)
 
@@ -335,8 +362,12 @@ class StopAgentScreen(ModalScreen):  # type: ignore[misc]
         self.agent_id = agent_id
 
     def compose(self) -> ComposeResult:
+        theme_tokens = get_theme_tokens(Config.get_launchpad_theme())
+        title = Text()
+        title.append("[warn] ", style=f"bold {get_marker_color(theme_tokens, 'warn')}")
+        title.append(f"Stop '{self.agent_name}'?")
         yield Grid(
-            Label(f"🛑 Stop '{self.agent_name}'?", id="stop_agent_title"),
+            Label(title, id="stop_agent_title"),
             Grid(
                 Button("Yes", variant="error", id="stop_agent"),
                 Button("No", variant="default", id="cancel_stop"),
@@ -451,9 +482,12 @@ class VulnerabilityDetailScreen(ModalScreen):  # type: ignore[misc]
 
     def _render_vulnerability(self) -> Text:  # noqa: PLR0912, PLR0915
         vuln = self.vulnerability
+        theme_tokens = get_theme_tokens(Config.get_launchpad_theme())
         text = Text()
 
-        text.append("🐞 ")
+        text.append(
+            "[bug] ", style=f"bold {get_marker_color(theme_tokens, 'bug')}"
+        )
         text.append("Vulnerability Report", style="bold #ea580c")
 
         agent_name = vuln.get("agent_name", "")
@@ -1014,11 +1048,12 @@ class VideoExportScreen(ModalScreen):  # type: ignore[misc]
 
 class EspritTUIApp(App):  # type: ignore[misc]
     CSS_PATH = "assets/tui_styles.tcss"
+    DEFAULT_THEME = DEFAULT_THEME_ID
+    SUPPORTED_THEMES: ClassVar[tuple[str, ...]] = SUPPORTED_THEME_IDS
 
     LEFT_ONLY_LAYOUT_MIN_WIDTH = 120
     THREE_PANE_LAYOUT_MIN_WIDTH = 170
-    MINI_GHOST_EYE_FRAMES: ClassVar[tuple[str, ...]] = ("o o", "O O", "o o", "- -")
-    MINI_GHOST_TAIL_FRAMES: ClassVar[tuple[str, ...]] = ("~", "^", "~", "-")
+    RUN_STATUS_FRAMES: ClassVar[tuple[str, ...]] = ("|", "/", "-", "\\")
 
     selected_agent_id: reactive[str | None] = reactive(default=None)
     show_splash: reactive[bool] = reactive(default=True)
@@ -1036,6 +1071,7 @@ class EspritTUIApp(App):  # type: ignore[misc]
         super().__init__()
         self.args = args
         self._gui_server = gui_server
+        self._theme_id = self._normalize_theme_id(Config.get_launchpad_theme())
         self.scan_config = self._build_scan_config(args)
         self.agent_config = self._build_agent_config(args)
 
@@ -1064,29 +1100,39 @@ class EspritTUIApp(App):  # type: ignore[misc]
 
         self._spinner_frame_index: int = 0  # Current animation frame index
         self._sweep_num_squares: int = 6  # Number of squares in sweep animation
-        self._sweep_colors: list[str] = [
-            "#000000",  # Dimmest (shows dot)
-            "#001014",
-            "#03232d",
-            "#0b3a47",
-            "#0f5b6f",
-            "#0f7993",
-            "#22d3ee",
-            "#67e8f9",  # Brightest
-        ]
-        self._compact_sweep_colors: list[str] = [
-            "#000000",
-            "#1a0f00",
-            "#3d2400",
-            "#5c3a00",
-            "#7a5200",
-            "#a36e00",
-            "#e09b00",
-            "#fbbf24",  # Amber brightest
-        ]
+        palette = self._theme_palette()
+        self._sweep_colors: list[str] = list(palette.get("sweep_colors", []))
+        self._compact_sweep_colors: list[str] = list(palette.get("compact_sweep_colors", []))
+        self._shimmer_colors: list[str] = list(palette.get("shimmer_colors", []))
+        self._sweep_dot_color = str(palette.get("sweep_dot_color", "#0a3d1f"))
         self._dot_animation_timer: Any | None = None
 
         self._setup_cleanup_handlers()
+
+    @classmethod
+    def _normalize_theme_id(cls, theme_id: str | None) -> str:
+        return normalize_theme_id(theme_id)
+
+    def _theme_palette(self) -> dict[str, Any]:
+        theme_id = self._normalize_theme_id(getattr(self, "_theme_id", self.DEFAULT_THEME))
+        return get_theme_tokens(theme_id)
+
+    def _marker_color(self, marker: str) -> str:
+        return get_marker_color(self._theme_palette(), marker)
+
+    def _marker_style(self, marker: str, *, bold: bool = True) -> str:
+        color = self._marker_color(marker)
+        return f"bold {color}" if bold else color
+
+    def _apply_theme_class(self) -> None:
+        try:
+            screen = self.screen
+        except Exception:
+            return
+
+        for theme_id in self.SUPPORTED_THEMES:
+            screen.remove_class(f"theme-{theme_id}")
+        screen.add_class(f"theme-{self._theme_id}")
 
     def _build_scan_config(self, args: argparse.Namespace) -> dict[str, Any]:
         scan_mode = getattr(args, "scan_mode", "deep")
@@ -1263,6 +1309,7 @@ class EspritTUIApp(App):  # type: ignore[misc]
 
     def on_mount(self) -> None:
         self.title = "esprit"
+        self._apply_theme_class()
 
         self.set_timer(4.5, self._hide_splash_screen)
 
@@ -1586,12 +1633,15 @@ class EspritTUIApp(App):  # type: ignore[misc]
 
     def _render_compacting_indicator(self) -> Text:
         """Render an inline compacting-memory indicator for the chat stream."""
+        palette = self._theme_palette()
+        compact_primary = str(palette.get("compacting_primary", "#fbbf24"))
+        compact_secondary = str(palette.get("compacting_secondary", "#d97706"))
         text = Text()
         # Animated spinner using the stats spinner frame
         frames = ["◐", "◓", "◑", "◒"]
         frame = frames[self._stats_spinner_frame % len(frames)]
-        text.append(f" {frame} ", style="#fbbf24")
-        text.append("Compacting memory", style="#d97706 bold")
+        text.append(f" {frame} ", style=compact_primary)
+        text.append("Compacting memory", style=f"{compact_secondary} bold")
         text.append("  ·  ", style="dim")
         text.append("summarizing older messages to free context", style="dim")
         return text
@@ -1622,22 +1672,6 @@ class EspritTUIApp(App):  # type: ignore[misc]
     # Shimmer text + subagent dashboard
     # ------------------------------------------------------------------
 
-    _SHIMMER_COLORS: ClassVar[list[str]] = [
-        "#3f3f46",  # zinc-700 (base)
-        "#52525b",  # zinc-600
-        "#71717a",  # zinc-500
-        "#a1a1aa",  # zinc-400
-        "#d4d4d8",  # zinc-300
-        "#f4f4f5",  # zinc-100
-        "#ffffff",  # white (peak)
-        "#f4f4f5",
-        "#d4d4d8",
-        "#a1a1aa",
-        "#71717a",
-        "#52525b",
-        "#3f3f46",
-    ]
-
     def _shimmer_text(self, content: str, max_len: int = 120) -> Text:
         """Create text with a sweeping shimmer gradient animation."""
         if len(content) > max_len:
@@ -1646,7 +1680,7 @@ class EspritTUIApp(App):  # type: ignore[misc]
         if not content:
             return text
 
-        colors = self._SHIMMER_COLORS
+        colors = self._shimmer_colors
         half_w = len(colors) // 2  # radius of the bright region
         text_len = len(content)
 
@@ -1852,17 +1886,18 @@ class EspritTUIApp(App):  # type: ignore[misc]
         if not children:
             return None
 
+        palette = self._theme_palette()
+        header_color = str(palette.get("subagent_header", "#22d3ee"))
         renderables: list[Any] = []
 
         # Section header
         header = Text()
-        header.append("─" * 3, style="dim #22d3ee")
-        header.append("  Subagent Activity  ", style="bold #22d3ee")
-        header.append("─" * 40, style="dim #22d3ee")
+        header.append("─" * 3, style=f"dim {header_color}")
+        header.append("  Subagent Activity  ", style=f"bold {header_color}")
+        header.append("─" * 40, style=f"dim {header_color}")
         renderables.append(header)
 
-        spinner_frames = _ACTIVITY_SPINNER
-        spinner = spinner_frames[self._stats_spinner_frame % len(spinner_frames)]
+        spinner = self._running_status_frame()
 
         status_styles: dict[str, tuple[str, str]] = {
             "running": (spinner, "#22d3ee"),
@@ -1894,7 +1929,10 @@ class EspritTUIApp(App):  # type: ignore[misc]
 
             vuln_count = self._agent_vulnerability_count(agent_id)
             if vuln_count > 0:
-                card.append(f"  ⚡{vuln_count}", style="bold #ef4444")
+                card.append(
+                    f"  [warn:{vuln_count}]",
+                    style=f"bold {self._marker_color('warn')}",
+                )
 
             # Show thinking indicator if agent is currently thinking
             streaming_thinking = self.tracer.get_streaming_thinking(agent_id)
@@ -2074,11 +2112,14 @@ class EspritTUIApp(App):  # type: ignore[misc]
     def _render_streaming_tool(
         self, tool_name: str, args: dict[str, str], is_complete: bool
     ) -> Any:
+        palette = self._theme_palette()
         tool_data = {
             "tool_name": tool_name,
             "args": args,
             "status": "completed" if is_complete else "running",
             "result": None,
+            "_theme_id": self._theme_id,
+            "_theme_tokens": palette,
         }
 
         # For completed browser actions, try to find the actual result from the tracer
@@ -2118,6 +2159,11 @@ class EspritTUIApp(App):  # type: ignore[misc]
     def _render_default_streaming_tool(
         self, tool_name: str, args: dict[str, str], is_complete: bool
     ) -> Text:
+        palette = self._theme_palette()
+        running_style = self._marker_color("run")
+        success_style = self._marker_color("ok")
+        muted_style = str(palette.get("muted", "#9ca3af"))
+        info_style = str(palette.get("info", "#60a5fa"))
         text = Text()
 
         # Color-coded tool icons for streaming
@@ -2148,7 +2194,7 @@ class EspritTUIApp(App):  # type: ignore[misc]
         if args:
             for key, value in list(args.items())[:3]:
                 text.append("\n  ")
-                text.append(key, style="dim")
+                text.append(key, style=f"dim {muted_style}")
                 text.append(": ")
                 display_value = value if len(value) <= 100 else value[:97] + "..."
                 text.append(display_value, style="italic" if not is_complete else None)
@@ -2158,16 +2204,22 @@ class EspritTUIApp(App):  # type: ignore[misc]
     def _get_status_display_content(
         self, agent_id: str, agent_data: dict[str, Any]
     ) -> tuple[Text | None, Text, bool]:
+        palette = self._theme_palette()
+        key_style = str(palette.get("keymap_key", "white"))
+        text_style = str(palette.get("keymap_text", "dim"))
+        failed_style = str(palette.get("status_failed", "#ef4444"))
+        compact_primary = str(palette.get("compacting_primary", "#fbbf24"))
+        compact_secondary = str(palette.get("compacting_secondary", "#d97706"))
         status = agent_data.get("status", "running")
 
         def keymap_styled(keys: list[tuple[str, str]]) -> Text:
             t = Text()
             for i, (key, action) in enumerate(keys):
                 if i > 0:
-                    t.append(" · ", style="dim")
-                t.append(key, style="white")
-                t.append(" ", style="dim")
-                t.append(action, style="dim")
+                    t.append(" · ", style=text_style)
+                t.append(key, style=key_style)
+                t.append(" ", style=text_style)
+                t.append(action, style=text_style)
             return t
 
         def _token_stats_text() -> Text:
@@ -2228,7 +2280,7 @@ class EspritTUIApp(App):  # type: ignore[misc]
         }
 
         if status in simple_statuses:
-            msg, _ = simple_statuses[status]
+            marker, msg = simple_statuses[status]
             text = Text()
             text.append("⬡ ", style="dim")
             text.append(msg, style="dim")
@@ -2292,7 +2344,7 @@ class EspritTUIApp(App):  # type: ignore[misc]
             # Check if this agent is compacting memory
             if agent_id in self.tracer.compacting_agents:
                 animated_text = Text()
-                animated_text.append_text(self._build_running_ghost_indicator())
+                animated_text.append_text(self._build_running_spinner_indicator())
                 animated_text.append_text(
                     self._get_sweep_animation(self._compact_sweep_colors)
                 )
@@ -2356,7 +2408,7 @@ class EspritTUIApp(App):  # type: ignore[misc]
 
             if self._agent_has_real_activity(agent_id):
                 animated_text = Text()
-                animated_text.append_text(self._build_running_ghost_indicator())
+                animated_text.append_text(self._build_running_spinner_indicator())
                 animated_text.append_text(self._get_sweep_animation(self._sweep_colors))
                 # Show a descriptive summary of current activity
                 activity_summary = self._get_activity_summary(agent_id)
@@ -2386,18 +2438,17 @@ class EspritTUIApp(App):  # type: ignore[misc]
 
         return (None, Text(), False)
 
-    def _build_running_ghost_indicator(self) -> Text:
-        """Render a tiny ghost pulse for running-status affordance."""
-        frame_index = self._spinner_frame_index % len(self.MINI_GHOST_EYE_FRAMES)
-        eyes = self.MINI_GHOST_EYE_FRAMES[frame_index]
-        tail = self.MINI_GHOST_TAIL_FRAMES[frame_index % len(self.MINI_GHOST_TAIL_FRAMES)]
+    def _build_running_spinner_indicator(self) -> Text:
+        """Render a stable-width spinner prefix for running-status affordance."""
+        palette = self._theme_palette()
+        frame = self.RUN_STATUS_FRAMES[self._spinner_frame_index % len(self.RUN_STATUS_FRAMES)]
+        running_style = self._marker_color("run")
+        muted_style = str(palette.get("muted", "#9ca3af"))
         text = Text()
-        text.append(".-.", style="#67e8f9")
-        text.append("(", style="#38bdf8")
-        text.append(eyes, style="#e2e8f0")
-        text.append(")", style="#38bdf8")
-        text.append(tail, style="#22d3ee")
-        text.append(" ", style="dim")
+        text.append("[", style=running_style)
+        text.append(frame, style=f"bold {running_style}")
+        text.append("]", style=running_style)
+        text.append(" ", style=muted_style)
         return text
 
     def _update_agent_status_display(self) -> None:
@@ -2511,6 +2562,7 @@ class EspritTUIApp(App):  # type: ignore[misc]
             scan_completed=scan_done,
             scan_failed=scan_failed,
             spinner_frame=self._stats_spinner_frame,
+            theme_tokens=self._theme_palette(),
         )
         if stats_text:
             stats_content.append(stats_text)
@@ -2607,7 +2659,7 @@ class EspritTUIApp(App):  # type: ignore[misc]
         wave_pos = total_range - abs(total_range - frame_in_cycle)
         sweep_pos = wave_pos - offset
 
-        dot_color = "#0a3d1f"
+        dot_color = self._sweep_dot_color
 
         for i in range(num_squares):
             dist = abs(i - sweep_pos)
@@ -2623,14 +2675,17 @@ class EspritTUIApp(App):  # type: ignore[misc]
         return text
 
     def _get_animated_verb_text(self, agent_id: str, verb: str) -> Text:  # noqa: ARG002
+        palette = self._theme_palette()
+        verb_primary = str(palette.get("verb_primary", "white"))
+        verb_secondary = str(palette.get("verb_secondary", "dim"))
         text = Text()
         sweep = self._get_sweep_animation(self._sweep_colors)
         text.append_text(sweep)
         parts = verb.split(" ", 1)
-        text.append(parts[0], style="white")
+        text.append(parts[0], style=verb_primary)
         if len(parts) > 1:
-            text.append(" ", style="dim")
-            text.append(parts[1], style="dim")
+            text.append(" ", style=verb_secondary)
+            text.append(parts[1], style=verb_secondary)
         return text
 
     def _start_dot_animation(self) -> None:
@@ -2967,11 +3022,15 @@ class EspritTUIApp(App):  # type: ignore[misc]
             return UserMessageRenderer.render_simple(content)
 
         if metadata.get("interrupted"):
+            palette = self._theme_palette()
             streaming_result = self._render_streaming_content(content)
             interrupted_text = Text()
             interrupted_text.append("\n")
-            interrupted_text.append("⚠ ", style="yellow")
-            interrupted_text.append("Interrupted by user", style="yellow dim")
+            interrupted_text.append("[warn] ", style=self._marker_style("warn"))
+            interrupted_text.append(
+                "Interrupted by user",
+                style=f"dim {str(palette.get('warning', '#f59e0b'))}",
+            )
             return Group(streaming_result, interrupted_text)
 
         parts: list[Any] = []
@@ -2998,10 +3057,19 @@ class EspritTUIApp(App):  # type: ignore[misc]
         renderer = get_tool_renderer(tool_name)
 
         if renderer:
-            widget = renderer.render(tool_data)
+            renderer_payload = dict(tool_data)
+            renderer_payload["_theme_id"] = self._theme_id
+            renderer_payload["_theme_tokens"] = self._theme_palette()
+            widget = renderer.render(renderer_payload)
             return widget.renderable
 
         text = Text()
+        palette = self._theme_palette()
+        muted_style = str(palette.get("muted", "#9ca3af"))
+        info_style = str(palette.get("info", "#60a5fa"))
+        success_style = self._marker_color("ok")
+        warning_style = self._marker_color("run")
+        error_style = self._marker_color("err")
 
         if tool_name in ("llm_error_details", "sandbox_error_details"):
             return self._render_error_details(text, tool_name, args)
@@ -3034,9 +3102,9 @@ class EspritTUIApp(App):  # type: ignore[misc]
             "failed": ("✗", "#ef4444"),
             "error": ("✗", "#ef4444"),
         }
-        icon, style = status_styles.get(status, ("○", "dim"))
+        icon, style = status_styles.get(status, ("[warn]", self._marker_color("warn")))
         text.append(" ")
-        text.append(icon, style=style)
+        text.append(icon, style=f"bold {style}")
 
         if args:
             for k, v in list(args.items())[:5]:
@@ -3044,7 +3112,7 @@ class EspritTUIApp(App):  # type: ignore[misc]
                 if len(str_v) > 500:
                     str_v = str_v[:497] + "..."
                 text.append("\n  ")
-                text.append(k, style="dim")
+                text.append(k, style=f"dim {muted_style}")
                 text.append(": ")
                 text.append(str_v)
 
@@ -3059,17 +3127,22 @@ class EspritTUIApp(App):  # type: ignore[misc]
         return text
 
     def _render_error_details(self, text: Any, tool_name: str, args: dict[str, Any]) -> Any:
+        palette = self._theme_palette()
+        error_style = str(palette.get("status_failed", "#ef4444"))
+        muted_style = str(palette.get("muted", "#9ca3af"))
         if tool_name == "llm_error_details":
-            text.append("✗ LLM Request Failed", style="red")
+            text.append("[err] ", style=self._marker_style("err"))
+            text.append("LLM request failed", style=f"bold {error_style}")
         else:
-            text.append("✗ Sandbox Initialization Failed", style="red")
+            text.append("[err] ", style=self._marker_style("err"))
+            text.append("Sandbox initialization failed", style=f"bold {error_style}")
             if args.get("error"):
-                text.append(f"\n{args['error']}", style="bold red")
+                text.append(f"\n{args['error']}", style=f"bold {error_style}")
         if args.get("details"):
             details = str(args["details"])
             if len(details) > 1000:
                 details = details[:997] + "..."
-            text.append("\nDetails: ", style="dim")
+            text.append("\nDetails: ", style=f"dim {muted_style}")
             text.append(details)
         return text
 

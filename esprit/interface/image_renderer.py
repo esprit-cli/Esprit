@@ -6,9 +6,12 @@ import base64
 import io
 import logging
 import os
+from collections.abc import Mapping
 
 from rich.style import Style
 from rich.text import Text
+
+from esprit.interface.theme_tokens import get_marker_color
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +58,7 @@ def screenshot_to_rich_text(
     base64_png: str,
     max_width: int = 0,
     url_label: str = "",
+    theme_tokens: Mapping[str, str] | None = None,
 ) -> Text | None:
     """Convert a base64-encoded PNG screenshot to Rich Text using half-block characters.
 
@@ -117,10 +121,15 @@ def screenshot_to_rich_text(
 
         # Optional URL header
         if url_label:
-            text.append("  🌐 ", style="dim")
-            max_label = target_w - 6
+            muted = str(theme_tokens.get("muted", "#9ca3af")) if theme_tokens else "#9ca3af"
+            info = str(theme_tokens.get("info", "#06b6d4")) if theme_tokens else "#06b6d4"
+            web_marker = (
+                get_marker_color(theme_tokens, "web") if theme_tokens else "#06b6d4"
+            )
+            text.append("  [web] ", style=f"bold {web_marker}")
+            max_label = max(8, target_w - 9)
             label = url_label if len(url_label) <= max_label else url_label[: max_label - 1] + "…"
-            text.append(label, style="dim #06b6d4")
+            text.append(label, style=f"dim {info}")
             text.append("\n")
 
         # Render pixel pairs as half-block characters
