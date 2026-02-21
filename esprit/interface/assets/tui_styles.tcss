@@ -760,3 +760,171 @@ BrowserPreviewScreen {
     color: #22d3ee;
     border: none;
 }
+
+Screen.theme-crt {
+    background: #000700;
+    color: #c9f9c9;
+}
+
+Screen.theme-crt #splash_screen {
+    background: #000700;
+    color: #33ff33;
+}
+
+Screen.theme-crt #main_container,
+Screen.theme-crt #content_container {
+    background: #000600;
+}
+
+Screen.theme-crt #left_panel,
+Screen.theme-crt #right_panel {
+    background: #021002 78%;
+    border-right: solid #1a801a;
+    border-left: solid #1a801a;
+}
+
+Screen.theme-crt #left_panel_header,
+Screen.theme-crt #center_panel_header,
+Screen.theme-crt #right_panel_header {
+    background: #031403 70%;
+    color: #7fd27f;
+    border-bottom: solid #1a801a;
+}
+
+Screen.theme-crt #chat_area_container {
+    background: #000b00 70%;
+    border-left: solid #1a801a;
+    border-right: solid #1a801a;
+}
+
+Screen.theme-crt #chat_history {
+    scrollbar-background: #000900;
+    scrollbar-color: #1a801a;
+    scrollbar-corner-color: #000900;
+}
+
+Screen.theme-crt #agent_status_display {
+    background: #041704 70%;
+    border-top: solid #1a801a;
+    border-bottom: solid #1a801a;
+}
+
+Screen.theme-crt #status_text,
+Screen.theme-crt #keymap_indicator,
+Screen.theme-crt #chat_prompt,
+Screen.theme-crt #chat_input > .text-area--placeholder,
+Screen.theme-crt .chat-placeholder {
+    color: #7fd27f;
+}
+
+Screen.theme-crt #chat_input_container {
+    background: #031303 72%;
+    border-top: solid #1a801a;
+}
+
+Screen.theme-crt #chat_input_container:focus-within {
+    border-top: solid #33ff33;
+}
+
+Screen.theme-crt #chat_input_container:focus-within #chat_prompt {
+    color: #66ff66;
+    text-style: bold;
+}
+
+Screen.theme-crt #chat_input {
+    color: #d7ffd7;
+}
+
+Screen.theme-crt #chat_input > .text-area--cursor {
+    color: #33ff33;
+    background: #33ff33;
+}
+
+Screen.theme-crt #vulnerabilities_panel {
+    scrollbar-background: #001000;
+    scrollbar-color: #1a801a;
+    scrollbar-corner-color: #001000;
+}
+
+Screen.theme-crt .vuln-empty {
+    color: #7fd27f;
+}
+
+Screen.theme-crt .vuln-item {
+    color: #c7f3c7;
+    border-left: solid #1a801a;
+}
+
+Screen.theme-crt .vuln-item:hover {
+    background: #0a240a;
+    color: #e8ffe8;
+    border-left: heavy #33ff33;
+}
+
+Screen.theme-crt Tree {
+    color: #c7f3c7;
+    scrollbar-color: #1a801a;
+}
+
+Screen.theme-crt Tree > .tree--label {
+    color: #7fd27f;
+    border-bottom: solid #1a801a;
+}
+
+Screen.theme-crt .tree--node-label {
+    color: #b6e3b6;
+    border-left: solid #1a801a;
+}
+
+Screen.theme-crt .tree--node:hover .tree--node-label {
+    background: #0a240a;
+    color: #e8ffe8;
+    border-left: solid #6bd76b;
+}
+
+Screen.theme-crt .tree--node.-selected .tree--node-label {
+    background: #0f320f;
+    color: #f2fff2;
+    border-left: heavy #33ff33;
+}
+
+Screen.theme-crt .tree--node.-expanded .tree--node-label {
+    color: #d7ffd7;
+    border-left: solid #2f9b2f;
+}
+
+Screen.theme-crt Tree:focus > .tree--label {
+    color: #66ff66;
+}
+
+Screen.theme-crt .tree--node .tree--node .tree--node-label {
+    color: #9dd09d;
+    border-left: solid #145114;
+}
+
+Screen.theme-crt .tree--node .tree--node .tree--node .tree--node-label {
+    color: #7fb47f;
+    border-left: solid #1a801a;
+}
+
+Screen.theme-crt #stop_agent_dialog,
+Screen.theme-crt #quit_dialog,
+Screen.theme-crt #dialog,
+Screen.theme-crt #browser_preview_dialog,
+Screen.theme-crt #vuln_detail_dialog {
+    border: solid #1a801a;
+    background: #041404;
+}
+
+Screen.theme-crt #stop_agent_title,
+Screen.theme-crt #quit_title,
+Screen.theme-crt #help_content,
+Screen.theme-crt #close_vuln_detail,
+Screen.theme-crt #close_browser_preview,
+Screen.theme-crt #copy_vuln_detail {
+    color: #c7f3c7;
+}
+
+Screen.theme-crt #help_title {
+    color: #33ff33;
+}

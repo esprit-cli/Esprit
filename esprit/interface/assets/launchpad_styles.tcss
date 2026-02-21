@@ -158,3 +158,28 @@ Screen.theme-glacier #launchpad_input {
 Screen.theme-glacier #launchpad_input:focus {
     border: round #38bdf8;
 }
+
+Screen.theme-crt {
+    background: #000700;
+    color: #b7efb7;
+}
+
+Screen.theme-crt #launchpad_root {
+    background: #030d03;
+    border: solid #1a801a;
+}
+
+Screen.theme-crt #launchpad_menu {
+    background: #051205;
+    border: solid #1a801a;
+}
+
+Screen.theme-crt #launchpad_input {
+    background: #051205;
+    border: solid #1a801a;
+    color: #b7efb7;
+}
+
+Screen.theme-crt #launchpad_input:focus {
+    border: solid #33ff33;
+}

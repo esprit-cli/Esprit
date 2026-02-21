@@ -278,6 +278,23 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
             sparkle_a="#7dd3fc",
             sparkle_b="#38bdf8",
         ),
+        "crt": _LaunchpadTheme(
+            key="crt",
+            label="CRT",
+            hint="Phosphor green + scanlines",
+            accent="#33ff33",
+            selected_hint="#1fcc1f",
+            menu_label="#9bcf9b",
+            menu_hint="#4f7a4f",
+            separator="#66ff66",
+            info="#9bcf9b",
+            status="#7fb47f",
+            brand_dim="#4f7a4f",
+            ghost_body="#33ff33",
+            ghost_face="#001400",
+            sparkle_a="#99ff99",
+            sparkle_b="#33ff33",
+        ),
     }
 
     selected_index: reactive[int] = reactive(0)

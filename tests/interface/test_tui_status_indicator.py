@@ -42,3 +42,11 @@ def test_running_status_text_includes_mini_ghost_indicator() -> None:
     assert "👻" not in content.plain
     assert "Initializing" in content.plain
     assert should_animate is True
+
+
+def test_tui_theme_normalization_accepts_crt() -> None:
+    assert EspritTUIApp._normalize_theme_id("crt") == "crt"
+
+
+def test_tui_theme_normalization_falls_back_to_default() -> None:
+    assert EspritTUIApp._normalize_theme_id("not-a-theme") == EspritTUIApp.DEFAULT_THEME
