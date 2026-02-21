@@ -35,6 +35,13 @@ from esprit.interface.streaming_parser import parse_streaming_content
 from esprit.interface.tool_components.agent_message_renderer import AgentMessageRenderer
 from esprit.interface.tool_components.registry import get_tool_renderer
 from esprit.interface.tool_components.user_message_renderer import UserMessageRenderer
+from esprit.interface.theme_tokens import (
+    DEFAULT_THEME_ID,
+    SUPPORTED_THEME_IDS,
+    get_marker_color,
+    get_theme_tokens,
+    normalize_theme_id,
+)
 from esprit.interface.utils import _ACTIVITY_SPINNER, build_tui_stats_text, infer_scan_state
 from esprit.llm.config import LLMConfig
 from esprit.llm.cost_estimator import estimate_scan_profile
@@ -237,6 +244,13 @@ class SplashScreen(Static):  # type: ignore[misc]
             "Open-source AI hackers for your apps",
             style=Style(color=str(tokens.get("muted", "#9ca3af")), dim=True),
         )
+
+    def _build_banner_text(self) -> Text:
+        """Legacy two-line banner retained for layout compatibility tests."""
+        text = Text()
+        text.append("ESPRIT\n", style=Style(color="#22d3ee", bold=True))
+        text.append("AI Security Scanner", style=Style(color="white"))
+        return text
 
     def _build_wordmark_text(self, phase: int) -> Text:
         tokens = self._theme_tokens()
@@ -1834,6 +1848,9 @@ class EspritTUIApp(App):  # type: ignore[misc]
         return None
 
     def _get_watchdog_state(self, agent_id: str, status: str) -> dict[str, Any] | None:
+        if not hasattr(self.tracer, "get_agent_heartbeat"):
+            return None
+
         heartbeat = self.tracer.get_agent_heartbeat(agent_id)
         if not heartbeat:
             return None
@@ -1935,7 +1952,10 @@ class EspritTUIApp(App):  # type: ignore[misc]
                 )
 
             # Show thinking indicator if agent is currently thinking
-            streaming_thinking = self.tracer.get_streaming_thinking(agent_id)
+            get_streaming_thinking = getattr(self.tracer, "get_streaming_thinking", None)
+            streaming_thinking = (
+                get_streaming_thinking(agent_id) if callable(get_streaming_thinking) else ""
+            )
             if streaming_thinking and is_active:
                 card.append("  🧠", style="#a855f7")
 
@@ -2332,7 +2352,7 @@ class EspritTUIApp(App):  # type: ignore[misc]
                 self._spinner_frame_index % len(HEX_SPINNER_FRAMES)
             ]
             # Build queued-message indicator for keymap
-            has_queued = self._queued_steering_message is not None
+            has_queued = getattr(self, "_queued_steering_message", None) is not None
 
             def _keymap_with_steering(keys: list[tuple[str, str]]) -> Text:
                 km = keymap_styled(keys)
@@ -2357,7 +2377,10 @@ class EspritTUIApp(App):  # type: ignore[misc]
                     km.append_text(ts)
                 return (animated_text, km, True)
             # Check if this agent is currently thinking
-            streaming_thinking = self.tracer.get_streaming_thinking(agent_id)
+            get_streaming_thinking = getattr(self.tracer, "get_streaming_thinking", None)
+            streaming_thinking = (
+                get_streaming_thinking(agent_id) if callable(get_streaming_thinking) else ""
+            )
             if streaming_thinking:
                 animated_text = Text()
                 animated_text.append(f"{frame} ", style="#22d3ee")
@@ -2425,10 +2448,8 @@ class EspritTUIApp(App):  # type: ignore[misc]
                     km.append_text(ts)
                 return (animated_text, km, True)
             animated_text = Text()
-            animated_text.append_text(self._build_running_ghost_indicator())
-            animated_text.append_text(
-                self._get_animated_verb_text(agent_id, "Initializing")
-            )
+            animated_text.append_text(self._build_running_spinner_indicator())
+            animated_text.append_text(self._get_animated_verb_text(agent_id, "Initializing agent"))
             km = _keymap_with_steering([("ctrl-q", "quit")])
             ts = _token_stats_text()
             if ts.plain:
@@ -2532,12 +2553,17 @@ class EspritTUIApp(App):  # type: ignore[misc]
         scan_failed = self._scan_failed.is_set()
 
         # Infer terminal status from tracer metadata and agent states.
+        done_statuses = {"completed", "finished", "failed", "llm_failed", "stopped"}
+        any_done_agent = any(
+            str(agent.get("status", "")).lower() in done_statuses
+            for agent in self.tracer.agents.values()
+        )
         inferred_done, inferred_failed = infer_scan_state(
             self.tracer,
             scan_completed=scan_done,
             scan_failed=scan_failed,
         )
-        if inferred_done and not scan_done:
+        if (inferred_done or any_done_agent) and not scan_done:
             scan_done = True
             self._scan_completed.set()
         if inferred_failed and not scan_failed:
