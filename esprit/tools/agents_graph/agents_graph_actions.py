@@ -1,9 +1,13 @@
 import logging
 import threading
 from copy import deepcopy
+import time
+from contextlib import ExitStack, contextmanager
 from datetime import UTC, datetime
 from typing import Any, Literal
 
+from esprit.config import Config
+from esprit.llm.utils import normalize_messages_for_provider
 from esprit.tools.registry import register_tool
 
 
@@ -24,12 +28,103 @@ _agent_instances: dict[str, Any] = {}
 
 _agent_states: dict[str, Any] = {}
 
+_subagent_slots_lock = threading.Lock()
+_subagent_slots_in_use = 0
+
 # ── Inherited context summarization ──────────────────────────────
 # When a subagent inherits parent context, long histories are compressed
 # to avoid sending tens of thousands of redundant tokens every turn.
 
 _INHERIT_SUMMARIZE_THRESHOLD = 15  # Summarize if parent history exceeds this
 _RECENT_MESSAGES_TO_KEEP = 10  # Keep last N messages verbatim after summary
+
+
+def _env_flag(name: str, default: bool = False) -> bool:
+    raw = Config.get(name)
+    if raw is None:
+        return default
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _read_spawn_stagger_ms() -> int:
+    raw = Config.get("esprit_subagent_spawn_stagger_ms")
+    try:
+        value = int(str(raw)) if raw is not None else 1200
+    except (TypeError, ValueError):
+        value = 1200
+    return max(0, value)
+
+
+def _read_subagent_max_active() -> int:
+    raw = Config.get("esprit_subagent_max_active")
+    if raw is None:
+        raw = Config.get("esprit_llm_max_inflight")
+    try:
+        value = int(str(raw)) if raw is not None else 1
+    except (TypeError, ValueError):
+        value = 1
+    return max(1, value)
+
+
+def _read_subagent_slot_poll_interval_s() -> float:
+    raw = Config.get("esprit_subagent_slot_poll_s")
+    try:
+        value = float(str(raw)) if raw is not None else 1.0
+    except (TypeError, ValueError):
+        value = 1.0
+    return max(0.2, value)
+
+
+def _mark_subagent_status(agent_id: str, status: str, heartbeat_detail: str | None = None) -> None:
+    node = _agent_graph["nodes"].get(agent_id)
+    if node:
+        node["status"] = status
+
+    try:
+        from esprit.telemetry.tracer import get_global_tracer
+
+        tracer = get_global_tracer()
+        if tracer:
+            tracer.update_agent_status(agent_id, status)
+            if heartbeat_detail:
+                tracer.touch_agent_heartbeat(
+                    agent_id,
+                    phase="before_llm_processing",
+                    detail=heartbeat_detail,
+                )
+    except Exception:  # noqa: BLE001
+        pass
+
+
+@contextmanager
+def _subagent_execution_slot(agent_id: str) -> Any:
+    global _subagent_slots_in_use
+
+    poll_s = _read_subagent_slot_poll_interval_s()
+    wait_started = time.monotonic()
+
+    while True:
+        with _subagent_slots_lock:
+            capacity = _read_subagent_max_active()
+            if _subagent_slots_in_use < capacity:
+                _subagent_slots_in_use += 1
+                break
+
+        waited_s = time.monotonic() - wait_started
+        _mark_subagent_status(
+            agent_id,
+            "queued",
+            heartbeat_detail=f"queued for subagent execution slot ({int(waited_s)}s)",
+        )
+        time.sleep(poll_s)
+
+    _mark_subagent_status(agent_id, "running", heartbeat_detail="subagent execution slot acquired")
+
+    try:
+        yield
+    finally:
+        with _subagent_slots_lock:
+            _subagent_slots_in_use = max(0, _subagent_slots_in_use - 1)
 
 
 def _format_messages_as_text(messages: list[dict[str, Any]]) -> str:
@@ -84,25 +179,27 @@ def _summarize_inherited_context(
     old_messages = messages[:-_RECENT_MESSAGES_TO_KEEP]
     recent_messages = messages[-_RECENT_MESSAGES_TO_KEEP:]
 
-    # Try LLM summarisation for old messages
+    # Default to deterministic local summarization for spawn-time stability.
+    # LLM-based inherited summarization can be re-enabled via:
+    # ESPRIT_INHERITED_CONTEXT_USE_LLM_SUMMARY=true
     summary = ""
-    try:
-        from esprit.config import Config
-        from esprit.llm.memory_compressor import summarize_messages
+    if _env_flag("esprit_inherited_context_use_llm_summary", default=False):
+        try:
+            from esprit.llm.memory_compressor import summarize_messages
 
-        model = Config.get("esprit_llm")
-        if model:
-            summary_msg = summarize_messages(old_messages, model, timeout=30)
-            if isinstance(summary_msg, dict):
-                # summarize_messages() returns old_messages[0] on internal failure.
-                # Detect that sentinel and use local fallback formatting instead.
-                if old_messages and summary_msg is old_messages[0]:
-                    summary = ""
-                else:
-                    raw_summary = summary_msg.get("content", "")
-                    summary = raw_summary if isinstance(raw_summary, str) else str(raw_summary)
-    except Exception:  # noqa: BLE001
-        logger.warning("LLM summarisation of inherited context failed, using truncated text")
+            model = Config.get("esprit_llm")
+            if model:
+                summary_msg = summarize_messages(old_messages, model, timeout=30)
+                if isinstance(summary_msg, dict):
+                    # summarize_messages() returns old_messages[0] on internal failure.
+                    # Detect that sentinel and use local fallback formatting instead.
+                    if old_messages and summary_msg is old_messages[0]:
+                        summary = ""
+                    else:
+                        raw_summary = summary_msg.get("content", "")
+                        summary = raw_summary if isinstance(raw_summary, str) else str(raw_summary)
+        except Exception:  # noqa: BLE001
+            logger.warning("LLM summarisation of inherited context failed, using truncated text")
 
     if not summary.strip():
         summary = _format_messages_brief(old_messages)
@@ -120,9 +217,22 @@ def _summarize_inherited_context(
 
 
 def _run_agent_in_thread(
-    agent: Any, state: Any, inherited_messages: list[dict[str, Any]]
+    agent: Any,
+    state: Any,
+    inherited_messages: list[dict[str, Any]],
+    startup_delay_s: float = 0.0,
 ) -> dict[str, Any]:
+    slot_stack = ExitStack()
     try:
+        if startup_delay_s > 0:
+            time.sleep(startup_delay_s)
+
+        if getattr(state, "parent_id", None) is not None:
+            slot_stack.enter_context(_subagent_execution_slot(state.agent_id))
+
+        if inherited_messages:
+            inherited_messages = normalize_messages_for_provider(inherited_messages)
+
         if inherited_messages:
             if len(inherited_messages) > _INHERIT_SUMMARIZE_THRESHOLD:
                 # Long history: summarise to avoid token bloat on every turn
@@ -139,7 +249,25 @@ def _run_agent_in_thread(
                     # Preserve structured message fields (e.g. tool_call_id) required
                     # by provider APIs when replaying inherited context.
                     if isinstance(msg, dict):
-                        state.messages.append(deepcopy(msg))
+                        known_keys = {
+                            "role",
+                            "content",
+                            "thinking_blocks",
+                            "tool_calls",
+                            "tool_call_id",
+                        }
+                        role = msg.get("role")
+                        has_extra_keys = any(key not in known_keys for key in msg)
+                        if isinstance(role, str) and not has_extra_keys:
+                            state.add_message(
+                                role,
+                                msg.get("content"),
+                                thinking_blocks=msg.get("thinking_blocks"),
+                                tool_calls=msg.get("tool_calls"),
+                                tool_call_id=msg.get("tool_call_id"),
+                            )
+                        else:
+                            state.messages.append(deepcopy(msg))
                 state.add_message("user", "</inherited_context_from_parent>")
                 state.last_updated = datetime.now(UTC).isoformat()
 
@@ -202,16 +330,58 @@ def _run_agent_in_thread(
         _agent_instances.pop(state.agent_id, None)
         raise
     else:
+        node = _agent_graph["nodes"][state.agent_id]
+
+        if (
+            isinstance(result, dict)
+            and result.get("success") is False
+            and node.get("status") == "waiting"
+            and state.is_waiting_for_input()
+        ):
+            node["status"] = "failed"
+            node["finished_at"] = datetime.now(UTC).isoformat()
+            node["result"] = result
+
         if state.stop_requested:
-            _agent_graph["nodes"][state.agent_id]["status"] = "stopped"
+            node["status"] = "stopped"
+            node["finished_at"] = datetime.now(UTC).isoformat()
+            node["result"] = result
+        elif isinstance(result, dict) and result.get("success") is False:
+            summary = str(result.get("error") or result.get("message") or "Subagent reported failure")
+
+            findings_raw = result.get("findings")
+            findings = [str(item) for item in findings_raw] if isinstance(findings_raw, list) else []
+
+            recs_raw = result.get("recommendations")
+            recommendations = [str(item) for item in recs_raw] if isinstance(recs_raw, list) else []
+
+            completion = agent_finish(
+                agent_state=state,
+                result_summary=summary,
+                findings=findings,
+                success=False,
+                report_to_parent=True,
+                final_recommendations=recommendations,
+            )
+
+            if not completion.get("agent_completed"):
+                node["status"] = "failed"
+                node["finished_at"] = datetime.now(UTC).isoformat()
+                node["result"] = {"summary": summary, "success": False}
+
+            if isinstance(node.get("result"), dict):
+                node["result"]["raw_result"] = result
         else:
-            _agent_graph["nodes"][state.agent_id]["status"] = "completed"
-        _agent_graph["nodes"][state.agent_id]["finished_at"] = datetime.now(UTC).isoformat()
-        _agent_graph["nodes"][state.agent_id]["result"] = result
+            node["status"] = "completed"
+            node["finished_at"] = datetime.now(UTC).isoformat()
+            node["result"] = result
+
         _running_agents.pop(state.agent_id, None)
         _agent_instances.pop(state.agent_id, None)
 
         return {"result": result}
+    finally:
+        slot_stack.close()
 
 
 @register_tool(sandbox_execution=False)
@@ -263,6 +433,9 @@ def view_agent_graph(agent_state: Any) -> dict[str, Any]:
         waiting_count = sum(
             1 for node in _agent_graph["nodes"].values() if node["status"] == "waiting"
         )
+        queued_count = sum(
+            1 for node in _agent_graph["nodes"].values() if node["status"] == "queued"
+        )
         stopping_count = sum(
             1 for node in _agent_graph["nodes"].values() if node["status"] == "stopping"
         )
@@ -288,6 +461,7 @@ def view_agent_graph(agent_state: Any) -> dict[str, Any]:
                 "total_agents": total_nodes,
                 "running": running_count,
                 "waiting": waiting_count,
+                "queued": queued_count,
                 "stopping": stopping_count,
                 "completed": completed_count,
                 "stopped": stopped_count,
@@ -356,9 +530,10 @@ def create_agent(
         agent_config = {
             "llm_config": llm_config,
             "state": state,
+            # Subagents always run non-interactively: they exit cleanly after
+            # calling agent_finish instead of entering an infinite waiting loop.
+            "non_interactive": True,
         }
-        if parent_agent and hasattr(parent_agent, "non_interactive"):
-            agent_config["non_interactive"] = parent_agent.non_interactive
 
         agent = EspritAgent(agent_config)
 
@@ -368,9 +543,30 @@ def create_agent(
 
         _agent_instances[state.agent_id] = agent
 
+        # Stagger startup of sibling subagents to avoid burst LLM requests.
+        stagger_ms = _read_spawn_stagger_ms()
+        running_sibling_count = sum(
+            1
+            for child_id, thread_obj in list(_running_agents.items())
+            if thread_obj.is_alive()
+            and _agent_graph["nodes"].get(child_id, {}).get("parent_id") == parent_id
+        )
+        subagent_capacity = _read_subagent_max_active()
+        startup_delay_s = (running_sibling_count * stagger_ms) / 1000.0
+        initial_status = "queued" if running_sibling_count >= subagent_capacity else "running"
+        _mark_subagent_status(
+            state.agent_id,
+            initial_status,
+            heartbeat_detail=(
+                "queued for subagent execution slot (0s)"
+                if initial_status == "queued"
+                else "subagent execution slot available"
+            ),
+        )
+
         thread = threading.Thread(
             target=_run_agent_in_thread,
-            args=(agent, state, inherited_messages),
+            args=(agent, state, inherited_messages, startup_delay_s),
             daemon=True,
             name=f"Agent-{name}-{state.agent_id}",
         )
@@ -387,8 +583,9 @@ def create_agent(
             "agent_info": {
                 "id": state.agent_id,
                 "name": name,
-                "status": "running",
+                "status": initial_status,
                 "parent_id": parent_id,
+                "startup_delay_s": round(startup_delay_s, 2),
             },
         }
 

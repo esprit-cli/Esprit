@@ -94,3 +94,111 @@ def clean_content(content: str) -> str:
     cleaned = re.sub(r"\n\s*\n", "\n\n", cleaned)
 
     return cleaned.strip()
+
+
+def _extract_declared_tool_call_ids(message: dict[str, Any]) -> set[str]:
+    tool_calls = message.get("tool_calls")
+    if not isinstance(tool_calls, list):
+        return set()
+
+    ids: set[str] = set()
+    for tool_call in tool_calls:
+        if not isinstance(tool_call, dict):
+            continue
+        tool_call_id = str(tool_call.get("id") or "")
+        if tool_call_id:
+            ids.add(tool_call_id)
+    return ids
+
+
+def _strip_tool_calls_metadata(message: dict[str, Any]) -> dict[str, Any]:
+    stripped = dict(message)
+    stripped.pop("tool_calls", None)
+    return stripped
+
+
+def _convert_tool_to_user_fallback(message: dict[str, Any]) -> dict[str, Any]:
+    converted = {
+        k: v for k, v in message.items() if k not in {"role", "tool_call_id", "tool_calls"}
+    }
+    converted["role"] = "user"
+
+    prefix = (
+        "Tool result replayed as context because tool metadata was incomplete.\n"
+    )
+    content = message.get("content", "")
+    if isinstance(content, str):
+        converted["content"] = f"{prefix}{content}"
+        return converted
+
+    if isinstance(content, list):
+        converted["content"] = [{"type": "text", "text": prefix}, *content]
+        return converted
+
+    converted["content"] = f"{prefix}{content}"
+    return converted
+
+
+def normalize_messages_for_provider(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Normalize message history to avoid invalid provider payloads.
+
+    Some providers (notably Anthropic) require strict assistant/tool adjacency:
+    - assistant `tool_calls` must be followed immediately by matching `role=tool` results
+    - each tool result must reference a declared tool_call_id
+
+    If the sequence is malformed (missing IDs, missing results, or non-tool messages between),
+    we downgrade tool metadata to plain user/assistant context to keep payloads valid.
+    """
+    normalized: list[dict[str, Any]] = []
+    i = 0
+    total = len(messages)
+
+    while i < total:
+        message = messages[i]
+        role = message.get("role")
+
+        if role == "assistant" and isinstance(message.get("tool_calls"), list):
+            declared_ids = _extract_declared_tool_call_ids(message)
+            if not declared_ids:
+                normalized.append(_strip_tool_calls_metadata(message))
+                i += 1
+                continue
+
+            j = i + 1
+            immediate_tools: list[dict[str, Any]] = []
+            while j < total and messages[j].get("role") == "tool":
+                immediate_tools.append(messages[j])
+                j += 1
+
+            immediate_ids = {
+                str(tool_msg.get("tool_call_id") or "")
+                for tool_msg in immediate_tools
+                if str(tool_msg.get("tool_call_id") or "")
+            }
+            all_immediate_have_id = all(
+                bool(str(tool_msg.get("tool_call_id") or "")) for tool_msg in immediate_tools
+            )
+            only_declared_ids = all(
+                str(tool_msg.get("tool_call_id") or "") in declared_ids for tool_msg in immediate_tools
+            )
+            has_all_declared = declared_ids.issubset(immediate_ids)
+
+            if immediate_tools and all_immediate_have_id and only_declared_ids and has_all_declared:
+                normalized.append(message)
+                normalized.extend(immediate_tools)
+                i = j
+                continue
+
+            normalized.append(_strip_tool_calls_metadata(message))
+            i += 1
+            continue
+
+        if role != "tool":
+            normalized.append(message)
+            i += 1
+            continue
+
+        normalized.append(_convert_tool_to_user_fallback(message))
+        i += 1
+
+    return normalized

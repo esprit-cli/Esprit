@@ -36,7 +36,7 @@ class UserMessageRenderer(BaseToolRenderer):
 
         text.append("▍", style="#3b82f6")
         text.append(" ")
-        text.append("You:", style="bold")
+        text.append("You", style="bold #60a5fa")
         text.append("\n")
 
         lines = content.split("\n")
@@ -45,6 +45,6 @@ class UserMessageRenderer(BaseToolRenderer):
                 text.append("\n")
             text.append("▍", style="#3b82f6")
             text.append(" ")
-            text.append(line)
+            text.append(line, style="#d4d4d8")
 
         return text

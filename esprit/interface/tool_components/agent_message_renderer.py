@@ -61,7 +61,7 @@ def _try_parse_header(line: str) -> tuple[str, str] | None:
     return None
 
 
-def _apply_markdown_styles(text: str) -> Text:  # noqa: PLR0912
+def _apply_markdown_styles(text: str, is_streaming: bool = False) -> Text:  # noqa: PLR0912
     result = Text()
     lines = text.split("\n")
 
@@ -93,31 +93,38 @@ def _apply_markdown_styles(text: str) -> Text:  # noqa: PLR0912
             code_block_lines.append(line)
             continue
 
+        # For the last line during streaming, pass is_streaming=True
+        is_last_line = is_streaming and (i == len(lines) - 1)
+
         header = _try_parse_header(line)
         if header:
             result.append(header[0], style=header[1])
         elif line.startswith("> "):
             result.append("┃ ", style="#22c55e")
-            result.append_text(_process_inline_formatting(line[2:]))
+            result.append_text(_process_inline_formatting(line[2:], is_streaming=is_last_line))
         elif line.startswith(("- ", "* ")):
             result.append("• ", style="#22c55e")
-            result.append_text(_process_inline_formatting(line[2:]))
+            result.append_text(_process_inline_formatting(line[2:], is_streaming=is_last_line))
         elif len(line) > 2 and line[0].isdigit() and line[1:3] in (". ", ") "):
             result.append(line[0] + ". ", style="#22c55e")
-            result.append_text(_process_inline_formatting(line[2:]))
+            result.append_text(_process_inline_formatting(line[2:], is_streaming=is_last_line))
         elif line.strip() in ("---", "***", "___"):
             result.append("─" * 40, style="#22c55e")
         else:
-            result.append_text(_process_inline_formatting(line))
+            result.append_text(_process_inline_formatting(line, is_streaming=is_last_line))
 
     if in_code_block and code_block_lines:
         code_content = "\n".join(code_block_lines)
-        result.append_text(_highlight_code(code_content, code_block_lang))
+        if is_streaming:
+            # During streaming, show code in monospace even without closing ```
+            result.append_text(_highlight_code(code_content, code_block_lang))
+        else:
+            result.append_text(_highlight_code(code_content, code_block_lang))
 
     return result
 
 
-def _process_inline_formatting(line: str) -> Text:
+def _process_inline_formatting(line: str, is_streaming: bool = False) -> Text:  # noqa: PLR0912
     result = Text()
     i = 0
     n = len(line)
@@ -130,6 +137,10 @@ def _process_inline_formatting(line: str) -> Text:
                 result.append(line[i + 2 : end], style="bold #4ade80")
                 i = end + 2
                 continue
+            # During streaming, render unclosed bold as bold (closing marker coming)
+            if is_streaming:
+                result.append(line[i + 2 :], style="bold #4ade80")
+                return result
 
         if i + 1 < n and line[i : i + 2] == "~~":
             end = line.find("~~", i + 2)
@@ -137,6 +148,9 @@ def _process_inline_formatting(line: str) -> Text:
                 result.append(line[i + 2 : end], style="strike #525252")
                 i = end + 2
                 continue
+            if is_streaming:
+                result.append(line[i + 2 :], style="strike #525252")
+                return result
 
         if line[i] == "`":
             end = line.find("`", i + 1)
@@ -144,6 +158,10 @@ def _process_inline_formatting(line: str) -> Text:
                 result.append(line[i + 1 : end], style="bold #22c55e on #0a0a0a")
                 i = end + 1
                 continue
+            # During streaming, render unclosed inline code as code
+            if is_streaming:
+                result.append(line[i + 1 :], style="bold #22c55e on #0a0a0a")
+                return result
 
         if line[i] in ("*", "_"):
             marker = line[i]
@@ -153,6 +171,10 @@ def _process_inline_formatting(line: str) -> Text:
                     result.append(line[i + 1 : end], style="italic #86efac")
                     i = end + 1
                     continue
+                # During streaming, render unclosed italic
+                if is_streaming and end == -1:
+                    result.append(line[i + 1 :], style="italic #86efac")
+                    return result
 
         result.append(line[i])
         i += 1
@@ -177,7 +199,7 @@ class AgentMessageRenderer(BaseToolRenderer):
         return Static(styled_text, classes=" ".join(cls.css_classes))
 
     @classmethod
-    def render_simple(cls, content: str) -> Text:
+    def render_simple(cls, content: str, is_streaming: bool = False) -> Text:
         if not content:
             return Text()
 
@@ -187,4 +209,4 @@ class AgentMessageRenderer(BaseToolRenderer):
         if not cleaned:
             return Text()
 
-        return _apply_markdown_styles(cleaned)
+        return _apply_markdown_styles(cleaned, is_streaming=is_streaming)

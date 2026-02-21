@@ -11,7 +11,9 @@ from rich.panel import Panel
 from rich.text import Text
 
 from esprit.agents.EspritAgent import EspritAgent
+from esprit.config import Config
 from esprit.llm.config import LLMConfig
+from esprit.llm.cost_estimator import estimate_scan_profile
 from esprit.telemetry.tracer import Tracer, set_global_tracer
 
 from .utils import (
@@ -66,12 +68,31 @@ async def run_cli(args: Any) -> None:  # noqa: PLR0915
     console.print()
 
     scan_mode = getattr(args, "scan_mode", "deep")
+    model_name = Config.get("esprit_llm") or ""
+    target_count = len(getattr(args, "targets_info", []) or [])
+    is_whitebox = bool(getattr(args, "local_sources", None))
+    estimate = estimate_scan_profile(
+        model_name=model_name,
+        scan_mode=scan_mode,
+        target_count=max(1, target_count),
+        is_whitebox=is_whitebox,
+    ) if model_name else {}
 
     scan_config = {
         "scan_id": args.run_name,
         "targets": args.targets_info,
         "user_instructions": args.instruction or "",
         "run_name": args.run_name,
+        "scan_mode": scan_mode,
+        "model": model_name,
+        "target_count": max(1, target_count),
+        "is_whitebox": is_whitebox,
+        "estimated_cost_low": estimate.get("estimated_cost_low"),
+        "estimated_cost_mid": estimate.get("estimated_cost_mid"),
+        "estimated_cost_high": estimate.get("estimated_cost_high"),
+        "estimated_time_low_min": estimate.get("estimated_time_low_min"),
+        "estimated_time_mid_min": estimate.get("estimated_time_mid_min"),
+        "estimated_time_high_min": estimate.get("estimated_time_high_min"),
     }
 
     llm_config = LLMConfig(scan_mode=scan_mode)

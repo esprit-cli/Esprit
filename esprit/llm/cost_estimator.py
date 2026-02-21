@@ -31,6 +31,23 @@ _MODE_TOKEN_ESTIMATES: dict[str, dict[str, Any]] = {
 _WHITEBOX_MULTIPLIER = 1.5
 _ADDITIONAL_TARGET_FACTOR = 0.7
 
+_MODE_DURATION_ESTIMATES_MIN: dict[str, float] = {
+    "quick": 8.0,
+    "standard": 30.0,
+    "deep": 75.0,
+}
+
+_MODEL_DURATION_MULTIPLIERS: list[tuple[str, float]] = [
+    ("haiku", 0.75),
+    ("mini", 0.80),
+    ("flash", 0.80),
+    ("sonnet", 1.00),
+    ("gpt-5", 1.10),
+    ("o4", 1.20),
+    ("o3", 1.20),
+    ("opus", 1.35),
+]
+
 
 def estimate_scan_cost(
     model_name: str,
@@ -68,3 +85,60 @@ def estimate_scan_cost(
         "model": model_name,
         "scan_mode": scan_mode,
     }
+
+
+def estimate_scan_duration_minutes(
+    model_name: str,
+    scan_mode: str,
+    target_count: int = 1,
+    is_whitebox: bool = False,
+) -> dict[str, float]:
+    """Estimate scan duration range (minutes) for model/mode/target profile."""
+    base_mid = _MODE_DURATION_ESTIMATES_MIN.get(scan_mode, _MODE_DURATION_ESTIMATES_MIN["deep"])
+
+    if target_count > 1:
+        base_mid = base_mid + (base_mid * _ADDITIONAL_TARGET_FACTOR * (target_count - 1))
+
+    if is_whitebox:
+        base_mid *= _WHITEBOX_MULTIPLIER
+
+    model_lower = (model_name or "").lower()
+    model_mult = 1.0
+    for token, mult in _MODEL_DURATION_MULTIPLIERS:
+        if token in model_lower:
+            model_mult = mult
+            break
+
+    mid = base_mid * model_mult
+    return {
+        "estimated_time_low_min": round(max(1.0, mid * 0.6), 1),
+        "estimated_time_mid_min": round(max(1.0, mid), 1),
+        "estimated_time_high_min": round(max(1.0, mid * 1.8), 1),
+    }
+
+
+def estimate_scan_profile(
+    model_name: str,
+    scan_mode: str,
+    target_count: int = 1,
+    is_whitebox: bool = False,
+) -> dict[str, Any]:
+    """Estimate both cost and runtime for a scan profile."""
+    result: dict[str, Any] = {}
+    result.update(
+        estimate_scan_cost(
+            model_name=model_name,
+            scan_mode=scan_mode,
+            target_count=target_count,
+            is_whitebox=is_whitebox,
+        )
+    )
+    result.update(
+        estimate_scan_duration_minutes(
+            model_name=model_name,
+            scan_mode=scan_mode,
+            target_count=target_count,
+            is_whitebox=is_whitebox,
+        )
+    )
+    return result

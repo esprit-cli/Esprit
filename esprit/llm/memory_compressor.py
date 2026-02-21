@@ -4,10 +4,11 @@ from typing import Any
 import litellm
 
 from esprit.config import Config
-from esprit.llm.api_base import resolve_api_base
+from esprit.llm.completion_args import CompletionArgsError, build_completion_args
 
 
 logger = logging.getLogger(__name__)
+_SUMMARY_WARN_ONCE: set[str] = set()
 
 
 MAX_TOTAL_TOKENS = 100_000
@@ -15,8 +16,9 @@ MIN_RECENT_MESSAGES = 15
 
 # Map Antigravity model names to litellm-compatible names for token counting
 _TOKEN_COUNTER_MAP: dict[str, str] = {
-    "antigravity/claude-opus-4-6-thinking": "claude-opus-4-5-20250514",
+    "antigravity/claude-opus-4-6-thinking": "claude-opus-4-6",
     "antigravity/claude-opus-4-5-thinking": "claude-opus-4-5-20250514",
+    "antigravity/claude-sonnet-4-6-thinking": "claude-sonnet-4-6",
     "antigravity/claude-sonnet-4-5-thinking": "claude-sonnet-4-5-20250514",
     "antigravity/claude-sonnet-4-5": "claude-sonnet-4-5-20250514",
     "antigravity/gemini-2.5-flash": "gemini/gemini-2.5-flash-preview-04-17",
@@ -135,20 +137,12 @@ def summarize_messages(
     conversation = "\n".join(formatted)
     prompt = SUMMARY_PROMPT_TEMPLATE.format(conversation=conversation)
 
-    api_key = Config.get("llm_api_key")
-    api_base = resolve_api_base(model)
-
     try:
-        completion_args: dict[str, Any] = {
-            "model": model,
-            "messages": [{"role": "user", "content": prompt}],
-            "timeout": timeout,
-        }
-        if api_key:
-            completion_args["api_key"] = api_key
-        if api_base:
-            completion_args["api_base"] = api_base
-
+        completion_args = build_completion_args(
+            model_name=model,
+            messages=[{"role": "user", "content": prompt}],
+            timeout=timeout,
+        )
         response = litellm.completion(**completion_args)
         summary = response.choices[0].message.content or ""
         if not summary.strip():
@@ -158,6 +152,12 @@ def summarize_messages(
             "role": "assistant",
             "content": summary_msg.format(count=len(messages), text=summary),
         }
+    except CompletionArgsError as e:
+        warning_key = str(e)
+        if warning_key not in _SUMMARY_WARN_ONCE:
+            logger.warning("Skipping memory compression summary: %s", e)
+            _SUMMARY_WARN_ONCE.add(warning_key)
+        return messages[0]
     except Exception:
         logger.exception("Failed to summarize messages")
         return messages[0]

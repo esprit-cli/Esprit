@@ -27,6 +27,12 @@ class AgentState(BaseModel):
     waiting_start_time: datetime | None = None
     final_result: dict[str, Any] | None = None
     max_iterations_warning_sent: bool = False
+    last_heartbeat_at: str | None = None
+    heartbeat_phase: str | None = None
+    heartbeat_detail: str | None = None
+    stall_count: int = 0
+    last_recovery_at: str | None = None
+    last_recovery_reason: str | None = None
 
     messages: list[dict[str, Any]] = Field(default_factory=list)
     context: dict[str, Any] = Field(default_factory=dict)
@@ -43,12 +49,21 @@ class AgentState(BaseModel):
         self.iteration += 1
         self.last_updated = datetime.now(UTC).isoformat()
 
-    def add_message(self, role: str, content: Any, thinking_blocks: list[dict[str, Any]] | None = None, tool_calls: list[dict[str, Any]] | None = None) -> None:
+    def add_message(
+        self,
+        role: str,
+        content: Any,
+        thinking_blocks: list[dict[str, Any]] | None = None,
+        tool_calls: list[dict[str, Any]] | None = None,
+        tool_call_id: str | None = None,
+    ) -> None:
         message = {"role": role, "content": content}
-        if thinking_blocks:
+        if thinking_blocks is not None:
             message["thinking_blocks"] = thinking_blocks
-        if tool_calls:
+        if tool_calls is not None:
             message["tool_calls"] = tool_calls
+        if tool_call_id:
+            message["tool_call_id"] = tool_call_id
         self.messages.append(message)
         self.last_updated = datetime.now(UTC).isoformat()
 
@@ -73,6 +88,20 @@ class AgentState(BaseModel):
     def add_error(self, error: str) -> None:
         self.errors.append(f"Iteration {self.iteration}: {error}")
         self.last_updated = datetime.now(UTC).isoformat()
+
+    def touch_heartbeat(self, phase: str, detail: str | None = None) -> None:
+        now = datetime.now(UTC).isoformat()
+        self.last_heartbeat_at = now
+        self.heartbeat_phase = phase
+        self.heartbeat_detail = detail
+        self.last_updated = now
+
+    def record_recovery(self, reason: str) -> None:
+        now = datetime.now(UTC).isoformat()
+        self.stall_count += 1
+        self.last_recovery_at = now
+        self.last_recovery_reason = reason
+        self.last_updated = now
 
     def update_context(self, key: str, value: Any) -> None:
         self.context[key] = value

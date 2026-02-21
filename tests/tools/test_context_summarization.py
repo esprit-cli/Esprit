@@ -8,6 +8,11 @@ from unittest.mock import MagicMock, patch
 from esprit.agents.state import AgentState
 from esprit.tools.agents_graph.agents_graph_actions import (
     _RECENT_MESSAGES_TO_KEEP,
+    _agent_graph,
+    _agent_instances,
+    _agent_messages,
+    _agent_states,
+    _running_agents,
     _format_messages_as_text,
     _format_messages_brief,
     _summarize_inherited_context,
@@ -88,6 +93,16 @@ class TestFormatMessagesBrief:
 
 
 class TestSummarizeInheritedContext:
+    def test_defaults_to_local_summary_without_llm_call(self) -> None:
+        msgs = _make_messages(20)
+
+        with patch("esprit.llm.memory_compressor.summarize_messages") as mock_summarize:
+            result = _summarize_inherited_context(msgs, "test task")
+
+        mock_summarize.assert_not_called()
+        assert "<earlier_context_summary" in result
+        assert "<recent_parent_activity>" in result
+
     def test_uses_llm_summary_when_available(self) -> None:
         msgs = _make_messages(20)
         llm_summary = "LLM generated summary of old context"
@@ -95,14 +110,18 @@ class TestSummarizeInheritedContext:
         mock_response = {"role": "assistant", "content": llm_summary}
         with (
             patch(
+                "esprit.tools.agents_graph.agents_graph_actions._env_flag",
+                return_value=True,
+            ),
+            patch(
                 "esprit.llm.memory_compressor.summarize_messages",
                 return_value=mock_response,
             ) as mock_summarize,
             patch(
-                "esprit.config.Config"
-            ) as mock_config,
+                "esprit.tools.agents_graph.agents_graph_actions.Config.get",
+                side_effect=lambda name: "test-model" if name == "esprit_llm" else None,
+            ),
         ):
-            mock_config.get.return_value = "test-model"
             result = _summarize_inherited_context(msgs, "test task")
 
         mock_summarize.assert_called_once()
@@ -115,14 +134,18 @@ class TestSummarizeInheritedContext:
 
         with (
             patch(
+                "esprit.tools.agents_graph.agents_graph_actions._env_flag",
+                return_value=True,
+            ),
+            patch(
                 "esprit.llm.memory_compressor.summarize_messages",
                 side_effect=RuntimeError("LLM unavailable"),
             ),
             patch(
-                "esprit.config.Config"
-            ) as mock_config,
+                "esprit.tools.agents_graph.agents_graph_actions.Config.get",
+                side_effect=lambda name: "test-model" if name == "esprit_llm" else None,
+            ),
         ):
-            mock_config.get.return_value = "test-model"
             result = _summarize_inherited_context(msgs, "test task")
 
         # Should still return valid output using fallback
@@ -135,14 +158,18 @@ class TestSummarizeInheritedContext:
         mock_response = {"role": "assistant", "content": ""}
         with (
             patch(
+                "esprit.tools.agents_graph.agents_graph_actions._env_flag",
+                return_value=True,
+            ),
+            patch(
                 "esprit.llm.memory_compressor.summarize_messages",
                 return_value=mock_response,
             ),
             patch(
-                "esprit.config.Config"
-            ) as mock_config,
+                "esprit.tools.agents_graph.agents_graph_actions.Config.get",
+                side_effect=lambda name: "test-model" if name == "esprit_llm" else None,
+            ),
         ):
-            mock_config.get.return_value = "test-model"
             result = _summarize_inherited_context(msgs, "test task")
 
         # Should fall back to brief formatting
@@ -156,14 +183,18 @@ class TestSummarizeInheritedContext:
         mock_response = {"role": "assistant", "content": "summary of old stuff"}
         with (
             patch(
+                "esprit.tools.agents_graph.agents_graph_actions._env_flag",
+                return_value=True,
+            ),
+            patch(
                 "esprit.llm.memory_compressor.summarize_messages",
                 return_value=mock_response,
             ),
             patch(
-                "esprit.config.Config"
-            ) as mock_config,
+                "esprit.tools.agents_graph.agents_graph_actions.Config.get",
+                side_effect=lambda name: "test-model" if name == "esprit_llm" else None,
+            ),
         ):
-            mock_config.get.return_value = "test-model"
             result = _summarize_inherited_context(msgs, "test task")
 
         # Last 10 messages should be in the recent section
@@ -177,14 +208,18 @@ class TestSummarizeInheritedContext:
         mock_response = {"role": "assistant", "content": "summary"}
         with (
             patch(
+                "esprit.tools.agents_graph.agents_graph_actions._env_flag",
+                return_value=True,
+            ),
+            patch(
                 "esprit.llm.memory_compressor.summarize_messages",
                 return_value=mock_response,
             ) as mock_summarize,
             patch(
-                "esprit.config.Config"
-            ) as mock_config,
+                "esprit.tools.agents_graph.agents_graph_actions.Config.get",
+                side_effect=lambda name: "test-model" if name == "esprit_llm" else None,
+            ),
         ):
-            mock_config.get.return_value = "test-model"
             _summarize_inherited_context(msgs, "test task")
 
         # Should pass the old messages (not the recent ones) to summarizer
@@ -198,14 +233,18 @@ class TestSummarizeInheritedContext:
 
         with (
             patch(
+                "esprit.tools.agents_graph.agents_graph_actions._env_flag",
+                return_value=True,
+            ),
+            patch(
                 "esprit.llm.memory_compressor.summarize_messages",
                 return_value=old_msgs[0],
             ),
             patch(
-                "esprit.config.Config"
-            ) as mock_config,
+                "esprit.tools.agents_graph.agents_graph_actions.Config.get",
+                side_effect=lambda name: "test-model" if name == "esprit_llm" else None,
+            ),
         ):
-            mock_config.get.return_value = "test-model"
             result = _summarize_inherited_context(msgs, "test task")
 
         # summarize_messages uses this as a failure sentinel; ensure we fall back
@@ -215,6 +254,15 @@ class TestSummarizeInheritedContext:
 
 
 # ── _run_agent_in_thread context branching ───────────────────────
+
+
+def _reset_agents_graph_globals() -> None:
+    _agent_graph["nodes"].clear()
+    _agent_graph["edges"].clear()
+    _agent_messages.clear()
+    _running_agents.clear()
+    _agent_instances.clear()
+    _agent_states.clear()
 
 
 class TestRunAgentInThreadContextBranching:
@@ -383,3 +431,321 @@ class TestRunAgentInThreadContextBranching:
         finally:
             mod._agent_graph["nodes"].pop("agent_meta", None)
             mod._agent_graph["nodes"].pop("agent_parent", None)
+
+    def test_short_history_preserves_native_tool_metadata(self) -> None:
+        """Short inherited history should keep native tool metadata intact."""
+        state = MagicMock()
+        state.task = "test task"
+        state.agent_id = "agent_meta"
+        state.parent_id = "agent_parent"
+        state.agent_name = "Metadata Agent"
+        state.model_dump.return_value = {"agent_id": "agent_meta"}
+        state.stop_requested = False
+        state.is_waiting_for_input.return_value = False
+
+        msgs: list[dict[str, Any]] = [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "list_files", "arguments": "{}"},
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "content": "{'files': []}",
+                "tool_call_id": "call_1",
+            },
+        ]
+
+        from esprit.tools.agents_graph import agents_graph_actions as mod
+
+        mod._agent_graph["nodes"]["agent_parent"] = {"name": "Parent", "task": "parent task"}
+        mod._agent_graph["nodes"]["agent_meta"] = {
+            "name": "Metadata Agent",
+            "task": "test task",
+            "status": "running",
+            "parent_id": "agent_parent",
+        }
+
+        agent = MagicMock()
+
+        async def _return_success(_task: str) -> dict[str, Any]:
+            return {"success": True}
+
+        agent.agent_loop.side_effect = _return_success
+
+        mod._run_agent_in_thread(agent, state, msgs)
+
+        assistant_calls = [
+            call for call in state.add_message.call_args_list if call.args and call.args[0] == "assistant"
+        ]
+        assert assistant_calls
+        assert assistant_calls[0].kwargs.get("tool_calls")
+
+        tool_calls = [
+            call for call in state.add_message.call_args_list if call.args and call.args[0] == "tool"
+        ]
+        assert tool_calls
+        assert tool_calls[0].kwargs.get("tool_call_id") == "call_1"
+
+        mod._agent_graph["nodes"].pop("agent_meta", None)
+        mod._agent_graph["nodes"].pop("agent_parent", None)
+
+    def test_short_history_sanitizes_malformed_tool_messages(self) -> None:
+        """Malformed tool messages should be downgraded before inheritance replay."""
+        state = MagicMock()
+        state.task = "test task"
+        state.agent_id = "agent_sanitize"
+        state.parent_id = "agent_parent"
+        state.agent_name = "Sanitize Agent"
+        state.model_dump.return_value = {"agent_id": "agent_sanitize"}
+        state.stop_requested = False
+        state.is_waiting_for_input.return_value = False
+
+        msgs: list[dict[str, Any]] = [
+            {"role": "assistant", "content": "reading files"},
+            {"role": "tool", "content": "{'files': []}"},
+        ]
+
+        from esprit.tools.agents_graph import agents_graph_actions as mod
+
+        mod._agent_graph["nodes"]["agent_parent"] = {"name": "Parent", "task": "parent task"}
+        mod._agent_graph["nodes"]["agent_sanitize"] = {
+            "name": "Sanitize Agent",
+            "task": "test task",
+            "status": "running",
+            "parent_id": "agent_parent",
+        }
+
+        agent = MagicMock()
+
+        async def _return_success(_task: str) -> dict[str, Any]:
+            return {"success": True}
+
+        agent.agent_loop.side_effect = _return_success
+
+        mod._run_agent_in_thread(agent, state, msgs)
+
+        malformed_tool_calls = [
+            call
+            for call in state.add_message.call_args_list
+            if call.args and call.args[0] == "tool"
+        ]
+        assert malformed_tool_calls == []
+
+        user_contents = [
+            call.args[1]
+            for call in state.add_message.call_args_list
+            if call.args and call.args[0] == "user" and len(call.args) > 1
+        ]
+        assert any("tool metadata was incomplete" in str(content) for content in user_contents)
+
+        mod._agent_graph["nodes"].pop("agent_sanitize", None)
+        mod._agent_graph["nodes"].pop("agent_parent", None)
+
+
+class TestRunAgentFailureStatusPropagation:
+    def setup_method(self) -> None:
+        _reset_agents_graph_globals()
+
+    def teardown_method(self) -> None:
+        _reset_agents_graph_globals()
+
+    def test_subagent_failed_result_marks_failed_and_notifies_parent(self) -> None:
+        from esprit.tools.agents_graph import agents_graph_actions as mod
+
+        parent_id = "agent_parent"
+        child_id = "agent_child"
+
+        mod._agent_graph["nodes"][parent_id] = {
+            "name": "Root Agent",
+            "task": "root task",
+            "status": "running",
+            "parent_id": None,
+        }
+        mod._agent_graph["nodes"][child_id] = {
+            "name": "Child Agent",
+            "task": "child task",
+            "status": "running",
+            "parent_id": parent_id,
+            "created_at": "2026-01-01T00:00:00+00:00",
+            "finished_at": None,
+            "result": None,
+        }
+
+        state = MagicMock()
+        state.agent_id = child_id
+        state.agent_name = "Child Agent"
+        state.parent_id = parent_id
+        state.task = "child"
+        state.model_dump.return_value = {"agent_id": child_id}
+        state.add_message = MagicMock()
+        state.stop_requested = False
+
+        failing_agent = MagicMock()
+
+        async def _return_failed(_task: str) -> dict[str, Any]:
+            return {"success": False, "error": "LLM processing timed out after 360s"}
+
+        failing_agent.agent_loop.side_effect = _return_failed
+
+        mod._run_agent_in_thread(failing_agent, state, [])
+
+        node = mod._agent_graph["nodes"][child_id]
+        assert node["status"] == "failed"
+        assert node["result"]["success"] is False
+        assert "LLM processing timed out after 360s" in node["result"]["summary"]
+
+        parent_messages = mod._agent_messages.get(parent_id, [])
+        assert len(parent_messages) == 1
+        assert "<agent_completion_report>" in parent_messages[0]["content"]
+        assert "<status>FAILED</status>" in parent_messages[0]["content"]
+        assert "LLM processing timed out after 360s" in parent_messages[0]["content"]
+
+    def test_subagent_finished_status_counts_as_completed_for_finish_scan_guard(self) -> None:
+        from esprit.tools.agents_graph import agents_graph_actions as graph_mod
+        from esprit.tools.finish.finish_actions import _check_active_agents
+
+        root_id = "agent_root"
+        child_id = "agent_child_finished"
+
+        graph_mod._agent_graph["nodes"][root_id] = {
+            "name": "Root Agent",
+            "task": "root task",
+            "status": "running",
+            "parent_id": None,
+        }
+        graph_mod._agent_graph["nodes"][child_id] = {
+            "name": "Child Agent",
+            "task": "child task",
+            "status": "finished",
+            "parent_id": root_id,
+            "created_at": "2026-01-01T00:00:00+00:00",
+            "finished_at": "2026-01-01T00:05:00+00:00",
+            "result": {"success": True},
+        }
+
+        root_state = MagicMock()
+        root_state.agent_id = root_id
+
+        active = _check_active_agents(root_state)
+
+        assert active is None
+
+    def test_subagent_waiting_status_blocks_finish_scan_guard(self) -> None:
+        from esprit.tools.agents_graph import agents_graph_actions as graph_mod
+        from esprit.tools.finish.finish_actions import _check_active_agents
+
+        root_id = "agent_root"
+        child_id = "agent_child_waiting"
+
+        graph_mod._agent_graph["nodes"][root_id] = {
+            "name": "Root Agent",
+            "task": "root task",
+            "status": "running",
+            "parent_id": None,
+        }
+        graph_mod._agent_graph["nodes"][child_id] = {
+            "name": "Child Agent",
+            "task": "child task",
+            "status": "waiting",
+            "parent_id": root_id,
+            "created_at": "2026-01-01T00:00:00+00:00",
+            "finished_at": None,
+            "result": None,
+        }
+
+        root_state = MagicMock()
+        root_state.agent_id = root_id
+
+        active = _check_active_agents(root_state)
+
+        assert active is not None
+        assert active["error"] == "agents_still_active"
+        assert active["total_active"] == 1
+        assert active["active_agents"][0]["id"] == child_id
+        assert active["active_agents"][0]["status"] == "waiting"
+
+    def test_subagent_queued_status_blocks_finish_scan_guard(self) -> None:
+        from esprit.tools.agents_graph import agents_graph_actions as graph_mod
+        from esprit.tools.finish.finish_actions import _check_active_agents
+
+        root_id = "agent_root"
+        child_id = "agent_child_queued"
+
+        graph_mod._agent_graph["nodes"][root_id] = {
+            "name": "Root Agent",
+            "task": "root task",
+            "status": "running",
+            "parent_id": None,
+        }
+        graph_mod._agent_graph["nodes"][child_id] = {
+            "name": "Child Agent",
+            "task": "child task",
+            "status": "queued",
+            "parent_id": root_id,
+            "created_at": "2026-01-01T00:00:00+00:00",
+            "finished_at": None,
+            "result": None,
+        }
+
+        root_state = MagicMock()
+        root_state.agent_id = root_id
+
+        active = _check_active_agents(root_state)
+
+        assert active is not None
+        assert active["error"] == "agents_still_active"
+        assert active["total_active"] == 1
+        assert active["active_agents"][0]["id"] == child_id
+        assert active["active_agents"][0]["status"] == "queued"
+
+    def test_waiting_failed_subagent_result_is_marked_failed(self) -> None:
+        from esprit.tools.agents_graph import agents_graph_actions as mod
+
+        parent_id = "agent_parent"
+        child_id = "agent_child_waiting_failed"
+
+        mod._agent_graph["nodes"][parent_id] = {
+            "name": "Root Agent",
+            "task": "root task",
+            "status": "running",
+            "parent_id": None,
+        }
+        mod._agent_graph["nodes"][child_id] = {
+            "name": "Child Agent",
+            "task": "child task",
+            "status": "waiting",
+            "parent_id": parent_id,
+            "created_at": "2026-01-01T00:00:00+00:00",
+            "finished_at": None,
+            "result": None,
+        }
+
+        state = MagicMock()
+        state.agent_id = child_id
+        state.agent_name = "Child Agent"
+        state.parent_id = parent_id
+        state.task = "child"
+        state.model_dump.return_value = {"agent_id": child_id}
+        state.add_message = MagicMock()
+        state.stop_requested = False
+        state.is_waiting_for_input.return_value = True
+
+        failing_agent = MagicMock()
+
+        async def _return_failed(_task: str) -> dict[str, Any]:
+            return {"success": False, "error": "LLM processing timed out after 360s"}
+
+        failing_agent.agent_loop.side_effect = _return_failed
+
+        mod._run_agent_in_thread(failing_agent, state, [])
+
+        node = mod._agent_graph["nodes"][child_id]
+        assert node["status"] == "failed"
+        assert node["result"]["success"] is False

@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import inspect
 import os
 import signal
 import sys
+import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 import uvicorn
@@ -31,6 +34,8 @@ parser.add_argument(
 args = parser.parse_args()
 EXPECTED_TOKEN = args.token
 REQUEST_TIMEOUT = args.timeout
+MAX_WORKERS = max(4, int(os.getenv("ESPRIT_TOOL_SERVER_MAX_WORKERS", "48")))
+EXECUTOR = ThreadPoolExecutor(max_workers=MAX_WORKERS, thread_name_prefix="esprit-tool")
 
 app = FastAPI()
 security = HTTPBearer()
@@ -80,7 +85,18 @@ async def _run_tool(agent_id: str, tool_name: str, kwargs: dict[str, Any]) -> An
         raise ValueError(f"Tool '{tool_name}' not found")
 
     converted_kwargs = convert_arguments(tool_func, kwargs)
-    return await asyncio.to_thread(tool_func, **converted_kwargs)
+    result = await asyncio.to_thread(tool_func, **converted_kwargs)
+    return await result if inspect.isawaitable(result) else result
+
+
+@app.on_event("startup")
+async def _configure_executor() -> None:
+    asyncio.get_running_loop().set_default_executor(EXECUTOR)
+
+
+@app.on_event("shutdown")
+async def _shutdown_executor() -> None:
+    EXECUTOR.shutdown(wait=False, cancel_futures=True)
 
 
 @app.post("/execute", response_model=ToolExecutionResponse)
@@ -90,12 +106,12 @@ async def execute_tool(
     verify_token(credentials)
 
     agent_id = request.agent_id
+    active_task = agent_tasks.get(agent_id)
+    if active_task is not None and not active_task.done():
+        # Reject overlapping calls for the same agent instead of cancelling in-flight work.
+        return ToolExecutionResponse(error="Agent has an active tool request; retry shortly")
 
-    if agent_id in agent_tasks:
-        old_task = agent_tasks[agent_id]
-        if not old_task.done():
-            old_task.cancel()
-
+    started_at = time.monotonic()
     task = asyncio.create_task(
         asyncio.wait_for(
             _run_tool(agent_id, request.tool_name, request.kwargs), timeout=REQUEST_TIMEOUT
@@ -125,6 +141,11 @@ async def execute_tool(
     finally:
         if agent_tasks.get(agent_id) is task:
             del agent_tasks[agent_id]
+        duration_s = time.monotonic() - started_at
+        sys.stderr.write(
+            f"[tool_server] agent={agent_id} tool={request.tool_name} duration={duration_s:.2f}s\n"
+        )
+        sys.stderr.flush()
 
 
 @app.post("/register_agent")

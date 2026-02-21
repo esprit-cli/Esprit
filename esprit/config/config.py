@@ -17,7 +17,19 @@ class Config:
     ollama_api_base = None
     esprit_reasoning_effort = "high"
     esprit_llm_max_retries = "5"
+    esprit_llm_max_inflight = "1"
+    esprit_llm_min_start_interval_ms = "1200"
+    esprit_llm_start_jitter_ms = "400"
+    esprit_llm_rate_limit_cooldown_s = "30"
+    esprit_llm_rate_limit_cooldown_max_s = "180"
+    esprit_llm_retry_max_wait_s = "120"
+    esprit_llm_retry_jitter_ratio = "0.25"
+    esprit_llm_wait_poll_interval_s = "1.0"
+    esprit_llm_wait_heartbeat_interval_s = "5.0"
+    esprit_llm_watchdog_min_s = "360"
+    esprit_llm_watchdog_max_s = "600"
     esprit_memory_compressor_timeout = "30"
+    esprit_dedupe_timeout = "60"
     llm_timeout = "300"
     _LLM_CANONICAL_NAMES = (
         "esprit_llm",
@@ -28,7 +40,19 @@ class Config:
         "ollama_api_base",
         "esprit_reasoning_effort",
         "esprit_llm_max_retries",
+        "esprit_llm_max_inflight",
+        "esprit_llm_min_start_interval_ms",
+        "esprit_llm_start_jitter_ms",
+        "esprit_llm_rate_limit_cooldown_s",
+        "esprit_llm_rate_limit_cooldown_max_s",
+        "esprit_llm_retry_max_wait_s",
+        "esprit_llm_retry_jitter_ratio",
+        "esprit_llm_wait_poll_interval_s",
+        "esprit_llm_wait_heartbeat_interval_s",
+        "esprit_llm_watchdog_min_s",
+        "esprit_llm_watchdog_max_s",
         "esprit_memory_compressor_timeout",
+        "esprit_dedupe_timeout",
         "llm_timeout",
     )
 
@@ -39,8 +63,14 @@ class Config:
     # Runtime Configuration
     esprit_image = "improdead/esprit-sandbox:latest"
     esprit_runtime_backend = "docker"
-    esprit_sandbox_execution_timeout = "120"
+    esprit_sandbox_execution_timeout = "300"
     esprit_sandbox_connect_timeout = "10"
+    esprit_sandbox_client_grace_timeout = "120"
+    esprit_sandbox_request_retries = "2"
+    esprit_sandbox_retry_base_delay_ms = "400"
+    esprit_tool_server_max_workers = "48"
+    esprit_subagent_max_active = "1"
+    esprit_subagent_slot_poll_s = "1.0"
 
     # Telemetry
     esprit_telemetry = "1"

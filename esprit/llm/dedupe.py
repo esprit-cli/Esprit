@@ -6,10 +6,11 @@ from typing import Any
 import litellm
 
 from esprit.config import Config
-from esprit.llm.api_base import resolve_api_base
+from esprit.llm.completion_args import CompletionArgsError, build_completion_args
 
 
 logger = logging.getLogger(__name__)
+_DEDUPE_WARN_ONCE: set[str] = set()
 
 DEDUPE_SYSTEM_PROMPT = """You are an expert vulnerability report deduplication judge.
 Your task is to determine if a candidate vulnerability report describes the SAME vulnerability
@@ -157,8 +158,13 @@ def check_duplicate(
         comparison_data = {"candidate": candidate_cleaned, "existing_reports": existing_cleaned}
 
         model_name = Config.get("esprit_llm")
-        api_key = Config.get("llm_api_key")
-        api_base = resolve_api_base(model_name)
+        if not model_name:
+            return {
+                "is_duplicate": False,
+                "duplicate_id": "",
+                "confidence": 0.0,
+                "reason": "Deduplication skipped: no model configured",
+            }
 
         messages = [
             {"role": "system", "content": DEDUPE_SYSTEM_PROMPT},
@@ -172,16 +178,14 @@ def check_duplicate(
             },
         ]
 
-        completion_kwargs: dict[str, Any] = {
-            "model": model_name,
-            "messages": messages,
-            "timeout": 120,
-        }
-        if api_key:
-            completion_kwargs["api_key"] = api_key
-        if api_base:
-            completion_kwargs["api_base"] = api_base
-
+        timeout_s = int(Config.get("esprit_dedupe_timeout") or "60")
+        completion_kwargs = build_completion_args(
+            model_name=model_name,
+            messages=messages,
+            timeout=timeout_s,
+        )
+        # Deduplication is best-effort; keep this single-shot to avoid blocking scans.
+        completion_kwargs["max_retries"] = 0
         response = litellm.completion(**completion_kwargs)
 
         content = response.choices[0].message.content
@@ -200,6 +204,17 @@ def check_duplicate(
             f"confidence={result['confidence']}, reason={result['reason'][:100]}"
         )
 
+    except CompletionArgsError as e:
+        warn_key = str(e)
+        if warn_key not in _DEDUPE_WARN_ONCE:
+            logger.warning("Skipping vulnerability dedupe check: %s", e)
+            _DEDUPE_WARN_ONCE.add(warn_key)
+        return {
+            "is_duplicate": False,
+            "duplicate_id": "",
+            "confidence": 0.0,
+            "reason": f"Deduplication skipped: {e}",
+        }
     except Exception as e:
         logger.exception("Error during vulnerability deduplication check")
         return {

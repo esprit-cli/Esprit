@@ -155,6 +155,7 @@ class DockerRuntime(AbstractRuntime):
                 self._tool_server_port = self._find_available_port()
                 self._tool_server_token = secrets.token_urlsafe(32)
                 execution_timeout = Config.get("esprit_sandbox_execution_timeout") or "120"
+                tool_server_workers = Config.get("esprit_tool_server_max_workers") or "48"
 
                 container = self.client.containers.run(
                     image_name,
@@ -170,6 +171,7 @@ class DockerRuntime(AbstractRuntime):
                         "TOOL_SERVER_PORT": str(CONTAINER_TOOL_SERVER_PORT),
                         "TOOL_SERVER_TOKEN": self._tool_server_token,
                         "ESPRIT_SANDBOX_EXECUTION_TIMEOUT": str(execution_timeout),
+                        "ESPRIT_TOOL_SERVER_MAX_WORKERS": str(tool_server_workers),
                         "HOST_GATEWAY": HOST_GATEWAY_HOSTNAME,
                     },
                     extra_hosts={HOST_GATEWAY_HOSTNAME: "host-gateway"},
@@ -390,6 +392,53 @@ class DockerRuntime(AbstractRuntime):
             self._tool_server_token = None
         except (NotFound, DockerException):
             pass
+
+    async def revive_sandbox(self, container_id: str) -> SandboxInfo:
+        """Attempts to reconnect to and revive an existing sandbox container."""
+        try:
+            container = self.client.containers.get(container_id)
+
+            if container.status != "running":
+                container.start()
+                time.sleep(2)  # Give it a moment to start
+
+            container.reload()
+            self._scan_container = container
+            self._recover_container_state(container)
+
+            if self._tool_server_port is None or self._tool_server_token is None:
+                raise SandboxInitializationError(
+                    "Failed to recover sandbox state",
+                    "Could not retrieve port or token from revived container."
+                )
+
+            # Wait for tool server to be ready
+            self._wait_for_tool_server()
+
+            host = self._resolve_docker_host()
+            api_url = f"http://{host}:{self._tool_server_port}"
+
+            # We don't have the agent_id easily here, but that's okay for just reviving connectivity
+            # The agent will re-register if needed or just use the token
+
+            return {
+                "workspace_id": container.id,
+                "api_url": api_url,
+                "auth_token": self._tool_server_token,
+                "tool_server_port": self._tool_server_port,
+                # agent_id is unknown at this point, but will be in the AgentState
+            }
+
+        except NotFound:
+            raise SandboxInitializationError(
+                "Sandbox container not found",
+                f"Container {container_id} no longer exists. Cannot resume session state."
+            ) from None
+        except DockerException as e:
+            raise SandboxInitializationError(
+                "Failed to revive sandbox",
+                str(e)
+            ) from e
 
     def cleanup(self) -> None:
         if self._scan_container is not None:

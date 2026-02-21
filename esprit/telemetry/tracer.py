@@ -1,4 +1,7 @@
+import copy
 import logging
+import threading
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
@@ -45,6 +48,7 @@ class Tracer:
         self.tool_executions: dict[int, dict[str, Any]] = {}
         self.chat_messages: list[dict[str, Any]] = []
         self.streaming_content: dict[str, str] = {}
+        self.streaming_thinking: dict[str, str] = {}
         self.interrupted_content: dict[str, str] = {}
 
         self.vulnerability_reports: list[dict[str, Any]] = []
@@ -71,9 +75,51 @@ class Tracer:
 
         self.vulnerability_found_callback: Callable[[dict[str, Any]], None] | None = None
 
+        # Lock for thread-safe concurrent access to in-memory data from multiple subagent threads
+        self._lock = threading.Lock()
+        # Separate lock for serializing file writes to prevent checkpoint corruption
+        self._save_lock = threading.Lock()
+        # Best-effort periodic checkpointing for long-running scans without findings.
+        self._last_checkpoint_save_monotonic = 0.0
+        self._checkpoint_save_interval_s = 15.0
+
     def set_run_name(self, run_name: str) -> None:
-        self.run_name = run_name
-        self.run_id = run_name
+        with self._lock:
+            self.run_name = run_name
+            self.run_id = run_name
+
+    def _ensure_run_file_logger(self, run_dir: Path) -> None:
+        run_log_path = run_dir / "run.log"
+
+        try:
+            run_log_path.touch(exist_ok=True)
+        except OSError:
+            logger.exception("Failed to create run log file at %s", run_log_path)
+            return
+
+        esprit_logger = logging.getLogger("esprit")
+        if esprit_logger.level == logging.NOTSET or esprit_logger.level > logging.INFO:
+            esprit_logger.setLevel(logging.INFO)
+
+        resolved_path = str(run_log_path.resolve())
+        for handler in esprit_logger.handlers:
+            if (
+                isinstance(handler, logging.FileHandler)
+                and getattr(handler, "baseFilename", None) == resolved_path
+            ):
+                return
+
+        try:
+            file_handler = logging.FileHandler(run_log_path, encoding="utf-8")
+        except OSError:
+            logger.exception("Failed to attach run log handler at %s", run_log_path)
+            return
+
+        file_handler.setLevel(logging.INFO)
+        file_handler.setFormatter(
+            logging.Formatter("%(asctime)s %(levelname)s [%(name)s] %(message)s")
+        )
+        esprit_logger.addHandler(file_handler)
 
     def _set_run_status(self, status: str) -> None:
         self.run_metadata["status"] = status
@@ -88,6 +134,7 @@ class Tracer:
             self._run_dir = runs_dir / run_dir_name
             self._run_dir.mkdir(exist_ok=True)
 
+        self._ensure_run_file_logger(self._run_dir)
         return self._run_dir
 
     def add_vulnerability_report(  # noqa: PLR0912
@@ -113,10 +160,9 @@ class Tracer:
         cwe_id: str | None = None,
         owasp_category: str | None = None,
     ) -> str:
-        report_id = f"vuln-{len(self.vulnerability_reports) + 1:04d}"
-
+        # Build the report dict first (no shared state accessed here)
         report: dict[str, Any] = {
-            "id": report_id,
+            "id": "",  # assigned atomically below
             "title": title.strip(),
             "severity": severity.lower().strip(),
             "timestamp": datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S UTC"),
@@ -159,7 +205,11 @@ class Tracer:
         if owasp_category:
             report["owasp_category"] = owasp_category.strip()
 
-        self.vulnerability_reports.append(report)
+        # Atomically assign unique ID and append — prevents duplicate IDs under concurrency
+        with self._lock:
+            report_id = f"vuln-{len(self.vulnerability_reports) + 1:04d}"
+            report["id"] = report_id
+            self.vulnerability_reports.append(report)
         logger.info(f"Added vulnerability report: {report_id} - {title}")
         posthog.finding(severity)
 
@@ -170,7 +220,8 @@ class Tracer:
         return report_id
 
     def get_existing_vulnerabilities(self) -> list[dict[str, Any]]:
-        return list(self.vulnerability_reports)
+        with self._lock:
+            return copy.deepcopy(self.vulnerability_reports)
 
     def update_scan_final_fields(
         self,
@@ -225,7 +276,8 @@ class Tracer:
             "tool_executions": [],
         }
 
-        self.agents[agent_id] = agent_data
+        with self._lock:
+            self.agents[agent_id] = agent_data
 
     def log_chat_message(
         self,
@@ -233,90 +285,144 @@ class Tracer:
         role: str,
         agent_id: str | None = None,
         metadata: dict[str, Any] | None = None,
+        thinking_blocks: list[dict[str, Any]] | None = None,
     ) -> int:
-        message_id = self._next_message_id
-        self._next_message_id += 1
+        with self._lock:
+            message_id = self._next_message_id
+            self._next_message_id += 1
 
-        message_data = {
-            "message_id": message_id,
-            "content": content,
-            "role": role,
-            "agent_id": agent_id,
-            "timestamp": datetime.now(UTC).isoformat(),
-            "metadata": metadata or {},
-        }
+            message_data = {
+                "message_id": message_id,
+                "content": content,
+                "role": role,
+                "agent_id": agent_id,
+                "timestamp": datetime.now(UTC).isoformat(),
+                "metadata": metadata or {},
+            }
+            if thinking_blocks:
+                message_data["thinking_blocks"] = thinking_blocks
 
-        self.chat_messages.append(message_data)
-        return message_id
+            self.chat_messages.append(message_data)
+            return message_id
 
     def log_tool_execution_start(self, agent_id: str, tool_name: str, args: dict[str, Any]) -> int:
-        execution_id = self._next_execution_id
-        self._next_execution_id += 1
+        with self._lock:
+            execution_id = self._next_execution_id
+            self._next_execution_id += 1
 
-        now = datetime.now(UTC).isoformat()
-        execution_data = {
-            "execution_id": execution_id,
-            "agent_id": agent_id,
-            "tool_name": tool_name,
-            "args": args,
-            "status": "running",
-            "result": None,
-            "timestamp": now,
-            "started_at": now,
-            "completed_at": None,
-        }
+            now = datetime.now(UTC).isoformat()
+            execution_data = {
+                "execution_id": execution_id,
+                "agent_id": agent_id,
+                "tool_name": tool_name,
+                "args": args,
+                "status": "running",
+                "result": None,
+                "timestamp": now,
+                "started_at": now,
+                "completed_at": None,
+            }
 
-        self.tool_executions[execution_id] = execution_data
+            self.tool_executions[execution_id] = execution_data
 
-        if agent_id in self.agents:
-            self.agents[agent_id]["tool_executions"].append(execution_id)
+            if agent_id in self.agents:
+                self.agents[agent_id]["tool_executions"].append(execution_id)
 
-        return execution_id
+            return execution_id
 
     def update_tool_execution(
         self, execution_id: int, status: str, result: Any | None = None
     ) -> None:
-        if execution_id in self.tool_executions:
-            self.tool_executions[execution_id]["status"] = status
-            self.tool_executions[execution_id]["result"] = result
-            self.tool_executions[execution_id]["completed_at"] = datetime.now(UTC).isoformat()
+        with self._lock:
+            if execution_id in self.tool_executions:
+                self.tool_executions[execution_id]["status"] = status
+                self.tool_executions[execution_id]["result"] = result
+                self.tool_executions[execution_id]["completed_at"] = datetime.now(UTC).isoformat()
+        self._maybe_save_checkpoint()
 
     def update_agent_status(
         self, agent_id: str, status: str, error_message: str | None = None
     ) -> None:
-        if agent_id in self.agents:
-            agent_data = self.agents[agent_id]
-            self.agents[agent_id]["status"] = status
-            self.agents[agent_id]["updated_at"] = datetime.now(UTC).isoformat()
-            if error_message:
-                self.agents[agent_id]["error_message"] = error_message
+        with self._lock:
+            if agent_id in self.agents:
+                agent_data = self.agents[agent_id]
+                self.agents[agent_id]["status"] = status
+                self.agents[agent_id]["updated_at"] = datetime.now(UTC).isoformat()
+                if error_message:
+                    self.agents[agent_id]["error_message"] = error_message
+                if agent_data.get("parent_id") is None:
+                    if status in {"failed", "error", "sandbox_failed", "llm_failed"}:
+                        self._set_run_status("failed")
+                    elif status == "completed":
+                        self._set_run_status("completed")
+                    elif status == "stopped":
+                        self._set_run_status("stopped")
+                    elif status == "running":
+                        self._set_run_status("running")
+        self._maybe_save_checkpoint()
 
-            if agent_data.get("parent_id") is None:
-                if status in {"failed", "error", "sandbox_failed", "llm_failed"}:
-                    self._set_run_status("failed")
-                elif status == "completed":
-                    self._set_run_status("completed")
-                elif status == "stopped":
-                    self._set_run_status("stopped")
-                elif status == "running":
-                    self._set_run_status("running")
+    def touch_agent_heartbeat(
+        self, agent_id: str, phase: str, detail: str | None = None
+    ) -> None:
+        with self._lock:
+            if agent_id not in self.agents:
+                return
+
+            timestamp = datetime.now(UTC).isoformat()
+            self.agents[agent_id]["heartbeat"] = {
+                "timestamp": timestamp,
+                "phase": phase,
+                "detail": detail,
+            }
+            self.agents[agent_id]["updated_at"] = timestamp
+        self._maybe_save_checkpoint()
+
+    def get_agent_heartbeat(self, agent_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            agent_data = self.agents.get(agent_id)
+            if not agent_data:
+                return None
+
+            heartbeat = agent_data.get("heartbeat")
+            if isinstance(heartbeat, dict):
+                return dict(heartbeat)
+            return None
 
     def set_scan_config(self, config: dict[str, Any]) -> None:
-        self.scan_config = config
-        self.run_metadata.update(
-            {
-                "targets": config.get("targets", []),
-                "user_instructions": config.get("user_instructions", ""),
-                "max_iterations": config.get("max_iterations", 200),
-            }
-        )
+        with self._lock:
+            self.scan_config = config
+            self.run_metadata.update(
+                {
+                    "targets": config.get("targets", []),
+                    "user_instructions": config.get("user_instructions", ""),
+                    "max_iterations": config.get("max_iterations", 200),
+                    "scan_mode": config.get("scan_mode", ""),
+                    "model": config.get("model", ""),
+                    "estimated_cost_low": config.get("estimated_cost_low"),
+                    "estimated_cost_mid": config.get("estimated_cost_mid"),
+                    "estimated_cost_high": config.get("estimated_cost_high"),
+                    "estimated_time_low_min": config.get("estimated_time_low_min"),
+                    "estimated_time_mid_min": config.get("estimated_time_mid_min"),
+                    "estimated_time_high_min": config.get("estimated_time_high_min"),
+                }
+            )
         self.get_run_dir()
 
     def save_run_data(self, mark_complete: bool = False) -> None:  # noqa: PLR0912, PLR0915
+        # Final saves always wait; intermediate saves skip if one is already in progress
+        acquired = self._save_lock.acquire(blocking=mark_complete)
+        if not acquired:
+            return
         try:
             run_dir = self.get_run_dir()
             if mark_complete:
                 self.end_time = datetime.now(UTC).isoformat()
+                self.run_metadata["end_time"] = self.end_time
+                if self.run_metadata.get("status") == "running":
+                    self.run_metadata["status"] = "completed"
+
+            # Save full checkpoint
+            self.save_checkpoint(run_dir / "checkpoint.json")
 
             if self.final_scan_result:
                 penetration_test_report_file = run_dir / "penetration_test_report.md"
@@ -438,6 +544,135 @@ class Tracer:
 
         except (OSError, RuntimeError):
             logger.exception("Failed to save scan data")
+        finally:
+            self._save_lock.release()
+
+    def _build_checkpoint_data(self) -> dict[str, Any]:
+        from esprit.tools.agents_graph.agents_graph_actions import _agent_instances
+
+        with self._lock:
+            data = {
+                "run_id": self.run_id,
+                "run_name": self.run_name,
+                "start_time": self.start_time,
+                "end_time": self.end_time,
+                "agents": copy.deepcopy(self.agents),
+                "tool_executions": copy.deepcopy(self.tool_executions),
+                "chat_messages": copy.deepcopy(self.chat_messages),
+                "vulnerability_reports": copy.deepcopy(self.vulnerability_reports),
+                "scan_results": copy.deepcopy(self.scan_results),
+                "scan_config": copy.deepcopy(self.scan_config),
+                "run_metadata": copy.deepcopy(self.run_metadata),
+                "next_execution_id": self._next_execution_id,
+                "next_message_id": self._next_message_id,
+                "agent_states": {},
+            }
+
+        # Snapshot agent registry first; it can change while agents spawn/exit.
+        agent_items = list(_agent_instances.items())
+        for agent_id, agent in agent_items:
+            if not hasattr(agent, "state"):
+                continue
+            try:
+                data["agent_states"][agent_id] = copy.deepcopy(agent.state.model_dump())
+            except Exception:  # noqa: BLE001
+                logger.debug(
+                    "Skipping checkpoint serialization for agent state %s",
+                    agent_id,
+                    exc_info=True,
+                )
+
+        return data
+
+    def save_checkpoint(self, filepath: Path) -> None:
+        """Saves the full state of the tracer and agents to a JSON file."""
+        import json
+
+        data = self._build_checkpoint_data()
+        tmp_path = filepath.with_suffix(f"{filepath.suffix}.tmp")
+
+        with tmp_path.open("w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, default=str)
+
+        tmp_path.replace(filepath)
+        logger.info(f"Checkpoint saved to {filepath}")
+
+    def _maybe_save_checkpoint(self) -> None:
+        if self._run_dir is None:
+            return
+
+        now = time.monotonic()
+        if (
+            self._last_checkpoint_save_monotonic > 0
+            and now - self._last_checkpoint_save_monotonic < self._checkpoint_save_interval_s
+        ):
+            return
+
+        acquired = self._save_lock.acquire(blocking=False)
+        if not acquired:
+            return
+
+        try:
+            run_dir = self.get_run_dir()
+            self.save_checkpoint(run_dir / "checkpoint.json")
+            self._last_checkpoint_save_monotonic = now
+        except Exception:
+            logger.exception("Failed to write periodic checkpoint")
+        finally:
+            self._save_lock.release()
+
+    @classmethod
+    def load_from_dir(cls, run_dir: "Path | str") -> "Tracer | None":
+        """Load a Tracer from a saved run directory.
+
+        Looks for ``checkpoint.json`` inside *run_dir* and delegates to
+        :meth:`load_checkpoint`.  Returns ``None`` when the checkpoint file is
+        absent or cannot be parsed, so callers can distinguish "run not found"
+        from a hard error without catching exceptions themselves.
+        """
+        checkpoint_path = Path(run_dir) / "checkpoint.json"
+        if not checkpoint_path.exists():
+            return None
+        try:
+            tracer = cls.load_checkpoint(checkpoint_path)
+            tracer._run_dir = Path(run_dir)
+            return tracer
+        except Exception as exc:
+            logger.warning("Failed to load tracer from %s: %s", run_dir, exc)
+            return None
+
+    @classmethod
+    def load_checkpoint(cls, filepath: Path) -> "Tracer":
+        """Loads a tracer from a checkpoint JSON file."""
+        import json
+
+        with filepath.open("r", encoding="utf-8") as f:
+            data = json.load(f)
+
+        tracer = cls(run_name=data.get("run_name"))
+        tracer.run_id = data.get("run_id", tracer.run_id)
+        tracer.start_time = data.get("start_time", tracer.start_time)
+        tracer.end_time = data.get("end_time")
+
+        tracer.agents = data.get("agents", {})
+        # Convert keys back to int for tool_executions
+        tracer.tool_executions = {int(k): v for k, v in data.get("tool_executions", {}).items()}
+        tracer.chat_messages = data.get("chat_messages", [])
+        tracer.vulnerability_reports = data.get("vulnerability_reports", [])
+        tracer.scan_results = data.get("scan_results")
+        tracer.scan_config = data.get("scan_config")
+        tracer.run_metadata = data.get("run_metadata", tracer.run_metadata)
+        tracer._next_execution_id = data.get("next_execution_id", 1)
+        tracer._next_message_id = data.get("next_message_id", 1)
+
+        # Restore saved vuln IDs to prevent duplication
+        tracer._saved_vuln_ids = {r["id"] for r in tracer.vulnerability_reports}
+
+        # Note: Agent states need to be rehydrated by the caller/runtime
+        # We store them in a temporary attribute for the runtime to access
+        tracer._loaded_agent_states = data.get("agent_states", {})
+
+        return tracer
 
     def _calculate_duration(self) -> float:
         try:
@@ -520,7 +755,11 @@ class Tracer:
                     "requests": int(agent_stats.requests),
                 }
 
-                last = getattr(agent_stats, "last_input_tokens", 0)
+                last_raw = getattr(agent_stats, "last_input_tokens", 0)
+                try:
+                    last = int(last_raw)
+                except (TypeError, ValueError):
+                    last = 0
                 if last > max_context:
                     max_context = last
 
@@ -557,6 +796,15 @@ class Tracer:
 
     def get_streaming_content(self, agent_id: str) -> str | None:
         return self.streaming_content.get(agent_id)
+
+    def update_streaming_thinking(self, agent_id: str, thinking: str) -> None:
+        self.streaming_thinking[agent_id] = thinking
+
+    def clear_streaming_thinking(self, agent_id: str) -> None:
+        self.streaming_thinking.pop(agent_id, None)
+
+    def get_streaming_thinking(self, agent_id: str) -> str | None:
+        return self.streaming_thinking.get(agent_id)
 
     def finalize_streaming_as_interrupted(self, agent_id: str) -> str | None:
         content = self.streaming_content.pop(agent_id, None)

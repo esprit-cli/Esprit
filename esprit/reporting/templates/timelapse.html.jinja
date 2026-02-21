@@ -1,0 +1,301 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Esprit Scan Timelapse - {{ run_id }}</title>
+    <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js"></script>
+    <link href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css" rel="stylesheet" />
+    <style>
+        body {
+            background-color: #0d1117;
+            color: #c9d1d9;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            margin: 0;
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+            overflow: hidden;
+        }
+        #header {
+            padding: 10px 20px;
+            background-color: #161b22;
+            border-bottom: 1px solid #30363d;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        #terminal-container {
+            flex: 1;
+            padding: 20px;
+            overflow: hidden;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            background: #000;
+        }
+        #controls {
+            padding: 15px 20px;
+            background-color: #161b22;
+            border-top: 1px solid #30363d;
+            display: flex;
+            gap: 15px;
+            align-items: center;
+        }
+        button {
+            background-color: #238636;
+            color: white;
+            border: none;
+            padding: 6px 12px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-weight: 600;
+        }
+        button:hover { background-color: #2ea043; }
+        button.secondary { background-color: #21262d; border: 1px solid #30363d; }
+        button.secondary:hover { background-color: #30363d; }
+
+        input[type="range"] {
+            flex: 1;
+            accent-color: #238636;
+        }
+
+        #status-bar {
+            font-family: monospace;
+            font-size: 14px;
+            color: #8b949e;
+        }
+
+        .event-log {
+            position: absolute;
+            right: 0;
+            top: 60px;
+            bottom: 70px;
+            width: 300px;
+            background: #0d1117;
+            border-left: 1px solid #30363d;
+            overflow-y: auto;
+            padding: 10px;
+            font-family: monospace;
+            font-size: 12px;
+        }
+        .event-item {
+            padding: 8px;
+            border-bottom: 1px solid #21262d;
+            cursor: pointer;
+        }
+        .event-item:hover { background: #161b22; }
+        .event-item.active { background: #1f6feb; color: white; }
+        .event-time { color: #8b949e; font-size: 10px; }
+        .event-type { font-weight: bold; margin-bottom: 4px; }
+        .type-message { color: #58a6ff; }
+        .type-tool_start { color: #d2a8ff; }
+        .type-vulnerability { color: #ff7b72; }
+
+    </style>
+</head>
+<body>
+    <div id="header">
+        <h2 style="margin:0">Esprit Timelapse: {{ run_id }}</h2>
+        <div id="timestamp">00:00:00</div>
+    </div>
+
+    <div style="display: flex; flex: 1; overflow: hidden; position: relative;">
+        <div id="terminal-container">
+            <div id="terminal"></div>
+        </div>
+        <div class="event-log" id="eventLog"></div>
+    </div>
+
+    <div id="controls">
+        <button id="playPause">Play</button>
+        <button class="secondary" id="speedBtn">1x</button>
+        <input type="range" id="timeline" min="0" max="100" value="0" step="0.1">
+        <div id="status-bar">Initialize...</div>
+    </div>
+
+    <script>
+        const events = {{ events_json | safe }};
+        const term = new Terminal({
+            fontFamily: 'Menlo, Monaco, "Courier New", monospace',
+            fontSize: 14,
+            theme: {
+                background: '#000000',
+                foreground: '#c9d1d9',
+                cursor: '#58a6ff'
+            },
+            convertEol: true,
+            rows: 30,
+            cols: 100
+        });
+
+        term.open(document.getElementById('terminal'));
+
+        let isPlaying = false;
+        let currentTime = 0;
+        let speed = 1;
+        let animationFrame;
+        let lastRealTime = 0;
+        let currentIndex = 0;
+
+        if (events.length === 0) {
+            document.getElementById('status-bar').innerText = "No events to replay.";
+        } else {
+            const startTime = new Date(events[0].timestamp).getTime();
+            const endTime = new Date(events[events.length - 1].timestamp).getTime();
+            const duration = endTime - startTime;
+
+            // Normalize timestamps to relative ms
+            events.forEach(e => {
+                e.relativeTime = new Date(e.timestamp).getTime() - startTime;
+            });
+
+            document.getElementById('timeline').max = duration;
+
+            function renderEvent(event) {
+                const timeStr = new Date(event.timestamp).toLocaleTimeString();
+                let output = `\r\n\x1b[2m[${timeStr}]\x1b[0m `;
+
+                if (event.type === 'message') {
+                    const role = event.data.role === 'user' ? '\x1b[32mUser\x1b[0m' : '\x1b[34mAgent\x1b[0m';
+                    output += `${role}: ${event.data.content.substring(0, 100).replace(/\n/g, ' ')}...`;
+                    term.writeln(output);
+                } else if (event.type === 'tool_start') {
+                    output += `\x1b[35mTool Call\x1b[0m: ${event.data.tool_name}`;
+                    term.writeln(output);
+                    term.writeln(`\x1b[90m${JSON.stringify(event.data.args).substring(0, 80)}...\x1b[0m`);
+                } else if (event.type === 'vulnerability') {
+                    output += `\x1b[31mVULNERABILITY FOUND\x1b[0m: ${event.data.title}`;
+                    term.writeln(output);
+                    term.writeln(`\x1b[31mSeverity: ${event.data.severity}\x1b[0m`);
+                }
+
+                // Highlight in list
+                document.querySelectorAll('.event-item').forEach(el => el.classList.remove('active'));
+                const listEl = document.getElementById(`evt-${event.relativeTime}`);
+                if(listEl) {
+                    listEl.classList.add('active');
+                    listEl.scrollIntoView({block: 'nearest', behavior: 'smooth'});
+                }
+            }
+
+            // Populate Event Log using DOM methods for safety
+            const logContainer = document.getElementById('eventLog');
+            events.forEach((e, idx) => {
+                const el = document.createElement('div');
+                el.className = 'event-item';
+                el.id = `evt-${e.relativeTime}`;
+
+                const timeEl = document.createElement('div');
+                timeEl.className = 'event-time';
+                timeEl.textContent = new Date(e.timestamp).toLocaleTimeString();
+                el.appendChild(timeEl);
+
+                const typeEl = document.createElement('div');
+                typeEl.className = `event-type type-${e.type}`;
+                typeEl.textContent = e.type;
+                el.appendChild(typeEl);
+
+                const contentEl = document.createElement('div');
+                contentEl.style.whiteSpace = 'nowrap';
+                contentEl.style.overflow = 'hidden';
+                contentEl.style.textOverflow = 'ellipsis';
+
+                let contentText = '';
+                if (e.type === 'message') {
+                    contentText = e.data.role;
+                } else if (e.type === 'tool_start') {
+                    contentText = e.data.tool_name;
+                } else if (e.type === 'vulnerability') {
+                    contentText = e.data.title;
+                } else {
+                    contentText = 'Unknown event';
+                }
+                contentEl.textContent = contentText;
+                el.appendChild(contentEl);
+
+                el.onclick = () => {
+                    currentTime = e.relativeTime;
+                    syncState();
+                };
+                logContainer.appendChild(el);
+            });
+
+            function syncState() {
+                // Determine current index based on currentTime
+                term.clear();
+                currentIndex = 0;
+
+                for (let i = 0; i < events.length; i++) {
+                    if (events[i].relativeTime <= currentTime) {
+                        renderEvent(events[i]);
+                        currentIndex = i + 1;
+                    } else {
+                        break;
+                    }
+                }
+
+                document.getElementById('timeline').value = currentTime;
+                document.getElementById('timestamp').innerText = new Date(currentTime).toISOString().substr(11, 8);
+                document.getElementById('status-bar').innerText = `Event ${currentIndex} of ${events.length}`;
+            }
+
+            function tick(timestamp) {
+                if (!isPlaying) return;
+
+                if (!lastRealTime) lastRealTime = timestamp;
+                const delta = timestamp - lastRealTime;
+                lastRealTime = timestamp;
+
+                currentTime += delta * speed;
+
+                if (currentTime > duration) {
+                    currentTime = duration;
+                    isPlaying = false;
+                    document.getElementById('playPause').innerText = "Play";
+                    syncState();
+                    return;
+                }
+
+                // Check if we need to render new events
+                while(currentIndex < events.length && events[currentIndex].relativeTime <= currentTime) {
+                    renderEvent(events[currentIndex]);
+                    currentIndex++;
+                }
+
+                document.getElementById('timeline').value = currentTime;
+                document.getElementById('timestamp').innerText = new Date(currentTime).toISOString().substr(11, 8);
+                document.getElementById('status-bar').innerText = `Event ${currentIndex} of ${events.length}`;
+
+                animationFrame = requestAnimationFrame(tick);
+            }
+
+            document.getElementById('playPause').onclick = () => {
+                isPlaying = !isPlaying;
+                document.getElementById('playPause').innerText = isPlaying ? "Pause" : "Play";
+                if (isPlaying) {
+                    lastRealTime = 0;
+                    animationFrame = requestAnimationFrame(tick);
+                } else {
+                    cancelAnimationFrame(animationFrame);
+                }
+            };
+
+            document.getElementById('speedBtn').onclick = () => {
+                const speeds = [1, 2, 5, 10, 20];
+                const idx = speeds.indexOf(speed);
+                speed = speeds[(idx + 1) % speeds.length];
+                document.getElementById('speedBtn').innerText = `${speed}x`;
+            };
+
+            document.getElementById('timeline').oninput = (e) => {
+                currentTime = parseFloat(e.target.value);
+                syncState();
+            };
+
+            // Initial render
+            term.writeln('\x1b[32m--- Esprit Replay Initialized ---\x1b[0m');
+        }
+    </script>
+</body>
+</html>

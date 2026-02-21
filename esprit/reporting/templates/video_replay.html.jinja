@@ -1,0 +1,1626 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ESPRIT_LOADING</title>
+  <style>
+    /* ===== CSS VARIABLES ===== */
+    :root {
+      --bg:          #050505;
+      --bg-panel:    #160606;
+      --bg-header:   #120505;
+      --bg-terminal: #0c0303;
+      --border:      #2f0f0f;
+      --border-dim:  #2a0a0a;
+      --accent:      #22d3ee;
+      --accent-dim:  rgba(34,211,238,0.15);
+      --text:        #c9c9c9;
+      --text-dim:    #947575;
+      --text-bright: #f5f5f5;
+      --red:         #ef4444;
+      --orange:      #f97316;
+      --amber:       #eab308;
+      --green:       #22c55e;
+      --crit:        #ef4444;
+      --high:        #f97316;
+      --med:         #eab308;
+      --low:         #22c55e;
+    }
+
+    /* ===== RESET ===== */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    /* ===== BODY / STAGE ===== */
+    html, body {
+      width: 1920px;
+      height: 1080px;
+      overflow: hidden;
+      background: var(--bg);
+      font-family: 'SF Mono', 'Cascadia Code', 'JetBrains Mono', 'Fira Code', monospace;
+      color: var(--text);
+    }
+
+    /* ===== BACKGROUND LAYERS ===== */
+    #bg-stage {
+      position: fixed;
+      inset: 0;
+      z-index: 0;
+      background:
+        radial-gradient(ellipse 120% 80% at 50% 10%, rgba(34,211,238,0.04) 0%, transparent 60%),
+        radial-gradient(ellipse 80% 60% at 80% 90%, rgba(220,38,38,0.04) 0%, transparent 55%),
+        #050505;
+    }
+    #bg-glow {
+      position: fixed;
+      inset: 0;
+      z-index: 0;
+      background: radial-gradient(ellipse 60% 40% at 50% 50%, rgba(34,211,238,0.025) 0%, transparent 70%);
+      animation: bgGlowPulse 8s ease-in-out infinite;
+    }
+    @keyframes bgGlowPulse {
+      0%, 100% { opacity: 0.6; }
+      50%       { opacity: 1.0; }
+    }
+
+    /* ===== INTRO SCREEN ===== */
+    #intro-screen {
+      position: fixed;
+      inset: 0;
+      z-index: 100;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      background: #050505;
+      gap: 18px;
+    }
+    #intro-logo {
+      font-size: 72px;
+      font-weight: 700;
+      letter-spacing: 0.18em;
+      color: var(--accent);
+      text-shadow: 0 0 40px rgba(34,211,238,0.5), 0 0 80px rgba(34,211,238,0.2);
+      animation: fadeIn 1.2s ease forwards;
+    }
+    #intro-subtitle {
+      font-size: 16px;
+      letter-spacing: 0.25em;
+      color: var(--text-dim);
+      opacity: 0;
+      animation: fadeIn 0.9s ease 1.0s forwards;
+    }
+    #intro-target {
+      font-size: 13px;
+      letter-spacing: 0.1em;
+      color: var(--text-dim);
+      opacity: 0;
+      animation: fadeIn 0.9s ease 1.5s forwards;
+    }
+
+    /* ===== OUTRO SCREEN ===== */
+    #outro-screen {
+      position: fixed;
+      inset: 0;
+      z-index: 200;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      background: rgba(5,5,5,0);
+      pointer-events: none;
+      opacity: 0;
+    }
+    #outro-screen.visible {
+      animation: outroBg 1.8s ease forwards;
+    }
+    @keyframes outroBg {
+      0%   { opacity: 0; background: rgba(5,5,5,0); }
+      40%  { opacity: 1; background: rgba(5,5,5,0.85); }
+      100% { opacity: 1; background: rgba(5,5,5,0.97); }
+    }
+    #outro-card {
+      background: var(--bg-panel);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 48px 64px;
+      text-align: center;
+      transform: translateY(40px);
+      opacity: 0;
+      box-shadow: 0 0 60px rgba(34,211,238,0.12), 0 24px 80px rgba(0,0,0,0.6);
+    }
+    #outro-card.visible {
+      animation: outroCardRise 0.9s cubic-bezier(.22,1,.36,1) 0.6s forwards;
+    }
+    @keyframes outroCardRise {
+      to { transform: translateY(0); opacity: 1; }
+    }
+    #outro-esprit {
+      font-size: 48px;
+      font-weight: 700;
+      letter-spacing: 0.18em;
+      color: var(--accent);
+      text-shadow: 0 0 30px rgba(34,211,238,0.4);
+      margin-bottom: 10px;
+      opacity: 0;
+      animation: fadeIn 0.8s ease 1.8s forwards;
+    }
+    #outro-label {
+      font-size: 12px;
+      letter-spacing: 0.3em;
+      color: var(--text-dim);
+      text-transform: uppercase;
+      margin-bottom: 32px;
+      opacity: 0;
+      animation: fadeIn 0.8s ease 2.0s forwards;
+    }
+    .outro-stats {
+      display: flex;
+      gap: 40px;
+      justify-content: center;
+      opacity: 0;
+      animation: fadeIn 0.8s ease 2.2s forwards;
+    }
+    .outro-stat { text-align: center; }
+    .outro-stat-value {
+      font-size: 28px;
+      font-weight: 700;
+      color: var(--text-bright);
+    }
+    .outro-stat-label {
+      font-size: 11px;
+      letter-spacing: 0.15em;
+      color: var(--text-dim);
+      text-transform: uppercase;
+      margin-top: 4px;
+    }
+    .outro-sev-breakdown {
+      display: flex;
+      gap: 20px;
+      justify-content: center;
+      margin-top: 24px;
+      opacity: 0;
+      animation: fadeIn 0.8s ease 2.6s forwards;
+    }
+    .sev-count {
+      font-size: 13px;
+      font-weight: 700;
+      padding: 4px 12px;
+      border-radius: 4px;
+      letter-spacing: 0.05em;
+    }
+    .sev-count.crit { background: rgba(239,68,68,0.15); color: #ef4444; border: 1px solid rgba(239,68,68,0.4); }
+    .sev-count.high { background: rgba(249,115,22,0.15); color: #f97316; border: 1px solid rgba(249,115,22,0.4); }
+    .sev-count.med  { background: rgba(234,179,8,0.15);  color: #eab308; border: 1px solid rgba(234,179,8,0.4); }
+    .sev-count.low  { background: rgba(34,197,94,0.15);  color: #22c55e; border: 1px solid rgba(34,197,94,0.4); }
+
+    /* ===== MACINTOSH WINDOW WRAPPER ===== */
+    #window-wrap {
+      position: fixed;
+      inset: 40px;
+      z-index: 10;
+      opacity: 0;
+      transform: translateY(-60px);
+      border-radius: 12px;
+      box-shadow:
+        0 0 0 1px rgba(34,211,238,0.25),
+        0 0 30px rgba(34,211,238,0.12),
+        0 0 80px rgba(34,211,238,0.05),
+        0 40px 120px rgba(0,0,0,0.8);
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+    }
+    #window-wrap.visible {
+      animation: windowDrop 0.8s cubic-bezier(.22,1,.36,1) forwards;
+    }
+    @keyframes windowDrop {
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    /* ===== TITLE BAR ===== */
+    #title-bar {
+      flex-shrink: 0;
+      height: 38px;
+      background: linear-gradient(180deg, #1e0808 0%, #160606 100%);
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      padding: 0 16px;
+      gap: 12px;
+      user-select: none;
+    }
+    .traffic-lights { display: flex; gap: 8px; align-items: center; }
+    .tl-dot {
+      width: 12px; height: 12px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+    .tl-red    { background: #ff5f57; box-shadow: 0 0 4px rgba(255,95,87,0.5); }
+    .tl-yellow { background: #febc2e; box-shadow: 0 0 4px rgba(254,188,46,0.4); }
+    .tl-green  { background: #28c840; box-shadow: 0 0 4px rgba(40,200,64,0.4); }
+    #title-bar-label {
+      flex: 1;
+      text-align: center;
+      font-size: 12px;
+      letter-spacing: 0.12em;
+      color: var(--text-dim);
+      position: absolute;
+      left: 50%;
+      transform: translateX(-50%);
+    }
+
+    /* ===== HEADER ===== */
+    #app-header {
+      flex-shrink: 0;
+      height: 52px;
+      background: var(--bg-header);
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      padding: 0 20px;
+      gap: 20px;
+    }
+    #header-logo {
+      font-size: 18px;
+      font-weight: 700;
+      letter-spacing: 0.2em;
+      color: var(--accent);
+      text-shadow: 0 0 16px rgba(34,211,238,0.4);
+      flex-shrink: 0;
+    }
+    #header-target {
+      font-size: 12px;
+      color: var(--text-dim);
+      letter-spacing: 0.06em;
+      flex: 1;
+    }
+    #header-stats {
+      display: flex;
+      gap: 12px;
+      align-items: center;
+    }
+    .stat-card {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      background: var(--bg-panel);
+      border: 1px solid var(--border-dim);
+      border-radius: 6px;
+      padding: 5px 10px;
+      min-width: 70px;
+    }
+    .stat-icon { font-size: 10px; color: var(--text-dim); }
+    .stat-value {
+      font-size: 14px;
+      font-weight: 700;
+      color: var(--text-bright);
+    }
+    .stat-label {
+      font-size: 9px;
+      letter-spacing: 0.1em;
+      color: var(--text-dim);
+      text-transform: uppercase;
+    }
+
+    /* ===== MAIN 3-PANEL LAYOUT ===== */
+    #main-panels {
+      flex: 1;
+      display: flex;
+      overflow: hidden;
+    }
+
+    /* ===== LEFT PANEL — AGENTS ===== */
+    #agents-panel {
+      width: 220px;
+      flex-shrink: 0;
+      background: var(--bg-panel);
+      border-right: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    .panel-header {
+      flex-shrink: 0;
+      height: 34px;
+      padding: 0 14px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 10px;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: var(--text-dim);
+      border-bottom: 1px solid var(--border-dim);
+      background: rgba(22,6,6,0.6);
+    }
+    .panel-dot {
+      width: 6px; height: 6px;
+      border-radius: 50%;
+      background: var(--accent);
+      box-shadow: 0 0 6px var(--accent);
+      flex-shrink: 0;
+    }
+    #agents-list {
+      flex: 1;
+      overflow-y: auto;
+      padding: 8px 0;
+    }
+    #agents-list::-webkit-scrollbar { width: 3px; }
+    #agents-list::-webkit-scrollbar-track { background: transparent; }
+    #agents-list::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+    .agent-item {
+      display: flex;
+      flex-direction: column;
+      padding: 8px 14px;
+      border-bottom: 1px solid rgba(47,15,15,0.4);
+      opacity: 0;
+      transform: translateX(-16px);
+      animation: agentSlideIn 0.5s cubic-bezier(.22,1,.36,1) forwards;
+    }
+    @keyframes agentSlideIn {
+      to { opacity: 1; transform: translateX(0); }
+    }
+    .agent-name {
+      font-size: 12px;
+      color: var(--accent);
+      font-weight: 600;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .agent-name::before {
+      content: '▸';
+      font-size: 8px;
+      color: var(--text-dim);
+    }
+    .agent-task {
+      font-size: 10px;
+      color: var(--text-dim);
+      margin-top: 3px;
+      padding-left: 14px;
+      line-height: 1.4;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .agent-status-dot {
+      width: 5px; height: 5px;
+      border-radius: 50%;
+      background: var(--green);
+      box-shadow: 0 0 5px var(--green);
+      display: inline-block;
+      margin-left: auto;
+      flex-shrink: 0;
+    }
+
+    /* ===== CENTER PANEL — TERMINAL ===== */
+    #terminal-panel {
+      flex: 1;
+      background: var(--bg-terminal);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    #ops-strip {
+      flex-shrink: 0;
+      height: 220px;
+      padding: 10px 14px 8px;
+      display: flex;
+      gap: 10px;
+      border-bottom: 1px solid var(--border-dim);
+      background:
+        linear-gradient(180deg, rgba(22,6,6,0.75) 0%, rgba(12,3,3,0.45) 100%),
+        radial-gradient(circle at 20% 10%, rgba(34,211,238,0.08), transparent 50%);
+    }
+    .mini-window {
+      flex: 1;
+      min-width: 0;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: rgba(10, 2, 2, 0.85);
+      overflow: hidden;
+      box-shadow: inset 0 0 0 1px rgba(34,211,238,0.05);
+    }
+    .mini-window-header {
+      height: 28px;
+      padding: 0 10px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-bottom: 1px solid var(--border-dim);
+      background: linear-gradient(180deg, rgba(22,6,6,0.95) 0%, rgba(14,4,4,0.8) 100%);
+      gap: 8px;
+    }
+    .mini-window-title {
+      font-size: 10px;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--accent);
+      font-weight: 700;
+      white-space: nowrap;
+    }
+    .mini-window-subtitle {
+      font-size: 9px;
+      color: var(--text-dim);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      text-align: right;
+      letter-spacing: 0.04em;
+      flex: 1;
+    }
+    .mini-window-body {
+      height: calc(100% - 28px);
+      padding: 8px 10px;
+      overflow: hidden;
+      position: relative;
+    }
+    #mini-terminal-lines,
+    #mini-browser-actions,
+    #mini-ai-feed {
+      display: flex;
+      flex-direction: column;
+      gap: 5px;
+      max-height: 100%;
+      overflow: hidden;
+    }
+    .mini-placeholder {
+      font-size: 11px;
+      color: var(--text-dim);
+      opacity: 0.75;
+      font-style: italic;
+    }
+    .mini-line {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 10px;
+      color: #b8d7df;
+      line-height: 1.35;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      opacity: 0;
+      transform: translateY(4px);
+      animation: fadeInUp 0.28s ease forwards;
+    }
+    .mini-line.command .mini-line-value { color: #8ce6f5; }
+    .mini-line.response .mini-line-value { color: #c7c3d7; }
+    .mini-line.error .mini-line-value { color: #fca5a5; }
+    .mini-line.success .mini-line-value { color: #86efac; }
+    .mini-prefix {
+      color: var(--accent);
+      font-weight: 700;
+      flex-shrink: 0;
+    }
+    .mini-line-label {
+      color: #89aeb8;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      font-size: 9px;
+      flex-shrink: 0;
+    }
+    .mini-line-value {
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    #mini-browser-meta {
+      font-size: 10px;
+      color: var(--text-dim);
+      margin-bottom: 6px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    #mini-browser-stage {
+      position: relative;
+      height: 86px;
+      border: 1px solid var(--border-dim);
+      border-radius: 6px;
+      overflow: hidden;
+      margin-bottom: 7px;
+      background:
+        linear-gradient(180deg, rgba(2,6,12,0.84), rgba(8,12,20,0.95)),
+        radial-gradient(circle at 20% 15%, rgba(34,211,238,0.14), transparent 55%);
+    }
+    #mini-browser-shot {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      display: none;
+      filter: contrast(1.02) saturate(1.08);
+    }
+    #mini-browser-empty {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #7aa9b4;
+      font-size: 10px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      opacity: 0.85;
+    }
+    #mini-browser-click {
+      position: absolute;
+      width: 14px;
+      height: 14px;
+      border-radius: 999px;
+      border: 2px solid #f59e0b;
+      background: rgba(245, 158, 11, 0.24);
+      box-shadow: 0 0 12px rgba(245, 158, 11, 0.55);
+      pointer-events: none;
+      opacity: 0;
+      transform: translate(-50%, -50%) scale(0.9);
+    }
+    #mini-browser-click.active {
+      animation: clickPulse 0.7s ease-out forwards;
+    }
+    @keyframes clickPulse {
+      0%   { opacity: 0.95; transform: translate(-50%, -50%) scale(0.35); }
+      70%  { opacity: 0.85; transform: translate(-50%, -50%) scale(1.15); }
+      100% { opacity: 0; transform: translate(-50%, -50%) scale(1.45); }
+    }
+    .mini-browser-urlbar {
+      position: absolute;
+      left: 8px;
+      right: 8px;
+      bottom: 6px;
+      font-size: 9px;
+      color: #d1f7ff;
+      background: rgba(3, 10, 20, 0.74);
+      border: 1px solid rgba(125, 211, 252, 0.24);
+      border-radius: 4px;
+      padding: 2px 6px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      backdrop-filter: blur(2px);
+    }
+    #mini-ai-window .mini-window-body {
+      display: grid;
+      grid-template-rows: auto 1fr;
+      gap: 7px;
+    }
+    #mini-ai-tasks {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+      align-content: flex-start;
+      max-height: 46px;
+      overflow: hidden;
+    }
+    .ai-task-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      font-size: 9px;
+      color: #a5f3fc;
+      border: 1px solid rgba(34,211,238,0.28);
+      background: rgba(34,211,238,0.08);
+      border-radius: 999px;
+      padding: 2px 7px;
+      letter-spacing: 0.05em;
+    }
+    .ai-task-chip::before {
+      content: '';
+      width: 5px;
+      height: 5px;
+      border-radius: 50%;
+      background: #22d3ee;
+      box-shadow: 0 0 6px rgba(34,211,238,0.7);
+      flex-shrink: 0;
+    }
+    .ai-bubble {
+      border: 1px solid rgba(168, 85, 247, 0.25);
+      background: linear-gradient(180deg, rgba(67, 16, 85, 0.32), rgba(22, 6, 38, 0.28));
+      color: #e9d5ff;
+      border-radius: 7px;
+      padding: 6px 7px;
+      font-size: 9px;
+      line-height: 1.35;
+      opacity: 0;
+      transform: translateY(4px);
+      animation: fadeInUp 0.3s ease forwards;
+    }
+    .ai-bubble.think {
+      border-color: rgba(217, 119, 6, 0.28);
+      background: linear-gradient(180deg, rgba(120, 53, 15, 0.24), rgba(59, 22, 6, 0.2));
+      color: #fde68a;
+    }
+    .ai-bubble.done {
+      border-color: rgba(34, 197, 94, 0.28);
+      background: linear-gradient(180deg, rgba(20, 83, 45, 0.26), rgba(8, 33, 20, 0.24));
+      color: #bbf7d0;
+    }
+    .ai-bubble.fail {
+      border-color: rgba(239, 68, 68, 0.35);
+      background: linear-gradient(180deg, rgba(127, 29, 29, 0.3), rgba(60, 10, 10, 0.2));
+      color: #fecaca;
+    }
+    #terminal-feed {
+      flex: 1;
+      overflow-y: auto;
+      padding: 12px 16px;
+      font-size: 12px;
+      line-height: 1.65;
+    }
+    #terminal-feed::-webkit-scrollbar { width: 3px; }
+    #terminal-feed::-webkit-scrollbar-track { background: transparent; }
+    #terminal-feed::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+    .term-line {
+      display: flex;
+      gap: 10px;
+      align-items: flex-start;
+      padding: 2px 0;
+      opacity: 0;
+      animation: termFadeIn 0.3s ease forwards;
+    }
+    @keyframes termFadeIn {
+      from { opacity: 0; transform: translateY(3px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+    .term-prefix { color: var(--accent); flex-shrink: 0; }
+    .term-tool   { color: var(--text-dim); flex-shrink: 0; min-width: 120px; }
+    .term-args   { color: var(--text); word-break: break-word; white-space: pre-wrap; flex: 1; }
+    .term-line.msg .term-prefix { color: var(--text-dim); }
+    .term-line.msg .term-args   { color: var(--text-dim); font-style: italic; }
+    .term-line.response .term-prefix { color: #a78bfa; }
+    .term-line.response .term-tool { color: #93c5fd; }
+    .term-line.response .term-args { color: #c7c3d7; }
+    .term-line.response.success .term-args { color: #86efac; }
+    .term-line.response.error .term-args { color: #fca5a5; }
+
+    #terminal-cursor {
+      display: inline-block;
+      width: 8px; height: 14px;
+      background: var(--accent);
+      margin-left: 4px;
+      vertical-align: text-bottom;
+      animation: blink 1s step-end infinite;
+    }
+    @keyframes blink {
+      0%, 100% { opacity: 1; }
+      50%       { opacity: 0; }
+    }
+
+    /* ===== RIGHT PANEL — VULNERABILITIES ===== */
+    #vulns-panel {
+      width: 280px;
+      flex-shrink: 0;
+      background: var(--bg-panel);
+      border-left: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    #vulns-list {
+      flex: 1;
+      overflow-y: auto;
+      padding: 8px;
+    }
+    #vulns-list::-webkit-scrollbar { width: 3px; }
+    #vulns-list::-webkit-scrollbar-track { background: transparent; }
+    #vulns-list::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+    .vuln-card {
+      position: relative;
+      background: rgba(22,6,6,0.8);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 10px 12px;
+      margin-bottom: 8px;
+      opacity: 0;
+      transform: translateX(20px) scale(0.96);
+      animation: vulnSlamIn 0.45s cubic-bezier(.22,1,.36,1) forwards;
+      overflow: hidden;
+    }
+    @keyframes vulnSlamIn {
+      to { opacity: 1; transform: translateX(0) scale(1); }
+    }
+    .vuln-card.critical { border-color: rgba(239,68,68,0.5); }
+    .vuln-card.high     { border-color: rgba(249,115,22,0.4); }
+    .vuln-card.medium   { border-color: rgba(234,179,8,0.35); }
+    .vuln-card.low      { border-color: rgba(34,197,94,0.3); }
+
+    .vuln-severity {
+      display: inline-block;
+      font-size: 9px;
+      font-weight: 700;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      padding: 2px 7px;
+      border-radius: 3px;
+      margin-bottom: 6px;
+    }
+    .sev-critical { background: rgba(239,68,68,0.2);  color: #ef4444; }
+    .sev-high     { background: rgba(249,115,22,0.2); color: #f97316; }
+    .sev-medium   { background: rgba(234,179,8,0.2);  color: #eab308; }
+    .sev-low      { background: rgba(34,197,94,0.2);  color: #22c55e; }
+
+    .vuln-title {
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text-bright);
+      line-height: 1.3;
+      margin-bottom: 4px;
+    }
+    .vuln-endpoint {
+      font-size: 10px;
+      color: var(--text-dim);
+      word-break: break-all;
+    }
+    .vuln-cvss {
+      position: absolute;
+      top: 10px;
+      right: 12px;
+      font-size: 11px;
+      font-weight: 700;
+    }
+
+    /* ===== SHOCKWAVE RING ===== */
+    .shockwave-ring {
+      position: absolute;
+      inset: 0;
+      border: 2px solid currentColor;
+      border-radius: 6px;
+      animation: shockwave 0.6s ease-out forwards;
+      pointer-events: none;
+    }
+    @keyframes shockwave {
+      0%   { transform: scale(1);   opacity: 0.6; }
+      100% { transform: scale(2.5); opacity: 0; }
+    }
+
+    /* ===== CRITICAL VIGNETTE — subtle dim only for critical ===== */
+    #crit-flash {
+      position: fixed;
+      inset: 0;
+      z-index: 50;
+      background: rgba(239,68,68,0);
+      pointer-events: none;
+      transition: background 0.15s ease;
+    }
+    #crit-flash.active {
+      background: rgba(239,68,68,0.06);
+    }
+
+    /* ===== SEVERITY SUMMARY BAR ===== */
+    #sev-bar {
+      flex-shrink: 0;
+      height: 32px;
+      background: rgba(22,6,6,0.6);
+      border-top: 1px solid var(--border-dim);
+      display: flex;
+      align-items: center;
+      padding: 0 10px;
+      gap: 14px;
+    }
+    .sev-count {
+      font-size: 11px;
+      display: flex;
+      gap: 5px;
+      align-items: center;
+    }
+    .sev-count span { font-weight: 700; }
+    .sev-crit { color: var(--crit); }
+    .sev-high { color: var(--high); }
+    .sev-med  { color: var(--med); }
+    .sev-low  { color: var(--low); }
+
+    /* ===== SHARED ANIMATIONS ===== */
+    @keyframes fadeIn {
+      from { opacity: 0; }
+      to   { opacity: 1; }
+    }
+    @keyframes fadeInUp {
+      from { opacity: 0; transform: translateY(12px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+  </style>
+</head>
+<body>
+
+<!-- Background layers -->
+<div id="bg-stage"></div>
+<div id="bg-glow"></div>
+
+<!-- Critical vignette dim (no flash) -->
+<div id="crit-flash"></div>
+
+<!-- ===== INTRO SCREEN ===== -->
+<div id="intro-screen">
+  <div id="intro-logo">ESPRIT</div>
+  <div id="intro-subtitle">AI SECURITY SCANNER</div>
+  <div id="intro-target">&#8203;</div>
+</div>
+
+<!-- ===== OUTRO SCREEN ===== -->
+<div id="outro-screen">
+  <div id="outro-card">
+    <div id="outro-esprit">ESPRIT</div>
+    <div id="outro-label">Scan Complete</div>
+    <div class="outro-stats">
+      <div class="outro-stat">
+        <div class="outro-stat-value" id="outro-duration">--</div>
+        <div class="outro-stat-label">Duration</div>
+      </div>
+      <div class="outro-stat">
+        <div class="outro-stat-value" id="outro-tools">--</div>
+        <div class="outro-stat-label">Tools Run</div>
+      </div>
+      <div class="outro-stat">
+        <div class="outro-stat-value" id="outro-vulns">--</div>
+        <div class="outro-stat-label">Vulnerabilities</div>
+      </div>
+    </div>
+    <div class="outro-sev-breakdown">
+      <div class="sev-count crit">{{ severity_counts.critical }}</div>
+      <div class="sev-count high">{{ severity_counts.high }}</div>
+      <div class="sev-count med">{{ severity_counts.medium }}</div>
+      <div class="sev-count low">{{ severity_counts.low }}</div>
+    </div>
+  </div>
+</div>
+
+<!-- ===== macOS WINDOW ===== -->
+<div id="window-wrap">
+
+  <!-- Title bar with traffic lights -->
+  <div id="title-bar">
+    <div class="traffic-lights">
+      <div class="tl-dot tl-red"></div>
+      <div class="tl-dot tl-yellow"></div>
+      <div class="tl-dot tl-green"></div>
+    </div>
+    <div id="title-bar-label">&#8203;</div>
+  </div>
+
+  <!-- App header -->
+  <div id="app-header">
+    <div id="header-logo">ESPRIT</div>
+    <div id="header-target">&#8203;</div>
+    <div id="header-stats">
+      <div class="stat-card">
+        <span class="stat-icon">&#9678;</span>
+        <span class="stat-value" id="stat-agents">0</span>
+        <span class="stat-label">agents</span>
+      </div>
+      <div class="stat-card">
+        <span class="stat-icon">&#9874;</span>
+        <span class="stat-value" id="stat-tools">0</span>
+        <span class="stat-label">tools</span>
+      </div>
+      <div class="stat-card">
+        <span class="stat-icon">&#11835;</span>
+        <span class="stat-value" id="stat-tokens">0</span>
+        <span class="stat-label">tokens</span>
+      </div>
+      <div class="stat-card">
+        <span class="stat-icon">&#9719;</span>
+        <span class="stat-value" id="stat-elapsed">0:00</span>
+        <span class="stat-label">elapsed</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- 3-panel layout -->
+  <div id="main-panels">
+
+    <!-- LEFT: Agents -->
+    <div id="agents-panel">
+      <div class="panel-header">
+        <div class="panel-dot"></div>
+        Agents
+      </div>
+      <div id="agents-list"></div>
+    </div>
+
+    <!-- CENTER: Terminal -->
+    <div id="terminal-panel">
+      <div class="panel-header">
+        <div class="panel-dot"></div>
+        Terminal Feed
+      </div>
+      <div id="ops-strip">
+        <div class="mini-window">
+          <div class="mini-window-header">
+            <div class="mini-window-title">Browser Live</div>
+            <div class="mini-window-subtitle" id="mini-browser-url">about:blank</div>
+          </div>
+          <div class="mini-window-body">
+            <div id="mini-browser-stage">
+              <img id="mini-browser-shot" alt="Browser thumbnail">
+              <div id="mini-browser-empty">No browser thumbnail yet</div>
+              <div id="mini-browser-click"></div>
+              <div class="mini-browser-urlbar" id="mini-browser-stage-url">about:blank</div>
+            </div>
+            <div id="mini-browser-meta">Waiting for browser activity</div>
+            <div id="mini-browser-actions">
+              <div class="mini-placeholder" id="mini-browser-placeholder">No browser actions yet</div>
+            </div>
+          </div>
+        </div>
+        <div class="mini-window">
+          <div class="mini-window-header">
+            <div class="mini-window-title">Terminal I/O</div>
+            <div class="mini-window-subtitle">Commands + responses</div>
+          </div>
+          <div class="mini-window-body">
+            <div id="mini-terminal-lines">
+              <div class="mini-placeholder" id="mini-terminal-placeholder">No command output yet</div>
+            </div>
+          </div>
+        </div>
+        <div class="mini-window" id="mini-ai-window">
+          <div class="mini-window-header">
+            <div class="mini-window-title">AI Reasoning</div>
+            <div class="mini-window-subtitle">Live orchestration</div>
+          </div>
+          <div class="mini-window-body">
+            <div id="mini-ai-tasks"></div>
+            <div id="mini-ai-feed">
+              <div class="mini-placeholder" id="mini-ai-placeholder">No AI thoughts yet</div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div id="terminal-feed"><span id="terminal-cursor"></span></div>
+    </div>
+
+    <!-- RIGHT: Vulnerabilities -->
+    <div id="vulns-panel">
+      <div class="panel-header">
+        <div class="panel-dot"></div>
+        Vulnerabilities
+      </div>
+      <div id="vulns-list"></div>
+      <div id="sev-bar">
+        <div class="sev-count sev-crit">CRIT <span id="cnt-crit">0</span></div>
+        <div class="sev-count sev-high">HIGH <span id="cnt-high">0</span></div>
+        <div class="sev-count sev-med">MED <span id="cnt-med">0</span></div>
+        <div class="sev-count sev-low">LOW <span id="cnt-low">0</span></div>
+      </div>
+    </div>
+
+  </div><!-- /main-panels -->
+</div><!-- /window-wrap -->
+
+<script>
+/* ===================================================
+   ESPRIT — Cinematic Replay Engine
+   =================================================== */
+
+let EVENTS = [];
+try {
+  EVENTS = JSON.parse(atob("{{ events_b64 }}"));
+} catch (e) {
+  console.error('Failed to parse replay events payload', e);
+  EVENTS = [];
+}
+const SPEED  = {{ speed }};
+const RUN_NAME  = {{ run_name_json | safe }};
+const TARGET    = {{ target_json | safe }};
+const DURATION  = {{ duration_json | safe }};
+const TOOL_COUNT = {{ tool_count }};
+
+/* ── Runtime counters ──────────────────────────────── */
+let toolsRun   = 0;
+let vulnsFound = 0;
+let tokensEst  = 0;
+let elapsed    = 0;
+let elapsedTimer = null;
+const sevCounts = { critical: 0, high: 0, medium: 0, low: 0 };
+
+/* ── DOM refs ──────────────────────────────────────── */
+const elIntro      = document.getElementById('intro-screen');
+const elWindow     = document.getElementById('window-wrap');
+const elOutro      = document.getElementById('outro-screen');
+const elOutroCard  = document.getElementById('outro-card');
+const elFeed       = document.getElementById('terminal-feed');
+const elCursor     = document.getElementById('terminal-cursor');
+const elAgents     = document.getElementById('agents-list');
+const elVulns      = document.getElementById('vulns-list');
+const elTitleLabel = document.getElementById('title-bar-label');
+const elHdrTarget  = document.getElementById('header-target');
+const elStatAgents = document.getElementById('stat-agents');
+const elStatTools  = document.getElementById('stat-tools');
+const elStatTokens = document.getElementById('stat-tokens');
+const elStatElapsed= document.getElementById('stat-elapsed');
+const elCntCrit    = document.getElementById('cnt-crit');
+const elCntHigh    = document.getElementById('cnt-high');
+const elCntMed     = document.getElementById('cnt-med');
+const elCntLow     = document.getElementById('cnt-low');
+const elCritFlash  = document.getElementById('crit-flash');
+const elIntroTarget= document.getElementById('intro-target');
+const elMiniTerminalLines = document.getElementById('mini-terminal-lines');
+const elMiniTerminalPlaceholder = document.getElementById('mini-terminal-placeholder');
+const elMiniBrowserActions = document.getElementById('mini-browser-actions');
+const elMiniBrowserPlaceholder = document.getElementById('mini-browser-placeholder');
+const elMiniBrowserUrl = document.getElementById('mini-browser-url');
+const elMiniBrowserMeta = document.getElementById('mini-browser-meta');
+const elMiniBrowserShot = document.getElementById('mini-browser-shot');
+const elMiniBrowserEmpty = document.getElementById('mini-browser-empty');
+const elMiniBrowserClick = document.getElementById('mini-browser-click');
+const elMiniBrowserStageUrl = document.getElementById('mini-browser-stage-url');
+const elMiniAiTasks = document.getElementById('mini-ai-tasks');
+const elMiniAiFeed = document.getElementById('mini-ai-feed');
+const elMiniAiPlaceholder = document.getElementById('mini-ai-placeholder');
+
+const BROWSER_TOOL_NAMES = new Set([
+  'browser_action',
+  'send_request',
+  'list_requests',
+  'view_request',
+  'list_sitemap',
+  'view_sitemap',
+  'view_sitemap_entry',
+]);
+const MAX_MINI_ITEMS = 6;
+const MAX_AI_TASKS = 8;
+const toolStarts = new Map();
+
+/* ── Seed static Jinja values ──────────────────────── */
+elTitleLabel.textContent = RUN_NAME + '  \u2014  ' + TARGET;
+elHdrTarget.textContent  = '\u25B8  ' + TARGET;
+elIntroTarget.textContent = TARGET;
+document.getElementById('outro-duration').textContent = DURATION;
+document.getElementById('outro-tools').textContent    = TOOL_COUNT;
+
+/* ====================================================
+   WEB AUDIO API
+   ==================================================== */
+let audioCtx = null;
+function getAudioCtx() {
+  if (!audioCtx) {
+    try { audioCtx = new (window.AudioContext || window.webkitAudioContext)(); }
+    catch(e) { return null; }
+  }
+  return audioCtx;
+}
+
+function ping() {
+  const ctx = getAudioCtx(); if (!ctx) return;
+  const osc = ctx.createOscillator();
+  const gain = ctx.createGain();
+  osc.connect(gain); gain.connect(ctx.destination);
+  osc.type = 'sine';
+  osc.frequency.setValueAtTime(880, ctx.currentTime);
+  osc.frequency.exponentialRampToValueAtTime(440, ctx.currentTime + 0.12);
+  gain.gain.setValueAtTime(0.04, ctx.currentTime);
+  gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.14);
+  osc.start(ctx.currentTime);
+  osc.stop(ctx.currentTime + 0.15);
+}
+
+function thud() {
+  const ctx = getAudioCtx(); if (!ctx) return;
+  const osc = ctx.createOscillator();
+  const gain = ctx.createGain();
+  osc.connect(gain); gain.connect(ctx.destination);
+  osc.type = 'triangle';
+  osc.frequency.setValueAtTime(140, ctx.currentTime);
+  osc.frequency.exponentialRampToValueAtTime(55, ctx.currentTime + 0.25);
+  gain.gain.setValueAtTime(0.12, ctx.currentTime);
+  gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.3);
+  osc.start(ctx.currentTime);
+  osc.stop(ctx.currentTime + 0.32);
+}
+
+function chord() {
+  const ctx = getAudioCtx(); if (!ctx) return;
+  const freqs = [261.63, 329.63, 392.0, 523.25];
+  freqs.forEach((freq, i) => {
+    const osc  = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.connect(gain); gain.connect(ctx.destination);
+    osc.type = 'sine';
+    osc.frequency.value = freq;
+    const t = ctx.currentTime + i * 0.06;
+    gain.gain.setValueAtTime(0.0, t);
+    gain.gain.linearRampToValueAtTime(0.06, t + 0.08);
+    gain.gain.exponentialRampToValueAtTime(0.0001, t + 2.2);
+    osc.start(t);
+    osc.stop(t + 2.5);
+  });
+}
+
+let droneNode = null;
+let droneGain = null;
+function drone() {
+  const ctx = getAudioCtx(); if (!ctx) return;
+  if (droneNode) return;
+  droneNode = ctx.createOscillator();
+  droneGain = ctx.createGain();
+  droneNode.connect(droneGain); droneGain.connect(ctx.destination);
+  droneNode.type = 'sine';
+  droneNode.frequency.value = 55;
+  droneGain.gain.setValueAtTime(0.0, ctx.currentTime);
+  droneGain.gain.linearRampToValueAtTime(0.018, ctx.currentTime + 2.5);
+  droneNode.start(ctx.currentTime);
+}
+function droneFade() {
+  if (!droneGain || !audioCtx) return;
+  droneGain.gain.linearRampToValueAtTime(0.0001, audioCtx.currentTime + 2.5);
+  droneNode.stop(audioCtx.currentTime + 2.6);
+}
+
+/* ====================================================
+   STAT HELPERS
+   ==================================================== */
+function updStats() {
+  elStatTools.textContent  = toolsRun;
+  elStatAgents.textContent = elAgents.children.length;
+  elStatTokens.textContent = tokensEst > 999
+    ? (tokensEst / 1000).toFixed(1) + 'k'
+    : tokensEst;
+}
+function fmtElapsed(s) {
+  const m = Math.floor(s / 60);
+  const sec = Math.floor(s % 60);
+  return m + ':' + String(sec).padStart(2, '0');
+}
+
+/* ====================================================
+   TERMINAL HELPERS
+   ==================================================== */
+function addTerminalLine(data) {
+  const div = document.createElement('div');
+  const toolName = data.tool_name || '>';
+  const args = data.args || {};
+  const argStr = toolName === '>'
+    ? clipMultiline(args.content || '', 300, 4)
+    : shortText(formatToolCommand(toolName, args), 260);
+
+  div.className = 'term-line' + (toolName === '>' ? ' msg' : '');
+  div.innerHTML =
+    '<span class="term-prefix">$</span>' +
+    '<span class="term-tool">' + escHtml(toolName) + '</span>' +
+    '<span class="term-args">' + escHtml(argStr || '') + '</span>';
+
+  elFeed.insertBefore(div, elCursor);
+  elFeed.scrollTop = elFeed.scrollHeight;
+}
+
+function escHtml(s) {
+  return String(s)
+    .replace(/&/g,'&amp;')
+    .replace(/</g,'&lt;')
+    .replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;');
+}
+
+function shortText(value, maxLen) {
+  const text = String(value || '').replace(/\s+/g, ' ').trim();
+  if (text.length <= maxLen) return text;
+  return text.slice(0, maxLen - 1) + '…';
+}
+
+function clipMultiline(value, maxChars = 520, maxLines = 8) {
+  const raw = String(value || '').replace(/\r\n/g, '\n').trim();
+  if (!raw) return '';
+  const lines = raw.split('\n').slice(0, maxLines);
+  let joined = lines.join('\n');
+  if (joined.length > maxChars) joined = joined.slice(0, maxChars - 1) + '…';
+  return joined;
+}
+
+function pushMiniLine(container, placeholder, html, kind = '') {
+  if (!container) return;
+  if (placeholder && placeholder.parentElement) placeholder.remove();
+  const row = document.createElement('div');
+  row.className = ('mini-line ' + kind).trim();
+  row.innerHTML = html;
+  container.prepend(row);
+  while (container.children.length > MAX_MINI_ITEMS) {
+    container.removeChild(container.lastElementChild);
+  }
+}
+
+function addAiTaskChip(name) {
+  if (!elMiniAiTasks || !name) return;
+  const chip = document.createElement('span');
+  chip.className = 'ai-task-chip';
+  chip.textContent = shortText(name, 28);
+  elMiniAiTasks.prepend(chip);
+  while (elMiniAiTasks.children.length > MAX_AI_TASKS) {
+    elMiniAiTasks.removeChild(elMiniAiTasks.lastElementChild);
+  }
+}
+
+function addAiBubble(text, tone = '') {
+  if (!elMiniAiFeed || !text) return;
+  if (elMiniAiPlaceholder && elMiniAiPlaceholder.parentElement) {
+    elMiniAiPlaceholder.remove();
+  }
+  const bubble = document.createElement('div');
+  bubble.className = ('ai-bubble ' + tone).trim();
+  bubble.textContent = shortText(text, 190);
+  elMiniAiFeed.prepend(bubble);
+  while (elMiniAiFeed.children.length > MAX_MINI_ITEMS) {
+    elMiniAiFeed.removeChild(elMiniAiFeed.lastElementChild);
+  }
+}
+
+function inferBubbleTone(text, fallback = '') {
+  const v = String(text || '').toLowerCase();
+  if (!v) return fallback;
+  if (v.includes('error') || v.includes('failed') || v.includes('timeout')) return 'fail';
+  if (v.includes('done') || v.includes('completed') || v.includes('success') || v.includes('found')) return 'done';
+  if (v.includes('thinking') || v.includes('analy') || v.includes('plan') || v.includes('testing')) return 'think';
+  return fallback;
+}
+
+function formatToolCommand(toolName, args = {}) {
+  if (toolName === 'terminal_execute') {
+    return args.command || args.cmd || 'terminal_execute';
+  }
+  if (toolName === 'python_action') {
+    const action = args.action || 'run';
+    const code = shortText(args.code || '', 80);
+    return `python_${action}${code ? ': ' + code : ''}`;
+  }
+  if (toolName === 'browser_action') {
+    const action = args.action || 'action';
+    const target = args.url || args.coordinate || args.tab_id || '';
+    return `browser.${action}${target ? ' ' + target : ''}`;
+  }
+  if (toolName === 'list_requests') {
+    return `list_requests ${args.httpql_filter || ''}`.trim();
+  }
+  if (toolName === 'view_request') {
+    return `view_request #${args.request_id || '?'}`;
+  }
+  if (toolName === 'create_agent') {
+    return `create_agent ${args.name || ''}`.trim();
+  }
+  return `${toolName} ${shortText(JSON.stringify(args || {}), 90)}`.trim();
+}
+
+function updateMiniTerminalCommand(startData) {
+  const command = shortText(formatToolCommand(startData.tool_name || 'tool', startData.args || {}), 130);
+  pushMiniLine(
+    elMiniTerminalLines,
+    elMiniTerminalPlaceholder,
+    '<span class="mini-prefix">$</span><span class="mini-line-value">' + escHtml(command) + '</span>',
+    'command'
+  );
+}
+
+function updateMiniTerminalResponse(endData) {
+  const status = String(endData.status || '').toLowerCase();
+  const isError = status.includes('fail') || status.includes('error');
+  const isDone = status.includes('success') || status.includes('complete');
+  const preview = clipMultiline(endData.response_preview || endData.status || '', 260, 3);
+  if (!preview) return;
+  pushMiniLine(
+    elMiniTerminalLines,
+    elMiniTerminalPlaceholder,
+    '<span class="mini-line-label">' + escHtml((endData.tool_name || 'result').replaceAll('_', ' ')) + '</span>' +
+    '<span class="mini-line-value">' + escHtml(shortText(preview, 170)) + '</span>',
+    isError ? 'error' : (isDone ? 'success' : 'response')
+  );
+}
+
+function addTerminalResponseLine(endData) {
+  const preview = clipMultiline(endData.response_preview || '', 560, 8);
+  if (!preview) return;
+  const status = String(endData.status || '').toLowerCase();
+  const isError = status.includes('fail') || status.includes('error');
+  const isSuccess = status.includes('success') || status.includes('complete');
+
+  const div = document.createElement('div');
+  div.className = 'term-line response' + (isError ? ' error' : (isSuccess ? ' success' : ''));
+  div.innerHTML =
+    '<span class="term-prefix">↳</span>' +
+    '<span class="term-tool">' + escHtml((endData.tool_name || 'result').replaceAll('_', ' ')) + '</span>' +
+    '<span class="term-args">' + escHtml(preview) + '</span>';
+
+  elFeed.insertBefore(div, elCursor);
+  elFeed.scrollTop = elFeed.scrollHeight;
+}
+
+function formatBrowserAction(toolName, args = {}) {
+  if (toolName === 'browser_action') {
+    return shortText(args.action || 'browser action', 30);
+  }
+  return shortText(toolName.replaceAll('_', ' '), 30);
+}
+
+function parseCoordinate(value) {
+  if (!value) return null;
+  if (typeof value === 'string') {
+    const parts = value.split(',').map((v) => Number(v.trim()));
+    if (parts.length === 2 && Number.isFinite(parts[0]) && Number.isFinite(parts[1])) {
+      return { x: parts[0], y: parts[1] };
+    }
+  }
+  if (typeof value === 'object') {
+    const x = Number(value?.x);
+    const y = Number(value?.y);
+    if (Number.isFinite(x) && Number.isFinite(y)) return { x, y };
+  }
+  return null;
+}
+
+function showBrowserClickMarker(coordinate, viewport) {
+  if (!elMiniBrowserClick || !coordinate) return;
+  const vw = Number(viewport?.width) > 0 ? Number(viewport.width) : 1280;
+  const vh = Number(viewport?.height) > 0 ? Number(viewport.height) : 720;
+  const left = Math.max(0, Math.min(100, (coordinate.x / vw) * 100));
+  const top = Math.max(0, Math.min(100, (coordinate.y / vh) * 100));
+  elMiniBrowserClick.style.left = left + '%';
+  elMiniBrowserClick.style.top = top + '%';
+  elMiniBrowserClick.classList.remove('active');
+  void elMiniBrowserClick.offsetWidth;
+  elMiniBrowserClick.classList.add('active');
+}
+
+function updateMiniBrowserFromStart(startData) {
+  const toolName = startData.tool_name || '';
+  const args = startData.args || {};
+  if (!BROWSER_TOOL_NAMES.has(toolName)) return;
+
+  const url = shortText(args.url || args.endpoint || args.target || '', 72);
+  const action = formatBrowserAction(toolName, args);
+  if (elMiniBrowserUrl) elMiniBrowserUrl.textContent = url || 'browser activity';
+  if (elMiniBrowserStageUrl) elMiniBrowserStageUrl.textContent = url || 'browser activity';
+  if (elMiniBrowserMeta) elMiniBrowserMeta.textContent = shortText(toolName.replaceAll('_', ' '), 40);
+
+  const detail = url || shortText(JSON.stringify(args || {}), 90);
+  pushMiniLine(
+    elMiniBrowserActions,
+    elMiniBrowserPlaceholder,
+    '<span class="mini-line-label">' + escHtml(action) + '</span><span class="mini-line-value">' + escHtml(detail) + '</span>'
+  );
+}
+
+function updateMiniBrowserFromEnd(endData, startData = {}) {
+  const toolName = endData.tool_name || '';
+  if (!BROWSER_TOOL_NAMES.has(toolName)) return;
+
+  if (endData.browser_url) {
+    const val = shortText(endData.browser_url, 72);
+    if (elMiniBrowserUrl) elMiniBrowserUrl.textContent = val;
+    if (elMiniBrowserStageUrl) elMiniBrowserStageUrl.textContent = val;
+  }
+  if (endData.browser_title && elMiniBrowserMeta) {
+    elMiniBrowserMeta.textContent = shortText(endData.browser_title, 54);
+  }
+  if (endData.browser_screenshot && elMiniBrowserShot) {
+    elMiniBrowserShot.src = endData.browser_screenshot;
+    elMiniBrowserShot.style.display = 'block';
+    if (elMiniBrowserEmpty) elMiniBrowserEmpty.style.display = 'none';
+  }
+
+  const coord = parseCoordinate(startData?.args?.coordinate);
+  if (coord) {
+    showBrowserClickMarker(coord, endData.browser_viewport || {});
+  }
+}
+
+function maybeShowAiForToolStart(startData) {
+  const toolName = startData.tool_name || '';
+  const args = startData.args || {};
+
+  if (toolName === 'create_agent') {
+    const name = args.name || 'Subagent';
+    addAiTaskChip(name);
+    addAiBubble(`Spawning ${name}`, 'think');
+    return;
+  }
+  if (toolName === 'wait_for_message') {
+    addAiBubble('Waiting for subagent updates', 'think');
+    return;
+  }
+  if (toolName === 'think') {
+    addAiBubble(args.thought || 'Analyzing next action', 'think');
+    return;
+  }
+}
+
+function maybeShowAiForToolEnd(endData, startData = {}) {
+  const toolName = endData.tool_name || '';
+  if (toolName === 'agent_finish') {
+    const msg = clipMultiline(endData.response_preview || startData?.args?.result_summary || 'Subagent finished', 200, 2);
+    addAiBubble(msg || 'Subagent finished', inferBubbleTone(msg, 'done'));
+    return;
+  }
+  if (toolName === 'create_vulnerability_report') {
+    addAiBubble('Vulnerability logged to report', 'done');
+    return;
+  }
+  if (toolName === 'finish_scan') {
+    addAiBubble('Compiling final security report', 'done');
+  }
+}
+
+/* ====================================================
+   AGENT HELPERS
+   ==================================================== */
+function addAgent(data) {
+  const div = document.createElement('div');
+  div.className = 'agent-item';
+  const task = (data.task || '').slice(0, 48);
+  div.innerHTML =
+    '<div class="agent-name">' +
+      escHtml(data.name || data.agent_id) +
+      '<span class="agent-status-dot"></span>' +
+    '</div>' +
+    (task ? '<div class="agent-task">' + escHtml(task) + '</div>' : '');
+  elAgents.appendChild(div);
+  updStats();
+}
+
+/* ====================================================
+   VULN CARD HELPERS
+   ==================================================== */
+function addVulnCard(data) {
+  const sev     = (data.severity || 'low').toLowerCase();
+  const title   = data.title    || 'Unknown Vulnerability';
+  const ep      = data.endpoint || data.target || '';
+  const cvssNum = Number(data.cvss);
+  const cvss    = Number.isFinite(cvssNum) ? cvssNum.toFixed(1) : '';
+
+  sevCounts[sev] = (sevCounts[sev] || 0) + 1;
+  elCntCrit.textContent = sevCounts.critical || 0;
+  elCntHigh.textContent = sevCounts.high     || 0;
+  elCntMed.textContent  = sevCounts.medium   || 0;
+  elCntLow.textContent  = sevCounts.low      || 0;
+  vulnsFound++;
+  document.getElementById('outro-vulns').textContent = vulnsFound;
+
+  const sevColorMap = {
+    critical: '#ef4444',
+    high:     '#f97316',
+    medium:   '#eab308',
+    low:      '#22c55e'
+  };
+  const color = sevColorMap[sev] || '#c9c9c9';
+
+  const card = document.createElement('div');
+  card.className = 'vuln-card ' + sev;
+
+  const ring = document.createElement('div');
+  ring.className = 'shockwave-ring';
+  ring.style.color = color;
+
+  card.innerHTML =
+    '<div class="vuln-severity sev-' + sev + '">' + sev.toUpperCase() + '</div>' +
+    (cvss ? '<div class="vuln-cvss" style="color:' + color + '">' + cvss + '</div>' : '') +
+    '<div class="vuln-title">' + escHtml(title) + '</div>' +
+    (ep ? '<div class="vuln-endpoint">' + escHtml(ep) + '</div>' : '');
+  card.appendChild(ring);
+  elVulns.insertBefore(card, elVulns.firstChild);
+  elVulns.scrollTop = 0;
+
+  /* Subtle dim vignette for critical only — no flash */
+  if (sev === 'critical') {
+    elCritFlash.classList.add('active');
+    setTimeout(() => elCritFlash.classList.remove('active'), 600);
+  }
+}
+
+/* ====================================================
+   EVENT DISPATCHER
+   ==================================================== */
+function handleEvent(ev) {
+  if (ev.type === 'agent_spawn') {
+    addAgent(ev.data || {});
+    const agentName = (ev.data || {}).name || (ev.data || {}).agent_id || 'Agent';
+    addAiTaskChip(agentName);
+    addAiBubble(`Spawned ${agentName}`, 'think');
+
+  } else if (ev.type === 'tool_start') {
+    const startData = ev.data || {};
+    if (startData.execution_id != null) {
+      toolStarts.set(startData.execution_id, startData);
+    }
+    addTerminalLine(startData);
+    updateMiniTerminalCommand(startData);
+    updateMiniBrowserFromStart(startData);
+    maybeShowAiForToolStart(startData);
+    ping();
+    toolsRun++;
+    tokensEst += Math.floor(Math.random() * 120 + 40);
+    updStats();
+
+  } else if (ev.type === 'tool_end') {
+    const endData = ev.data || {};
+    const startData = toolStarts.get(endData.execution_id) || {};
+    addTerminalResponseLine(endData);
+    updateMiniTerminalResponse(endData);
+    updateMiniBrowserFromEnd(endData, startData);
+    maybeShowAiForToolEnd(endData, startData);
+    if (endData.execution_id != null) {
+      toolStarts.delete(endData.execution_id);
+    }
+
+  } else if (ev.type === 'vulnerability') {
+    addVulnCard(ev.data || {});
+    const title = (ev.data || {}).title || 'Vulnerability found';
+    const sev = String((ev.data || {}).severity || '').toLowerCase();
+    addAiBubble(`Found ${title}`, sev === 'critical' || sev === 'high' ? 'fail' : 'done');
+    thud();
+
+  } else if (ev.type === 'message') {
+    const content = (ev.data || {}).content || '';
+    addTerminalLine({
+      tool_name: '>',
+      args: { content },
+    });
+    addAiBubble(content, inferBubbleTone(content, 'think'));
+  }
+}
+
+/* ====================================================
+   OUTRO SEQUENCE
+   ==================================================== */
+function runOutro() {
+  droneFade();
+  chord();
+  if (elapsedTimer) clearInterval(elapsedTimer);
+
+  elOutro.classList.add('visible');
+  elOutroCard.classList.add('visible');
+
+  /* End on the scan summary card */
+  setTimeout(() => {
+    document.title = 'ESPRIT_DONE';
+  }, 4500);
+}
+
+/* ====================================================
+   INTRO → WINDOW REVEAL SEQUENCE
+   ==================================================== */
+function startReplay() {
+  /* Start elapsed clock */
+  const replayStart = Date.now();
+  elapsedTimer = setInterval(() => {
+    elapsed = (Date.now() - replayStart) / 1000;
+    elStatElapsed.textContent = fmtElapsed(elapsed);
+  }, 500);
+
+  /* Start ambient drone */
+  drone();
+
+  /* Schedule events */
+  const t0 = EVENTS.length > 0 ? new Date(EVENTS[0].timestamp).getTime() : Date.now();
+  EVENTS.forEach(ev => {
+    const offsetMs = Math.max(0, new Date(ev.timestamp).getTime() - t0);
+    setTimeout(() => handleEvent(ev), offsetMs / SPEED);
+  });
+
+  /* Schedule outro */
+  const lastOffset = EVENTS.length > 0
+    ? (new Date(EVENTS[EVENTS.length - 1].timestamp).getTime() - t0)
+    : 0;
+  setTimeout(runOutro, (lastOffset + 3000) / SPEED);
+}
+
+/* ====================================================
+   BOOT SEQUENCE
+   ==================================================== */
+window.addEventListener('DOMContentLoaded', () => {
+  /* After intro animations settle, drop the window in */
+  setTimeout(() => {
+    elIntro.style.transition = 'opacity 0.6s ease';
+    elIntro.style.opacity    = '0';
+    elIntro.style.pointerEvents = 'none';
+    setTimeout(() => {
+      elIntro.style.display = 'none';
+      elWindow.classList.add('visible');
+      setTimeout(startReplay, 200);
+    }, 650);
+  }, 2400);
+});
+</script>
+</body>
+</html>

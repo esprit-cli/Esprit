@@ -39,7 +39,8 @@ include = [
   "esprit/skills/**/*.md",
   "esprit/**/*.xml",
   "esprit/**/*.tcss",
-  "esprit/gui/static/**/*"
+  "esprit/gui/static/**/*",
+  "esprit/reporting/templates/**/*"
 ]
 
 [tool.poetry.scripts]
@@ -86,6 +87,7 @@ vertex = ["google-cloud-aiplatform"]
 sandbox = ["fastapi", "uvicorn", "ipython", "openhands-aci", "playwright", "gql", "pyte", "libtmux", "numpydoc"]
 gui = ["fastapi", "uvicorn", "websockets"]
 enhanced-preview = ["textual-image"]
+video = ["playwright"]
 
 [tool.poetry.group.dev.dependencies]
 # Type checking and static analysis

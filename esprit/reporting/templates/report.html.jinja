@@ -1,0 +1,328 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Esprit Security Assessment Report - {{ run_name }}</title>
+    <style>
+        :root {
+            --primary: #2563eb;
+            --secondary: #475569;
+            --background: #f8fafc;
+            --surface: #ffffff;
+            --text: #1e293b;
+            --border: #e2e8f0;
+            --success: #22c55e;
+            --warning: #f59e0b;
+            --danger: #ef4444;
+            --info: #3b82f6;
+            --critical: #7f1d1d;
+            --high: #dc2626;
+            --medium: #d97706;
+            --low: #ca8a04;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            line-height: 1.6;
+            color: var(--text);
+            background: var(--background);
+            margin: 0;
+            padding: 0;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 2rem;
+        }
+
+        header {
+            background: var(--surface);
+            border-bottom: 1px solid var(--border);
+            padding: 2rem 0;
+            margin-bottom: 2rem;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        }
+
+        .header-content {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        h1 { margin: 0; color: var(--primary); }
+        h2 { margin-top: 2rem; border-bottom: 2px solid var(--border); padding-bottom: 0.5rem; }
+        h3 { color: var(--secondary); margin-top: 1.5rem; }
+
+        .meta {
+            color: var(--secondary);
+            font-size: 0.9rem;
+        }
+
+        .summary-cards {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 1.5rem;
+            margin-bottom: 2rem;
+        }
+
+        .card {
+            background: var(--surface);
+            padding: 1.5rem;
+            border-radius: 0.5rem;
+            box-shadow: 0 1px 2px rgba(0,0,0,0.05);
+            border: 1px solid var(--border);
+        }
+
+        .stat-value {
+            font-size: 2.5rem;
+            font-weight: bold;
+            color: var(--primary);
+        }
+
+        .stat-label {
+            color: var(--secondary);
+            font-weight: 500;
+        }
+
+        .vuln-table {
+            width: 100%;
+            border-collapse: collapse;
+            background: var(--surface);
+            border-radius: 0.5rem;
+            overflow: hidden;
+            box-shadow: 0 1px 2px rgba(0,0,0,0.05);
+            margin-bottom: 2rem;
+        }
+
+        .vuln-table th, .vuln-table td {
+            padding: 1rem;
+            text-align: left;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .vuln-table th {
+            background: #f1f5f9;
+            font-weight: 600;
+        }
+
+        .badge {
+            display: inline-block;
+            padding: 0.25rem 0.5rem;
+            border-radius: 9999px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+
+        .severity-critical { background: #fecaca; color: #991b1b; }
+        .severity-high { background: #fee2e2; color: #b91c1c; }
+        .severity-medium { background: #ffedd5; color: #c2410c; }
+        .severity-low { background: #fef9c3; color: #a16207; }
+        .severity-info { background: #dbeafe; color: #1e40af; }
+
+        .finding-detail {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 0.5rem;
+            margin-bottom: 1.5rem;
+            padding: 1.5rem;
+        }
+
+        .finding-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            margin-bottom: 1rem;
+            padding-bottom: 1rem;
+            border-bottom: 1px solid var(--border);
+        }
+
+        code {
+            background: #f1f5f9;
+            padding: 0.2rem 0.4rem;
+            border-radius: 0.25rem;
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+            font-size: 0.9em;
+        }
+
+        pre {
+            background: #1e293b;
+            color: #f8fafc;
+            padding: 1rem;
+            border-radius: 0.5rem;
+            overflow-x: auto;
+        }
+
+        pre code {
+            background: transparent;
+            color: inherit;
+            padding: 0;
+        }
+
+        .footer {
+            text-align: center;
+            padding: 2rem;
+            color: var(--secondary);
+            font-size: 0.9rem;
+            border-top: 1px solid var(--border);
+            margin-top: 4rem;
+        }
+
+        @media print {
+            body { background: white; }
+            .container { max-width: 100%; padding: 0; }
+            .card, .finding-detail { box-shadow: none; border: 1px solid #ccc; }
+            a { text-decoration: none; color: black; }
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <div class="container header-content">
+            <div>
+                <h1>Esprit Security Assessment</h1>
+                <div class="meta">Run ID: {{ run_id }} | Date: {{ start_time }}</div>
+            </div>
+            <div style="text-align: right;">
+                <div class="meta">Duration: {{ duration }}s</div>
+                <div class="meta">Status: {{ status|upper }}</div>
+            </div>
+        </div>
+    </header>
+
+    <div class="container">
+        <!-- Executive Summary -->
+        <section>
+            <h2>Executive Summary</h2>
+            <div class="summary-cards">
+                <div class="card">
+                    <div class="stat-value" style="color: var(--critical)">{{ summary.critical }}</div>
+                    <div class="stat-label">Critical Issues</div>
+                </div>
+                <div class="card">
+                    <div class="stat-value" style="color: var(--high)">{{ summary.high }}</div>
+                    <div class="stat-label">High Issues</div>
+                </div>
+                <div class="card">
+                    <div class="stat-value" style="color: var(--medium)">{{ summary.medium }}</div>
+                    <div class="stat-label">Medium Issues</div>
+                </div>
+                <div class="card">
+                    <div class="stat-value" style="color: var(--low)">{{ summary.low }}</div>
+                    <div class="stat-label">Low Issues</div>
+                </div>
+            </div>
+
+            {% if executive_summary %}
+            <div class="card">
+                {{ executive_summary | safe }}
+            </div>
+            {% endif %}
+        </section>
+
+        <!-- Findings Table -->
+        <section>
+            <h2>Findings Overview</h2>
+            <table class="vuln-table">
+                <thead>
+                    <tr>
+                        <th>ID</th>
+                        <th>Severity</th>
+                        <th>Title</th>
+                        <th>Target</th>
+                        <th>Type</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for vuln in vulnerabilities %}
+                    <tr>
+                        <td><a href="#{{ vuln.id }}">{{ vuln.id }}</a></td>
+                        <td><span class="badge severity-{{ vuln.severity }}">{{ vuln.severity }}</span></td>
+                        <td>{{ vuln.title }}</td>
+                        <td>{{ vuln.target }}</td>
+                        <td>{{ vuln.owasp_category or vuln.cwe_id or 'N/A' }}</td>
+                    </tr>
+                    {% endfor %}
+                    {% if not vulnerabilities %}
+                    <tr>
+                        <td colspan="5" style="text-align: center; color: var(--secondary);">No vulnerabilities found.</td>
+                    </tr>
+                    {% endif %}
+                </tbody>
+            </table>
+        </section>
+
+        <!-- Detailed Findings -->
+        <section>
+            <h2>Detailed Findings</h2>
+            {% for vuln in vulnerabilities %}
+            <div id="{{ vuln.id }}" class="finding-detail">
+                <div class="finding-header">
+                    <div>
+                        <h3 style="margin: 0; color: var(--text);">{{ vuln.title }}</h3>
+                        <div class="meta">ID: {{ vuln.id }} | Found: {{ vuln.timestamp }}</div>
+                    </div>
+                    <span class="badge severity-{{ vuln.severity }}">{{ vuln.severity }}</span>
+                </div>
+
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1rem;">
+                    <div><strong>Target:</strong> {{ vuln.target }}</div>
+                    <div><strong>Endpoint:</strong> {{ vuln.endpoint or 'N/A' }}</div>
+                    <div><strong>Method:</strong> {{ vuln.method or 'N/A' }}</div>
+                    <div><strong>CWE:</strong> {{ vuln.cwe_id or 'N/A' }}</div>
+                </div>
+
+                <h4>Description</h4>
+                <p>{{ vuln.description }}</p>
+
+                {% if vuln.impact %}
+                <h4>Impact</h4>
+                <p>{{ vuln.impact }}</p>
+                {% endif %}
+
+                {% if vuln.technical_analysis %}
+                <h4>Technical Analysis</h4>
+                <div>{{ vuln.technical_analysis | safe }}</div>
+                {% endif %}
+
+                {% if vuln.poc_script_code %}
+                <h4>Proof of Concept</h4>
+                <pre><code>{{ vuln.poc_script_code }}</code></pre>
+                {% endif %}
+
+                {% if vuln.remediation_steps %}
+                <h4>Remediation</h4>
+                <p>{{ vuln.remediation_steps }}</p>
+                {% endif %}
+            </div>
+            {% endfor %}
+        </section>
+
+        <!-- Methodology -->
+        {% if methodology %}
+        <section>
+            <h2>Methodology</h2>
+            <div class="card">
+                {{ methodology | safe }}
+            </div>
+        </section>
+        {% endif %}
+
+        <!-- Recommendations -->
+        {% if recommendations %}
+        <section>
+            <h2>Strategic Recommendations</h2>
+            <div class="card">
+                {{ recommendations | safe }}
+            </div>
+        </section>
+        {% endif %}
+    </div>
+
+    <footer class="footer">
+        Generated by Esprit Security Scanner on {{ generated_at }}
+    </footer>
+</body>
+</html>

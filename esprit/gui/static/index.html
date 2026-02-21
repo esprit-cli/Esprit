@@ -60,7 +60,10 @@
   <!-- Scan config bar -->
   <div id="scan-config-bar" style="display:none">
     <span id="scan-config-target" class="config-item"></span>
+    <span id="scan-config-model" class="config-item"></span>
     <span id="scan-config-mode" class="config-item"></span>
+    <span id="scan-config-estimate" class="config-item"></span>
+    <span id="scan-config-live" class="config-item"></span>
     <span id="scan-config-name" class="config-item"></span>
   </div>
 
@@ -169,6 +172,11 @@
     </span>
     <span class="status-bar-item" id="status-duration">
       <i data-lucide="timer" class="icon-xs"></i>
+    </span>
+    <span class="status-bar-item" id="status-activity">
+      <span id="status-activity-spinner">⬡</span>
+      <span id="status-activity-text">Idle — waiting for agent activity</span>
+      <span id="status-activity-metrics"></span>
     </span>
     <span class="status-bar-item" id="status-results-path">
       <i data-lucide="folder" class="icon-xs"></i>

@@ -3,6 +3,7 @@ import contextlib
 import json
 import logging
 import re
+import time
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Optional
 
@@ -27,6 +28,32 @@ from .state import AgentState
 
 
 logger = logging.getLogger(__name__)
+
+
+def compute_default_llm_watchdog_timeout(llm_timeout_s: int) -> int:
+    """Compute a sane watchdog timeout even when per-request timeout is very high."""
+    min_watchdog = int(Config.get("esprit_llm_watchdog_min_s") or "360")
+    max_watchdog = int(Config.get("esprit_llm_watchdog_max_s") or "600")
+
+    min_watchdog = max(1, min_watchdog)
+    max_watchdog = max(min_watchdog, max_watchdog)
+
+    baseline = llm_timeout_s + 60
+    return max(min_watchdog, min(max_watchdog, baseline))
+
+
+def compute_default_tool_watchdog_timeout(scan_mode: str, llm_timeout_s: int) -> int:
+    """Compute a tool watchdog timeout that matches scan depth and command-heavy phases."""
+    mode = (scan_mode or "").strip().lower()
+    if mode == "quick":
+        mode_floor = 180
+    elif mode == "standard":
+        mode_floor = 360
+    else:
+        mode_floor = 900
+
+    baseline = max(mode_floor, min(llm_timeout_s, 1800))
+    return max(60, baseline)
 
 
 class AgentMeta(type):
@@ -62,8 +89,17 @@ class BaseAgent(metaclass=AgentMeta):
     def __init__(self, config: dict[str, Any]):
         self.config = config
 
+        def _safe_int(value: Any, default: int) -> int:
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                return default
+
         self.local_sources = config.get("local_sources", [])
         self.non_interactive = config.get("non_interactive", False)
+
+        raw_stall_policy = str(config.get("stall_policy", "auto_recover")).strip().lower()
+        self.stall_policy = raw_stall_policy if raw_stall_policy in {"auto_recover"} else "auto_recover"
 
         if "max_iterations" in config:
             self.max_iterations = config["max_iterations"]
@@ -72,6 +108,13 @@ class BaseAgent(metaclass=AgentMeta):
         self.llm_config = config.get("llm_config", self.default_llm_config)
         if self.llm_config is None:
             raise ValueError("llm_config is required but not provided")
+
+        llm_timeout_default = _safe_int(getattr(self.llm_config, "timeout", None), 300)
+        default_llm_watchdog_s = compute_default_llm_watchdog_timeout(llm_timeout_default)
+        default_tool_watchdog_s = compute_default_tool_watchdog_timeout(
+            getattr(self.llm_config, "scan_mode", "deep"),
+            llm_timeout_default,
+        )
         state_from_config = config.get("state")
         if state_from_config is not None:
             self.state = state_from_config
@@ -82,6 +125,18 @@ class BaseAgent(metaclass=AgentMeta):
             )
 
         self.llm = LLM(self.llm_config, agent_name=self.agent_name)
+        self.llm.set_wait_progress_callback(self._handle_llm_wait_progress)
+
+        self.llm_watchdog_timeout_s = max(
+            1,
+            _safe_int(config.get("llm_watchdog_timeout_s"), default_llm_watchdog_s),
+        )
+        self.tool_watchdog_timeout_s = max(
+            1,
+            _safe_int(config.get("tool_watchdog_timeout_s"), default_tool_watchdog_s),
+        )
+        self.stall_grace_period_s = max(1, _safe_int(config.get("stall_grace_period_s"), 90))
+        self.max_stall_recoveries = max(0, _safe_int(config.get("max_stall_recoveries"), 3))
 
         with contextlib.suppress(Exception):
             self.llm.set_agent_identity(self.state.agent_name, self.state.agent_id)
@@ -115,32 +170,42 @@ class BaseAgent(metaclass=AgentMeta):
 
         tracer = get_global_tracer()
         if tracer:
-            tracer.log_agent_creation(
-                agent_id=self.state.agent_id,
-                name=self.state.agent_name,
-                task=self.state.task,
-                parent_id=self.state.parent_id,
-            )
-            if self.state.parent_id is None:
-                scan_config = tracer.scan_config or {}
-                exec_id = tracer.log_tool_execution_start(
-                    agent_id=self.state.agent_id,
-                    tool_name="scan_start_info",
-                    args=scan_config,
-                )
-                tracer.update_tool_execution(execution_id=exec_id, status="completed", result={})
+            # Check if this is a resumption of an existing agent
+            is_resumed = self.state.agent_id in tracer.agents
 
-            else:
-                exec_id = tracer.log_tool_execution_start(
+            if not is_resumed:
+                tracer.log_agent_creation(
                     agent_id=self.state.agent_id,
-                    tool_name="subagent_start_info",
-                    args={
-                        "name": self.state.agent_name,
-                        "task": self.state.task,
-                        "parent_id": self.state.parent_id,
-                    },
+                    name=self.state.agent_name,
+                    task=self.state.task,
+                    parent_id=self.state.parent_id,
                 )
-                tracer.update_tool_execution(execution_id=exec_id, status="completed", result={})
+                if self.state.is_waiting_for_input():
+                    tracer.update_agent_status(self.state.agent_id, "waiting")
+                if self.state.parent_id is None:
+                    scan_config = tracer.scan_config or {}
+                    exec_id = tracer.log_tool_execution_start(
+                        agent_id=self.state.agent_id,
+                        tool_name="scan_start_info",
+                        args=scan_config,
+                    )
+                    tracer.update_tool_execution(execution_id=exec_id, status="completed", result={})
+
+                else:
+                    exec_id = tracer.log_tool_execution_start(
+                        agent_id=self.state.agent_id,
+                        tool_name="subagent_start_info",
+                        args={
+                            "name": self.state.agent_name,
+                            "task": self.state.task,
+                            "parent_id": self.state.parent_id,
+                        },
+                    )
+                    tracer.update_tool_execution(execution_id=exec_id, status="completed", result={})
+            else:
+                tracer.update_agent_status(self.state.agent_id, "resumed")
+                if self.state.is_waiting_for_input():
+                    tracer.update_agent_status(self.state.agent_id, "waiting")
 
         self._add_to_agents_graph()
 
@@ -176,6 +241,68 @@ class BaseAgent(metaclass=AgentMeta):
         if self.state.parent_id is None and agents_graph_actions._root_agent_id is None:
             agents_graph_actions._root_agent_id = self.state.agent_id
 
+    def _touch_heartbeat(
+        self, tracer: Optional["Tracer"], phase: str, detail: str | None = None
+    ) -> None:
+        self.state.touch_heartbeat(phase=phase, detail=detail)
+        if tracer:
+            tracer.touch_agent_heartbeat(self.state.agent_id, phase=phase, detail=detail)
+
+    def _handle_llm_wait_progress(self, phase: str, detail: str | None = None) -> None:
+        from esprit.telemetry.tracer import get_global_tracer
+
+        self._touch_heartbeat(get_global_tracer(), phase=phase, detail=detail)
+
+    def _is_heartbeat_stale(self) -> bool:
+        if not self.state.last_heartbeat_at:
+            return False
+
+        try:
+            heartbeat_at = datetime.fromisoformat(
+                self.state.last_heartbeat_at.replace("Z", "+00:00")
+            )
+        except ValueError:
+            return False
+
+        elapsed_s = (datetime.now(UTC) - heartbeat_at).total_seconds()
+        return elapsed_s > self.stall_grace_period_s
+
+    def _maybe_auto_recover_stall(self, tracer: Optional["Tracer"]) -> bool:
+        if self.stall_policy != "auto_recover":
+            return False
+
+        if self.state.is_waiting_for_input() or self.state.llm_failed:
+            return False
+
+        if self._current_task is None:
+            return False
+
+        if not self._is_heartbeat_stale():
+            return False
+
+        reason = f"Heartbeat stale for longer than {self.stall_grace_period_s}s"
+        if self.state.stall_count >= self.max_stall_recoveries:
+            error_msg = (
+                f"{reason}. Stall recovery limit exceeded "
+                f"({self.state.stall_count}/{self.max_stall_recoveries})."
+            )
+            self.state.add_error(error_msg)
+            self.state.enter_waiting_state(llm_failed=True)
+            if tracer:
+                tracer.update_agent_status(self.state.agent_id, "llm_failed", error_msg)
+            return False
+
+        self.cancel_current_execution()
+        self._force_stop = False
+        self.state.record_recovery(reason)
+        self._touch_heartbeat(tracer, phase="recovery", detail=reason)
+
+        if tracer:
+            tracer.update_agent_status(self.state.agent_id, "stalled_recovered")
+            tracer.update_agent_status(self.state.agent_id, "running")
+
+        return True
+
     async def agent_loop(self, task: str) -> dict[str, Any]:  # noqa: PLR0912, PLR0915
         from esprit.telemetry.tracer import get_global_tracer
 
@@ -187,6 +314,11 @@ class BaseAgent(metaclass=AgentMeta):
             return self._handle_sandbox_error(e, tracer)
 
         while True:
+            if self._maybe_auto_recover_stall(tracer):
+                continue
+
+            self._touch_heartbeat(tracer, phase="iteration_start")
+
             if self._force_stop:
                 self._force_stop = False
                 await self._enter_waiting_state(tracer, was_cancelled=True)
@@ -195,6 +327,7 @@ class BaseAgent(metaclass=AgentMeta):
             self._check_agent_messages(self.state)
 
             if self.state.is_waiting_for_input():
+                self._touch_heartbeat(tracer, phase="waiting_for_input")
                 await self._wait_for_input()
                 continue
 
@@ -240,8 +373,19 @@ class BaseAgent(metaclass=AgentMeta):
             try:
                 iteration_task = asyncio.create_task(self._process_iteration(tracer))
                 self._current_task = iteration_task
-                should_finish = await iteration_task
-                self._current_task = None
+                try:
+                    should_finish = await asyncio.wait_for(
+                        iteration_task, timeout=self.llm_watchdog_timeout_s
+                    )
+                except TimeoutError as timeout_error:
+                    if not iteration_task.done():
+                        iteration_task.cancel()
+                    raise LLMRequestFailedError(
+                        f"LLM processing timed out after {self.llm_watchdog_timeout_s}s",
+                        details=str(timeout_error),
+                    ) from timeout_error
+                finally:
+                    self._current_task = None
                 self._llm_auto_resume_attempts = 0
                 self._last_llm_failure_retryable = False
                 self._last_llm_error_status_code = None
@@ -284,7 +428,14 @@ class BaseAgent(metaclass=AgentMeta):
                     await self._enter_waiting_state(tracer, error_occurred=True)
                     continue
 
+            await asyncio.sleep(0)
+
     async def _wait_for_input(self) -> None:
+        from esprit.telemetry.tracer import get_global_tracer
+
+        tracer = get_global_tracer()
+        self._touch_heartbeat(tracer, phase="waiting_for_input")
+
         if self._force_stop:
             return
 
@@ -426,39 +577,76 @@ class BaseAgent(metaclass=AgentMeta):
         import os
 
         sandbox_mode = os.getenv("ESPRIT_SANDBOX_MODE", "false").lower() == "true"
-        if not sandbox_mode and self.state.sandbox_id is None:
+        if not sandbox_mode:
             from esprit.runtime import get_runtime
 
-            try:
-                runtime = get_runtime()
-                sandbox_info = await runtime.create_sandbox(
-                    self.state.agent_id, self.state.sandbox_token, self.local_sources
-                )
-                self.state.sandbox_id = sandbox_info["workspace_id"]
-                self.state.sandbox_token = sandbox_info["auth_token"]
-                self.state.sandbox_info = sandbox_info
+            runtime = get_runtime()
+            sandbox_initialized = False
 
-                if "agent_id" in sandbox_info:
-                    self.state.sandbox_info["agent_id"] = sandbox_info["agent_id"]
-            except Exception as e:
-                from esprit.telemetry import posthog
+            # Attempt to revive existing sandbox if we have an ID
+            if self.state.sandbox_id and hasattr(runtime, "revive_sandbox"):
+                try:
+                    logger.info(f"Attempting to revive sandbox {self.state.sandbox_id}...")
+                    sandbox_info = await runtime.revive_sandbox(self.state.sandbox_id)
+                    self.state.sandbox_info = sandbox_info
+                    self.state.sandbox_token = sandbox_info["auth_token"]
+                    if "agent_id" in sandbox_info:
+                        self.state.sandbox_info["agent_id"] = sandbox_info["agent_id"]
+                    sandbox_initialized = True
+                    logger.info(f"Successfully revived sandbox {self.state.sandbox_id}")
+                except Exception as e:
+                    logger.warning(f"Failed to revive sandbox {self.state.sandbox_id}: {e}")
+                    # If revival fails, we must create a new one.
+                    # We clear the ID so the creation logic below triggers.
+                    self.state.sandbox_id = None
 
-                posthog.error("sandbox_init_error", str(e))
-                raise
+            if not sandbox_initialized and self.state.sandbox_id is None:
+                try:
+                    sandbox_info = await runtime.create_sandbox(
+                        self.state.agent_id, self.state.sandbox_token, self.local_sources
+                    )
+                    self.state.sandbox_id = sandbox_info["workspace_id"]
+                    self.state.sandbox_token = sandbox_info["auth_token"]
+                    self.state.sandbox_info = sandbox_info
+
+                    if "agent_id" in sandbox_info:
+                        self.state.sandbox_info["agent_id"] = sandbox_info["agent_id"]
+                except Exception as e:
+                    from esprit.telemetry import posthog
+
+                    posthog.error("sandbox_init_error", str(e))
+                    raise
 
         if not self.state.task:
             self.state.task = task
-
-        self.state.add_message("user", task)
+            self.state.add_message("user", task)
+        elif not self.state.messages:
+             # Ensure there's at least one message if task was set but messages empty (rare)
+             self.state.add_message("user", task)
 
     async def _process_iteration(self, tracer: Optional["Tracer"]) -> bool:
         final_response = None
         tools = self._get_agent_tools()
-
-        async for response in self.llm.generate(self.state.get_conversation_history(), tools=tools):
-            final_response = response
-            if tracer and response.content:
-                tracer.update_streaming_content(self.state.agent_id, response.content)
+        self._touch_heartbeat(tracer, phase="before_llm_processing")
+        try:
+            conversation_history = self.state.get_conversation_history()
+            async for response in self.llm.generate(conversation_history, tools=tools):
+                final_response = response
+                if tracer:
+                    if response.content:
+                        tracer.update_streaming_content(self.state.agent_id, response.content)
+                    # Stream thinking blocks as they arrive
+                    thinking = getattr(response, "thinking_blocks", None)
+                    if thinking:
+                        combined = "\n".join(
+                            b.get("thinking", b.get("text", ""))
+                            for b in thinking
+                            if b.get("thinking") or b.get("text")
+                        )
+                        if combined:
+                            tracer.update_streaming_thinking(self.state.agent_id, combined)
+        finally:
+            self._touch_heartbeat(tracer, phase="after_llm_processing")
 
         if final_response is None:
             return False
@@ -491,10 +679,12 @@ class BaseAgent(metaclass=AgentMeta):
         )
         if tracer:
             tracer.clear_streaming_content(self.state.agent_id)
+            tracer.clear_streaming_thinking(self.state.agent_id)
             tracer.log_chat_message(
                 content=clean_content(final_response.content),
                 role="assistant",
                 agent_id=self.state.agent_id,
+                thinking_blocks=thinking_blocks,
             )
 
         if actions:
@@ -555,18 +745,44 @@ class BaseAgent(metaclass=AgentMeta):
 
         conversation_history = self.state.get_conversation_history()
 
+        self._touch_heartbeat(tracer, phase="before_tool_execution")
         tool_task = asyncio.create_task(
             process_tool_invocations(actions, conversation_history, self.state)
         )
         self._current_task = tool_task
 
         try:
-            should_agent_finish = await tool_task
-            self._current_task = None
+            started = time.monotonic()
+            while True:
+                elapsed = time.monotonic() - started
+                remaining = self.tool_watchdog_timeout_s - elapsed
+                if remaining <= 0:
+                    raise TimeoutError()
+                try:
+                    should_agent_finish = await asyncio.wait_for(
+                        asyncio.shield(tool_task), timeout=min(5.0, remaining)
+                    )
+                    break
+                except TimeoutError:
+                    self._touch_heartbeat(
+                        tracer,
+                        phase="before_tool_execution",
+                        detail="tool execution in progress",
+                    )
+                    continue
+        except TimeoutError as timeout_error:
+            if not tool_task.done():
+                tool_task.cancel()
+            raise LLMRequestFailedError(
+                f"Tool execution timed out after {self.tool_watchdog_timeout_s}s",
+                details=str(timeout_error),
+            ) from timeout_error
         except asyncio.CancelledError:
-            self._current_task = None
             self.state.add_error("Tool execution cancelled by user")
             raise
+        finally:
+            self._current_task = None
+            self._touch_heartbeat(tracer, phase="after_tool_execution")
 
         self.state.messages = conversation_history
 
@@ -722,6 +938,31 @@ class BaseAgent(metaclass=AgentMeta):
         self.state.add_error(error_msg)
 
         if self.non_interactive:
+            if self._is_recoverable_llm_error(error_msg, error_details):
+                if self.state.stall_count < self.max_stall_recoveries:
+                    reason = f"Recoverable LLM error: {error_msg}"
+                    self.state.record_recovery(reason)
+                    if tracer:
+                        tracer.update_agent_status(self.state.agent_id, "stalled_recovered")
+                        tracer.update_agent_status(self.state.agent_id, "running")
+                        if error_details:
+                            exec_id = tracer.log_tool_execution_start(
+                                self.state.agent_id,
+                                "llm_error_details",
+                                {"error": error_msg, "details": error_details},
+                            )
+                            tracer.update_tool_execution(
+                                exec_id, "failed", {"details": error_details}
+                            )
+                    logger.warning(
+                        "Agent %s auto-recovering from LLM error (%s/%s): %s",
+                        self.state.agent_id,
+                        self.state.stall_count,
+                        self.max_stall_recoveries,
+                        error_msg,
+                    )
+                    return None
+
             self.state.set_completed({"success": False, "error": error_msg})
             if tracer:
                 tracer.update_agent_status(self.state.agent_id, "failed", error_msg)
@@ -746,6 +987,23 @@ class BaseAgent(metaclass=AgentMeta):
                 tracer.update_tool_execution(exec_id, "failed", {"details": error_details})
 
         return None
+
+    @staticmethod
+    def _is_recoverable_llm_error(error_msg: str, error_details: str | None) -> bool:
+        text = f"{error_msg} {error_details or ''}".lower()
+        transient_markers = (
+            "timed out",
+            "timeout",
+            "rate limit",
+            "rate-limited",
+            "429",
+            "connection",
+            "temporarily unavailable",
+            "overloaded",
+            "retry later",
+            "api connection",
+        )
+        return any(marker in text for marker in transient_markers)
 
     async def _handle_iteration_error(
         self,

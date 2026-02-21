@@ -1,7 +1,9 @@
 import asyncio
+import inspect
 import json
 import logging
-from collections.abc import AsyncIterator
+import random
+from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -12,12 +14,14 @@ from litellm import acompletion, stream_chunk_builder, supports_reasoning
 from litellm.utils import supports_prompt_caching, supports_vision
 
 from esprit.config import Config
-from esprit.llm.api_base import resolve_api_base
+from esprit.llm.completion_args import CompletionArgsError, build_completion_args
 from esprit.llm.config import LLMConfig
 from esprit.llm.memory_compressor import MemoryCompressor
+from esprit.llm.request_pacing import get_request_pacer
 from esprit.llm.utils import (
     _truncate_to_first_function,
     fix_incomplete_tool_call,
+    normalize_messages_for_provider,
     parse_tool_invocations,
 )
 from esprit.skills import load_skills
@@ -27,10 +31,8 @@ from esprit.utils.resource_paths import get_esprit_resource_path
 # Provider OAuth integration (Codex, Copilot, Gemini, Anthropic, Antigravity)
 try:
     from esprit.providers.litellm_integration import (
-        get_provider_headers,
-        should_use_oauth,
-        get_provider_api_key,
         get_auth_client,
+        should_use_oauth,
     )
     from esprit.providers.account_pool import get_account_pool
     from esprit.providers.antigravity import ANTIGRAVITY_MODELS, ENDPOINTS
@@ -112,6 +114,8 @@ class LLM:
         self.config = config
         self.agent_name = agent_name
         self.agent_id: str | None = None
+        self._wait_progress_callback: Callable[[str, str | None], Awaitable[None] | None] | None = None
+        self._last_wait_progress_at = 0.0
         self._total_stats = RequestStats()
         self.memory_compressor = MemoryCompressor(model_name=config.model_name)
         self.system_prompt = self._load_system_prompt(agent_name)
@@ -159,6 +163,62 @@ class LLM:
         if agent_id:
             self.agent_id = agent_id
 
+    def set_wait_progress_callback(
+        self,
+        callback: Callable[[str, str | None], Awaitable[None] | None] | None,
+    ) -> None:
+        self._wait_progress_callback = callback
+
+    async def _emit_wait_progress(
+        self,
+        phase: str,
+        detail: str | None = None,
+        *,
+        force: bool = False,
+    ) -> None:
+        callback = self._wait_progress_callback
+        if callback is None:
+            return
+
+        loop_now = asyncio.get_running_loop().time()
+        min_interval = self._parse_float_setting(
+            "esprit_llm_wait_heartbeat_interval_s", default=5.0, minimum=0.5
+        )
+        if not force and (loop_now - self._last_wait_progress_at) < min_interval:
+            return
+
+        self._last_wait_progress_at = loop_now
+        try:
+            maybe = callback(phase, detail)
+            if inspect.isawaitable(maybe):
+                await maybe
+        except Exception:  # noqa: BLE001
+            pass
+
+    async def _on_request_pacer_wait(self, reason: str, waited_s: float) -> None:
+        waited = int(max(0.0, waited_s))
+        if reason == "queue":
+            detail = f"queued for global LLM slot ({waited}s)"
+        else:
+            detail = f"provider pacing delay ({waited}s)"
+        await self._emit_wait_progress("before_llm_processing", detail)
+
+    async def _sleep_with_progress(self, seconds: float, phase: str, detail: str) -> None:
+        remaining = max(0.0, float(seconds))
+        if remaining <= 0:
+            return
+
+        await self._emit_wait_progress(phase, detail, force=True)
+        poll_interval = self._parse_float_setting(
+            "esprit_llm_wait_heartbeat_interval_s", default=5.0, minimum=0.5
+        )
+
+        while remaining > 0:
+            chunk = min(poll_interval, remaining)
+            await asyncio.sleep(chunk)
+            remaining -= chunk
+            await self._emit_wait_progress(phase, detail)
+
     def supports_native_tool_calling(self) -> bool:
         if not self.config.model_name:
             return False
@@ -176,21 +236,38 @@ class LLM:
     ) -> AsyncIterator[LLMResponse]:
         messages = self._prepare_messages(conversation_history)
         max_retries = int(Config.get("esprit_llm_max_retries") or "5")
+        request_pacer = get_request_pacer()
 
         attempt = 0
         while attempt <= max_retries:
             try:
-                if self._is_antigravity():
-                    async for response in self._stream_antigravity(messages, tools=tools):
-                        yield response
-                else:
-                    async for response in self._stream(messages, tools=tools):
-                        yield response
+                await self._emit_wait_progress(
+                    "before_llm_processing",
+                    "queued for global LLM slot",
+                    force=(attempt == 0),
+                )
+                async with request_pacer.request_slot(on_wait=self._on_request_pacer_wait):
+                    await self._emit_wait_progress(
+                        "before_llm_processing",
+                        "sending request to provider",
+                        force=True,
+                    )
+                    if self._is_antigravity():
+                        async for response in self._stream_antigravity(messages, tools=tools):
+                            yield response
+                    else:
+                        async for response in self._stream(messages, tools=tools):
+                            yield response
                 return  # noqa: TRY300
             except Exception as e:  # noqa: BLE001
                 # Try account rotation on rate limit (429)
                 if self._try_rotate_on_rate_limit(e):
                     # Rotated to a new account — retry immediately (don't increment)
+                    await self._emit_wait_progress(
+                        "before_llm_processing",
+                        "rotated provider account after rate limit; retrying",
+                        force=True,
+                    )
                     continue
                 if attempt >= max_retries or not self._should_retry(e):
                     # Before giving up, try auto model fallback for Antigravity
@@ -199,8 +276,12 @@ class LLM:
                         attempt = 0
                         continue
                     self._raise_error(e)
-                wait = min(10, 2 * (2**attempt))
-                await asyncio.sleep(wait)
+                wait = self._compute_retry_delay(e, attempt)
+                await self._sleep_with_progress(
+                    wait,
+                    phase="before_llm_processing",
+                    detail=f"retry backoff in progress ({int(wait)}s)",
+                )
                 attempt += 1
 
     async def _stream(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None) -> AsyncIterator[LLMResponse]:
@@ -384,10 +465,13 @@ class LLM:
                                 accumulated = accumulated[
                                     : accumulated.find("</function>") + len("</function>")
                                 ]
-                                yield LLMResponse(content=accumulated)
+                                yield LLMResponse(content=accumulated, thinking_blocks=all_thinking or None)
                                 done_streaming = True
                                 continue
-                            yield LLMResponse(content=accumulated)
+                            yield LLMResponse(content=accumulated, thinking_blocks=all_thinking or None)
+                        elif thinking:
+                            # Yield thinking-only updates so the UI can show them
+                            yield LLMResponse(content=accumulated, thinking_blocks=all_thinking or None)
 
         # Update usage stats
         if total_usage:
@@ -470,9 +554,10 @@ class LLM:
             )
 
         compressed = list(self._compress_with_tracer_signal(conversation_history))
+        normalized = normalize_messages_for_provider(compressed)
         conversation_history.clear()
-        conversation_history.extend(compressed)
-        messages.extend(compressed)
+        conversation_history.extend(normalized)
+        messages.extend(normalized)
 
         if self._is_anthropic() and self.config.enable_prompt_caching:
             messages = self._add_cache_control(messages)
@@ -498,85 +583,21 @@ class LLM:
     def _build_completion_args(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None) -> dict[str, Any]:
         if not self._supports_vision():
             messages = self._strip_images(messages)
+        model_name = self.config.model_name
+        if not model_name:
+            raise LLMRequestFailedError("Model name must be configured.")
 
-        args: dict[str, Any] = {
-            "model": self.config.model_name,
-            "messages": messages,
-            "timeout": self.config.timeout,
-            "stream_options": {"include_usage": True},
-        }
+        try:
+            args = build_completion_args(
+                model_name=model_name,
+                messages=messages,
+                timeout=self.config.timeout,
+                tools=tools,
+            )
+        except CompletionArgsError as e:
+            raise LLMRequestFailedError(str(e), status_code=e.status_code) from e
 
-        if tools:
-            args["tools"] = tools
-
-        # Translate google/ → gemini/ for litellm compatibility
-        if self.config.model_name and self.config.model_name.lower().startswith("google/"):
-            args["model"] = "gemini/" + self.config.model_name.split("/", 1)[1]
-
-        # Esprit subscription provider — route through Esprit LLM proxy to Bedrock
-        if self.config.model_name and self.config.model_name.lower().startswith("esprit/"):
-            if PROVIDERS_AVAILABLE:
-                from esprit.providers.esprit_subs import (
-                    LLM_PROXY_URL,
-                    resolve_bedrock_model,
-                    _load_esprit_credentials,
-                )
-                bare_model = self.config.model_name.split("/", 1)[1]
-                bedrock_model = resolve_bedrock_model(bare_model)
-                creds = _load_esprit_credentials()
-                if creds and creds.access_token:
-                    # The Esprit proxy exposes an OpenAI-compatible API, so
-                    # we use the openai/ prefix to avoid litellm attempting
-                    # AWS SigV4 signing with bedrock/ prefix.
-                    args["model"] = f"openai/{bedrock_model}"
-                    args["api_base"] = LLM_PROXY_URL
-                    args["api_key"] = creds.access_token
-                    args["extra_headers"] = {
-                        "X-Esprit-Provider": "bedrock",
-                        "X-Esprit-Model": bedrock_model,
-                    }
-                else:
-                    raise LLMRequestFailedError(
-                        "Not logged in to Esprit. Run 'esprit provider login esprit' first.",
-                        status_code=401,
-                    )
-                return args
-
-        # Check provider-managed credentials first (API keys + OAuth)
-        use_oauth = False
-        provider_api_key: str | None = None
-        if PROVIDERS_AVAILABLE and self.config.model_name:
-            provider_api_key = get_provider_api_key(self.config.model_name)
-            if provider_api_key:
-                args["api_key"] = provider_api_key
-
-            use_oauth = should_use_oauth(self.config.model_name)
-            if use_oauth:
-                model_lower = self.config.model_name.lower()
-
-                # Codex models use OpenAI's Responses API (mode=responses
-                # in model_cost).  Route through the standard openai provider
-                # with Esprit's OAuth token — avoids litellm's chatgpt/
-                # provider which has auth-file bugs with external tokens.
-                if "codex" in model_lower:
-                    bare_model = self.config.model_name.split("/", 1)[-1]
-                    args["model"] = bare_model
-                    args["api_key"] = provider_api_key or "oauth-auth"
-                else:
-                    provider_headers = get_provider_headers(self.config.model_name)
-                    if provider_headers:
-                        args["extra_headers"] = provider_headers
-                    args["api_key"] = provider_api_key or "oauth-auth"
-
-        # Fall back to configured API key when provider auth is not active.
-        if not use_oauth:
-            if "api_key" not in args and (api_key := Config.get("llm_api_key")):
-                args["api_key"] = api_key
-
-        # Always resolve API base explicitly so provider-specific env vars (e.g.
-        # ANTHROPIC_BASE_URL) do not silently hijack requests.
-        if api_base := resolve_api_base(self.config.model_name):
-            args["api_base"] = api_base
+        args["stream_options"] = {"include_usage": True}
 
         if self._supports_reasoning():
             args["reasoning_effort"] = self._reasoning_effort
@@ -723,6 +744,28 @@ class LLM:
         )
         return code is None or litellm._should_retry(code)
 
+    def _compute_retry_delay(self, e: Exception, attempt: int) -> float:
+        base_wait = min(30.0, 2.0 * (2**attempt))
+        max_wait = self._parse_float_setting("esprit_llm_retry_max_wait_s", default=120.0, minimum=1.0)
+        jitter_ratio = self._parse_float_setting(
+            "esprit_llm_retry_jitter_ratio", default=0.25, minimum=0.0
+        )
+        retry_after = self._extract_retry_after_seconds(e)
+
+        target_wait = max(base_wait, retry_after or 0.0)
+        target_wait = min(target_wait, max_wait)
+
+        jitter = max(0.0, target_wait * max(0.0, jitter_ratio))
+        return target_wait + (random.uniform(0.0, jitter) if jitter > 0 else 0.0)
+
+    def _parse_float_setting(self, name: str, default: float, minimum: float = 0.0) -> float:
+        raw_value = Config.get(name)
+        try:
+            parsed = float(raw_value) if raw_value is not None else default
+        except (TypeError, ValueError):
+            parsed = default
+        return max(minimum, parsed)
+
     def _raise_error(self, e: Exception) -> None:
         from esprit.telemetry import posthog
 
@@ -730,9 +773,31 @@ class LLM:
         status_code = getattr(e, "status_code", None) or getattr(
             getattr(e, "response", None), "status_code", None
         )
+        details = str(e)
+
+        # LiteLLM can mask upstream OpenAI auth/scope failures for responses-mode
+        # models (especially Codex variants) as a generic APIConnectionError with
+        # "NoneType is not iterable". Surface a deterministic remediation message.
+        provider = str(getattr(e, "llm_provider", "") or "").lower()
+        model_name = str(
+            getattr(getattr(self, "config", None), "model_name", "") or ""
+        ).lower()
+        if (
+            provider == "openai"
+            and "nonetype' is not iterable" in details.lower()
+            and "codex" in model_name
+        ):
+            details = (
+                "OpenAI credentials are not authorized for this Codex model. "
+                "This usually means missing `api.responses.write` scope or "
+                "insufficient project role permissions. "
+                "Use an OpenAI API key with Responses API write access, "
+                "or run `esprit provider login openai` and re-authenticate."
+            )
+
         raise LLMRequestFailedError(
             f"LLM request failed: {type(e).__name__}",
-            str(e),
+            details,
             status_code=status_code,
         ) from e
 
@@ -767,12 +832,16 @@ class LLM:
 
     def _try_rotate_on_rate_limit(self, e: Exception) -> bool:
         """Try to rotate accounts on a 429 rate limit error. Returns True if rotated."""
-        if not PROVIDERS_AVAILABLE:
-            return False
         code = getattr(e, "status_code", None) or getattr(
             getattr(e, "response", None), "status_code", None
         )
         if code != 429:
+            return False
+
+        retry_after = self._extract_retry_after_seconds(e)
+        get_request_pacer().register_rate_limit(retry_after)
+
+        if not PROVIDERS_AVAILABLE:
             return False
 
         model = self.config.model_name or ""
@@ -793,15 +862,7 @@ class LLM:
 
         bare_model = model.split("/", 1)[-1]
         # Parse retry-after header if available
-        retry_after = 60.0
-        resp = getattr(e, "response", None)
-        if resp is not None:
-            ra = getattr(resp, "headers", {}).get("retry-after")
-            if ra:
-                try:
-                    retry_after = float(ra)
-                except ValueError:
-                    pass
+        retry_after = self._extract_retry_after_seconds(e) or 60.0
 
         pool.mark_rate_limited(provider_id, current.email, bare_model, retry_after)
         rotated = pool.rotate(provider_id, bare_model)
@@ -812,6 +873,19 @@ class LLM:
         logger.warning("Rate limited on %s, no other accounts available",
                        _mask_email(current.email))
         return False
+
+    def _extract_retry_after_seconds(self, e: Exception) -> float | None:
+        resp = getattr(e, "response", None)
+        if resp is None:
+            return None
+        headers = getattr(resp, "headers", {}) or {}
+        retry_after = headers.get("retry-after")
+        if not retry_after:
+            return None
+        try:
+            return max(0.0, float(retry_after))
+        except (TypeError, ValueError):
+            return None
 
     def _try_model_fallback(self, e: Exception) -> bool:
         """Try switching to the next fallback model when the current one fails persistently.

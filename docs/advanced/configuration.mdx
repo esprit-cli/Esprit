@@ -27,6 +27,26 @@ Configure Esprit using environment variables or a config file.
   Maximum number of retries for LLM API calls on transient failures.
 </ParamField>
 
+<ParamField path="ESPRIT_LLM_MAX_INFLIGHT" default="1" type="integer">
+  Global maximum number of concurrent in-flight LLM requests across all agents/subagents.
+</ParamField>
+
+<ParamField path="ESPRIT_LLM_MIN_START_INTERVAL_MS" default="1200" type="integer">
+  Minimum delay between starting two LLM requests to avoid burst throttling.
+</ParamField>
+
+<ParamField path="ESPRIT_LLM_START_JITTER_MS" default="400" type="integer">
+  Random jitter added when starting LLM requests to reduce synchronized request spikes.
+</ParamField>
+
+<ParamField path="ESPRIT_LLM_WAIT_POLL_INTERVAL_S" default="1.0" type="number">
+  Poll interval (seconds) while waiting for a global LLM slot or pacing cooldown.
+</ParamField>
+
+<ParamField path="ESPRIT_LLM_WAIT_HEARTBEAT_INTERVAL_S" default="5.0" type="number">
+  Interval for progress heartbeat updates while LLM requests are queued or retrying.
+</ParamField>
+
 <ParamField path="ESPRIT_REASONING_EFFORT" default="high" type="string">
   Control thinking effort for reasoning models. Valid values: `none`, `minimal`, `low`, `medium`, `high`, `xhigh`. Defaults to `medium` for quick scan mode.
 </ParamField>
@@ -65,12 +85,36 @@ Configure Esprit using environment variables or a config file.
 
 ## Sandbox Configuration
 
-<ParamField path="ESPRIT_SANDBOX_EXECUTION_TIMEOUT" default="120" type="integer">
+<ParamField path="ESPRIT_SANDBOX_EXECUTION_TIMEOUT" default="300" type="integer">
   Maximum execution time in seconds for sandbox operations.
 </ParamField>
 
 <ParamField path="ESPRIT_SANDBOX_CONNECT_TIMEOUT" default="10" type="integer">
   Timeout in seconds for connecting to the sandbox container.
+</ParamField>
+
+<ParamField path="ESPRIT_SANDBOX_CLIENT_GRACE_TIMEOUT" default="120" type="integer">
+  Extra client-side wait time (seconds) added on top of sandbox execution timeout before considering a tool-server request failed.
+</ParamField>
+
+<ParamField path="ESPRIT_SANDBOX_REQUEST_RETRIES" default="2" type="integer">
+  Number of retries for transient sandbox tool-server request failures (ReadTimeout, ReadError, temporary 5xx/429).
+</ParamField>
+
+<ParamField path="ESPRIT_SANDBOX_RETRY_BASE_DELAY_MS" default="400" type="integer">
+  Base backoff delay in milliseconds between sandbox tool-server retries.
+</ParamField>
+
+<ParamField path="ESPRIT_TOOL_SERVER_MAX_WORKERS" default="48" type="integer">
+  Maximum thread workers used by the sandbox tool server for concurrent tool execution.
+</ParamField>
+
+<ParamField path="ESPRIT_SUBAGENT_MAX_ACTIVE" default="1" type="integer">
+  Maximum number of subagents allowed to execute at once. Additional subagents stay queued.
+</ParamField>
+
+<ParamField path="ESPRIT_SUBAGENT_SLOT_POLL_S" default="1.0" type="number">
+  Poll interval (seconds) for queued subagents waiting for an execution slot.
 </ParamField>
 
 ## Config File

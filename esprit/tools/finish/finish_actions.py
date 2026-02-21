@@ -31,7 +31,7 @@ def _check_active_agents(agent_state: Any = None) -> dict[str, Any] | None:
                 continue
 
             status = node.get("status", "unknown")
-            if status == "running":
+            if status in ["running", "waiting", "queued"]:
                 active_agents.append(
                     {
                         "id": agent_id,

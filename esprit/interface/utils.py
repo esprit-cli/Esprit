@@ -393,6 +393,48 @@ _SCAN_SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 _ACTIVITY_SPINNER = ["◐", "◓", "◑", "◒"]
 
 
+def infer_scan_state(
+    tracer: Any,
+    scan_completed: bool = False,
+    scan_failed: bool = False,
+) -> tuple[bool, bool]:
+    """Infer effective scan state from explicit flags, run metadata, and agent statuses."""
+    if scan_failed:
+        return False, True
+    if scan_completed:
+        return True, False
+    if not tracer:
+        return False, False
+
+    run_metadata = getattr(tracer, "run_metadata", {}) or {}
+    run_status = str(run_metadata.get("status", "")).strip().lower()
+    completed_statuses = {"completed", "complete", "finished", "done", "success"}
+    failed_statuses = {"failed", "error", "cancelled", "canceled", "stopped"}
+
+    if run_status in completed_statuses:
+        return True, False
+    if run_status in failed_statuses:
+        return False, True
+
+    agents = getattr(tracer, "agents", {}) or {}
+    if not agents:
+        return False, False
+
+    statuses = [str(a.get("status", "")).strip().lower() for a in list(agents.values())]
+    fail_statuses = {"failed", "llm_failed"}
+    active_statuses = {"running", "queued", "waiting", "stopping", "initializing"}
+    done_statuses = {"completed", "finished", "stopped", "cancelled", "canceled"} | fail_statuses
+
+    if any((s in active_statuses) or (s == "") for s in statuses):
+        return False, False
+    if any(s in fail_statuses for s in statuses):
+        return False, True
+    if all(s in done_statuses for s in statuses):
+        return True, False
+
+    return False, False
+
+
 def _format_elapsed(seconds: float) -> str:
     """Format elapsed seconds as H:MM:SS or M:SS."""
     total = int(seconds)
@@ -414,11 +456,15 @@ def build_tui_stats_text(
     if not tracer:
         return stats_text
 
+    scan_completed, scan_failed = infer_scan_state(tracer, scan_completed, scan_failed)
+
     model = ""
+    scan_mode = ""
     # Model name with provider badge
     if agent_config:
         llm_config = agent_config["llm_config"]
         model = getattr(llm_config, "model_name", "Unknown")
+        scan_mode = str(getattr(llm_config, "scan_mode", "") or "")
         bare_model = model.split("/", 1)[-1] if "/" in model else model
         is_antigravity = model.startswith("antigravity/")
 
@@ -435,6 +481,26 @@ def build_tui_stats_text(
             stats_text.append("CC ", style="bold #d97706")
         stats_text.append(bare_model, style="white")
 
+    # Scan mode + estimate (from scan config when available)
+    scan_config = getattr(tracer, "scan_config", {}) or {}
+    scan_mode = str(scan_config.get("scan_mode") or scan_mode or "")
+    est_cost_low = scan_config.get("estimated_cost_low")
+    est_cost_high = scan_config.get("estimated_cost_high")
+    est_time_low = scan_config.get("estimated_time_low_min")
+    est_time_high = scan_config.get("estimated_time_high_min")
+
+    if scan_mode:
+        stats_text.append("\n")
+        stats_text.append("Mode ", style="dim")
+        stats_text.append(scan_mode.title(), style="#22d3ee")
+        if isinstance(est_cost_low, (int, float)) and isinstance(est_cost_high, (int, float)):
+            stats_text.append("  ·  ", style="dim")
+            stats_text.append("Est ", style="dim")
+            stats_text.append(f"${float(est_cost_low):.2f}-${float(est_cost_high):.2f}", style="#fbbf24")
+        if isinstance(est_time_low, (int, float)) and isinstance(est_time_high, (int, float)):
+            stats_text.append("  ", style="dim")
+            stats_text.append(f"~{int(round(float(est_time_low)))}-{int(round(float(est_time_high)))}m", style="#22d3ee")
+
     # Elapsed time and scan status
     elapsed = 0.0
     elapsed_str = ""
@@ -443,9 +509,11 @@ def build_tui_stats_text(
 
         try:
             start = datetime.fromisoformat(tracer.start_time)
-            # Use frozen end_time when scan is done/failed, otherwise live clock
-            if (scan_completed or scan_failed) and hasattr(tracer, "end_time") and tracer.end_time:
-                end = datetime.fromisoformat(tracer.end_time)
+            # Use frozen end time when scan is done/failed, otherwise live clock.
+            run_metadata = getattr(tracer, "run_metadata", {}) or {}
+            end_iso = getattr(tracer, "end_time", None) or run_metadata.get("end_time")
+            if (scan_completed or scan_failed) and end_iso:
+                end = datetime.fromisoformat(str(end_iso))
                 elapsed = (end - start).total_seconds()
             else:
                 elapsed = (datetime.now(timezone.utc) - start).total_seconds()
@@ -517,6 +585,40 @@ def build_tui_stats_text(
     stats_text.append(f"{requests}", style="white bold")
     stats_text.append(" reqs", style="dim")
 
+    # Live streaming indicator - shows which agents are actively generating
+    streaming_agents = []
+    thinking_agents = []
+    for aid in list(tracer.streaming_content.keys()):
+        content = tracer.streaming_content.get(aid)
+        if content and content.strip():
+            agent_data = tracer.agents.get(aid, {})
+            name = agent_data.get("name", "Agent")
+            streaming_agents.append(name)
+    for aid in list(getattr(tracer, "streaming_thinking", {}).keys()):
+        content = getattr(tracer, "streaming_thinking", {}).get(aid)
+        if content and content.strip():
+            agent_data = tracer.agents.get(aid, {})
+            name = agent_data.get("name", "Agent")
+            if name not in streaming_agents:
+                thinking_agents.append(name)
+
+    if streaming_agents or thinking_agents:
+        stats_text.append("\n")
+        gen_frame = _ACTIVITY_SPINNER[spinner_frame % len(_ACTIVITY_SPINNER)]
+        if thinking_agents and not streaming_agents:
+            stats_text.append(f"{gen_frame} ", style="#a855f7")
+            stats_text.append("Thinking", style="#a855f7")
+        else:
+            stats_text.append(f"{gen_frame} ", style="#22d3ee")
+            stats_text.append("Generating", style="#22d3ee")
+        # Show streaming token count from current content
+        total_streaming_chars = sum(
+            len(tracer.streaming_content.get(aid, ""))
+            for aid in tracer.streaming_content
+        )
+        if total_streaming_chars > 0:
+            stats_text.append(f"  ~{format_token_count(total_streaming_chars // 4)} tok", style="dim #22d3ee")
+
     # Token breakdown
     stats_text.append("\n")
     stats_text.append("─" * 28, style="dim #3f3f3f")
@@ -582,6 +684,34 @@ def build_tui_stats_text(
     if lifetime_cost >= 0.01:
         stats_text.append("  all-time ", style="dim")
         stats_text.append(f"${lifetime_cost:.2f}", style="dim #a78bfa")
+
+    if scan_completed or scan_failed:
+        run_dir_raw = getattr(tracer, "_run_dir", None)
+        run_dir = Path(run_dir_raw) if run_dir_raw else None
+        if run_dir and run_dir.exists():
+            stats_text.append("\n")
+            stats_text.append("─" * 28, style="dim #3f3f3f")
+            stats_text.append("\n")
+            stats_text.append("  Output ", style="dim")
+            stats_text.append(str(run_dir), style="#60a5fa")
+
+            report_path = run_dir / "penetration_test_report.md"
+            if report_path.exists():
+                stats_text.append("\n")
+                stats_text.append("  Report ", style="dim")
+                stats_text.append(str(report_path.name), style="#22d3ee")
+
+            vuln_csv_path = run_dir / "vulnerabilities.csv"
+            if vuln_csv_path.exists():
+                stats_text.append("\n")
+                stats_text.append("  Vulns ", style="dim")
+                stats_text.append("vulnerabilities/ + vulnerabilities.csv", style="#22d3ee")
+
+            replay_path = run_dir / "replay.mp4"
+            if replay_path.exists():
+                stats_text.append("\n")
+                stats_text.append("  Video ", style="dim")
+                stats_text.append(str(replay_path.name), style="#a78bfa")
 
     # Vulnerabilities
     vuln_count = (

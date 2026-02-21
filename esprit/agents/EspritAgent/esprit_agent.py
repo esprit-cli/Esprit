@@ -84,6 +84,12 @@ class EspritAgent(BaseAgent):
         task_description = " ".join(task_parts)
 
         if user_instructions:
-            task_description += f"\n\nSpecial instructions: {user_instructions}"
+            task_description += (
+                f"\n\n<primary_objective>\n"
+                f"Your PRIMARY goal for this scan is: {user_instructions}\n"
+                f"Focus your efforts, tool usage, and sub-agent delegation around this objective. "
+                f"All other testing is secondary to this goal.\n"
+                f"</primary_objective>"
+            )
 
         return await self.agent_loop(task=task_description)

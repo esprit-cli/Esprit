@@ -11,6 +11,27 @@ _FUNC_END_PATTERN = re.compile(r"</function>")
 _COMPLETE_PARAM_PATTERN = re.compile(r"<parameter=([^>]+)>(.*?)</parameter>", re.DOTALL)
 _INCOMPLETE_PARAM_PATTERN = re.compile(r"<parameter=([^>]+)>(.*)$", re.DOTALL)
 
+# Patterns for stripping thinking tags from streaming content
+_THINKING_COMPLETE = re.compile(r"<thinking>.*?</thinking>", re.DOTALL | re.IGNORECASE)
+_THINKING_INCOMPLETE = re.compile(r"<thinking>.*$", re.DOTALL | re.IGNORECASE)
+_THINKING_PARTIAL_TAG = re.compile(
+    r"<t(?:h(?:i(?:n(?:k(?:i(?:n(?:g)?)?)?)?)?)?)?>?$", re.IGNORECASE
+)
+
+
+def _strip_thinking_tags(content: str) -> str:
+    """Strip complete and incomplete <thinking> tags from streaming content."""
+    if "<thinking" not in content.lower() and "<t" not in content[-12:].lower():
+        return content
+    # Strip complete thinking blocks
+    content = _THINKING_COMPLETE.sub("", content)
+    # Strip incomplete thinking block (opening tag but no closing tag)
+    content = _THINKING_INCOMPLETE.sub("", content)
+    # Strip partial <thinking tag being typed at end
+    content = _THINKING_PARTIAL_TAG.sub("", content)
+    # Also strip </thinking> closing tags that remain
+    return re.sub(r"</thinking>", "", content, flags=re.IGNORECASE)
+
 
 def _get_safe_content(content: str) -> tuple[str, str]:
     if not content:
@@ -38,8 +59,13 @@ class StreamSegment:
     is_complete: bool = False
 
 
-def parse_streaming_content(content: str) -> list[StreamSegment]:
+def parse_streaming_content(content: str) -> list[StreamSegment]:  # noqa: PLR0912
     if not content:
+        return []
+
+    # Strip thinking tags before parsing
+    content = _strip_thinking_tags(content)
+    if not content.strip():
         return []
 
     segments: list[StreamSegment] = []

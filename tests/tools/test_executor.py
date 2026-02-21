@@ -3,6 +3,8 @@
 import asyncio
 from typing import Any
 
+import httpx
+
 from esprit.tools import executor as executor_module
 from esprit.tools.executor import _extract_plain_result, process_tool_invocations
 
@@ -122,3 +124,118 @@ class TestProcessToolInvocations:
         assert conversation_history[0]["tool_call_id"] == "call_1"
         assert conversation_history[1]["role"] == "tool"
         assert conversation_history[1]["tool_call_id"] == "call_2"
+
+
+class _DummyAgentState:
+    def __init__(self) -> None:
+        self.sandbox_id = "sandbox-1"
+        self.sandbox_token = "token-1"
+        self.sandbox_info = {"tool_server_port": 48081}
+        self.agent_id = "agent-1"
+
+
+class _DummyRuntime:
+    def __init__(self) -> None:
+        self.revive_calls = 0
+
+    async def get_sandbox_url(self, container_id: str, port: int) -> str:
+        assert container_id == "sandbox-1"
+        assert port == 48081
+        return "http://sandbox.local"
+
+    async def revive_sandbox(self, _container_id: str) -> dict[str, Any]:
+        self.revive_calls += 1
+        return {
+            "workspace_id": "sandbox-1",
+            "api_url": "http://sandbox.local",
+            "auth_token": "token-2",
+            "tool_server_port": 48081,
+        }
+
+
+class _FakeResponse:
+    def __init__(self, payload: dict[str, Any], status_code: int = 200) -> None:
+        self._payload = payload
+        self.status_code = status_code
+        self.request = httpx.Request("POST", "http://sandbox.local/execute")
+
+    def raise_for_status(self) -> None:
+        if self.status_code >= 400:
+            raise httpx.HTTPStatusError(
+                message=f"HTTP {self.status_code}",
+                request=self.request,
+                response=httpx.Response(self.status_code, request=self.request),
+            )
+
+    def json(self) -> dict[str, Any]:
+        return self._payload
+
+
+class TestSandboxExecutionRetries:
+    def test_retries_transient_request_errors_then_succeeds(self, monkeypatch: Any) -> None:
+        runtime = _DummyRuntime()
+        agent_state = _DummyAgentState()
+        calls = {"count": 0}
+
+        class _FakeClient:
+            async def __aenter__(self) -> "_FakeClient":
+                return self
+
+            async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+                return None
+
+            async def post(self, *args: Any, **kwargs: Any) -> _FakeResponse:
+                calls["count"] += 1
+                if calls["count"] < 3:
+                    raise httpx.ReadTimeout(
+                        "timed out",
+                        request=httpx.Request("POST", "http://sandbox.local/execute"),
+                    )
+                return _FakeResponse({"result": {"ok": True}})
+
+        monkeypatch.setattr(executor_module, "get_runtime", lambda: runtime)
+        monkeypatch.setattr(executor_module.httpx, "AsyncClient", lambda **_: _FakeClient())
+
+        result = asyncio.run(
+            executor_module._execute_tool_in_sandbox(
+                "terminal_execute",
+                agent_state,
+                command="echo test",
+            )
+        )
+
+        assert result == {"ok": True}
+        assert calls["count"] == 3
+        assert runtime.revive_calls >= 1
+
+    def test_retries_busy_tool_server_error_then_succeeds(self, monkeypatch: Any) -> None:
+        runtime = _DummyRuntime()
+        agent_state = _DummyAgentState()
+        calls = {"count": 0}
+
+        class _FakeClient:
+            async def __aenter__(self) -> "_FakeClient":
+                return self
+
+            async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+                return None
+
+            async def post(self, *args: Any, **kwargs: Any) -> _FakeResponse:
+                calls["count"] += 1
+                if calls["count"] == 1:
+                    return _FakeResponse({"error": "Agent has an active tool request; retry shortly"})
+                return _FakeResponse({"result": {"ok": True}})
+
+        monkeypatch.setattr(executor_module, "get_runtime", lambda: runtime)
+        monkeypatch.setattr(executor_module.httpx, "AsyncClient", lambda **_: _FakeClient())
+
+        result = asyncio.run(
+            executor_module._execute_tool_in_sandbox(
+                "python_action",
+                agent_state,
+                action="list_sessions",
+            )
+        )
+
+        assert result == {"ok": True}
+        assert calls["count"] == 2

@@ -41,6 +41,7 @@ from esprit.interface.utils import (  # noqa: E402
     generate_run_name,
     image_exists,
     infer_target_type,
+    get_severity_color,
     process_pull_line,
     rewrite_localhost_targets,
     validate_config_file,
@@ -52,6 +53,21 @@ from esprit.telemetry.tracer import get_global_tracer  # noqa: E402
 
 
 logging.getLogger().setLevel(logging.ERROR)
+
+
+def _video_export_dependency_issue() -> str | None:
+    try:
+        import playwright.sync_api  # noqa: F401
+    except Exception:
+        return (
+            "playwright is not installed. Install with: "
+            "pip install 'esprit-cli[video]' && python -m playwright install chromium"
+        )
+
+    if shutil.which("ffmpeg") is None:
+        return "ffmpeg is not installed or not on PATH."
+
+    return None
 
 
 def validate_environment() -> None:  # noqa: PLR0912, PLR0915
@@ -354,7 +370,8 @@ def _get_available_models(configured_providers: list[tuple[str, str]]) -> list[t
 
     for provider_id, model_list in AVAILABLE_MODELS.items():
         if provider_id in provider_ids:
-            for model_id, display_name in model_list:
+            for entry in model_list:
+                model_id, display_name = entry[0], entry[1]
                 full_id = f"{provider_id}/{model_id}"
                 models.append((full_id, f"{display_name} [{provider_id}]"))
 
@@ -367,7 +384,56 @@ def _get_available_models(configured_providers: list[tuple[str, str]]) -> list[t
     return models
 
 
-def pre_scan_setup(non_interactive: bool = False) -> bool:
+def _non_interactive_model_rank(model_id: str) -> tuple[int, str]:
+    """Rank model IDs for safer non-interactive defaults."""
+    model_lower = model_id.lower()
+    provider = model_lower.split("/", 1)[0] if "/" in model_lower else ""
+
+    score = 50
+    if provider == "esprit":
+        score = 0
+    elif "haiku" in model_lower:
+        score = 5
+    elif "mini" in model_lower or "flash" in model_lower:
+        score = 10
+    elif "sonnet" in model_lower:
+        score = 20
+    elif "gpt-5" in model_lower:
+        score = 30
+    elif "opus" in model_lower:
+        score = 40
+
+    # OpenAI OAuth Codex models are frequently mis-scoped for Responses API write.
+    if provider == "openai" and "codex" in model_lower:
+        score += 20
+
+    return (score, model_lower)
+
+
+def _pick_auto_model(available_models: list[tuple[str, str]]) -> str | None:
+    if not available_models:
+        return None
+    ranked = sorted(available_models, key=lambda item: _non_interactive_model_rank(item[0]))
+    return ranked[0][0]
+
+
+def _warmup_fallback_models(current_model: str | None) -> list[str]:
+    providers = _get_configured_providers()
+    available_models = _get_available_models(providers)
+    ranked_models = [m[0] for m in sorted(available_models, key=lambda item: _non_interactive_model_rank(item[0]))]
+
+    ordered: list[str] = []
+    if current_model:
+        ordered.append(current_model)
+
+    for model_id in ranked_models:
+        if model_id not in ordered:
+            ordered.append(model_id)
+
+    return ordered
+
+
+def pre_scan_setup(non_interactive: bool = False, args: "argparse.Namespace | None" = None) -> bool:
     """Interactive pre-scan checks. Returns True if ready to scan, False to abort."""
     from rich.prompt import Prompt, Confirm
     from rich.table import Table
@@ -447,8 +513,11 @@ def pre_scan_setup(non_interactive: bool = False) -> bool:
 
     if not current_model and available_models:
         if non_interactive:
-            # Auto-select the first available model in non-interactive mode
-            selected_model = available_models[0][0]
+            selected_model = _pick_auto_model(available_models)
+            if not selected_model:
+                console.print("[red]Could not auto-select a model.[/]")
+                console.print()
+                return False
             os.environ["ESPRIT_LLM"] = selected_model
             Config.save_current()
             current_model = selected_model
@@ -495,13 +564,124 @@ def pre_scan_setup(non_interactive: bool = False) -> bool:
                 + (f" [dim](+{count - 1} available for rotation)[/]" if count > 1 else "")
             )
 
+    # Show selection-time estimate (depends on selected model and scan mode)
+    if args is not None and current_model:
+        try:
+            from esprit.llm.cost_estimator import estimate_scan_profile
+
+            target_count = len(getattr(args, "targets_info", []) or [])
+            is_whitebox = any(
+                t.get("type") in {"repository", "local_code"}
+                for t in (getattr(args, "targets_info", []) or [])
+                if isinstance(t, dict)
+            )
+            estimate = estimate_scan_profile(
+                model_name=current_model,
+                scan_mode=getattr(args, "scan_mode", "deep"),
+                target_count=max(1, target_count),
+                is_whitebox=is_whitebox,
+            )
+            console.print(
+                "[dim]Selection estimate:[/] "
+                f"[cyan]${estimate['estimated_cost_low']:.2f}-${estimate['estimated_cost_high']:.2f}[/] "
+                f"[dim]·[/] [cyan]~{int(round(estimate['estimated_time_low_min']))}-"
+                f"{int(round(estimate['estimated_time_high_min']))} min[/]"
+            )
+        except Exception:
+            pass
+
     console.print()
 
-    # --- Step 4: Confirm ---
+    # --- Step 4: Scan goal (optional) ---
+    if not non_interactive and args is not None:
+        existing_instruction = getattr(args, "instruction", None)
+        if not existing_instruction:
+            console.print(
+                "[bold]Do you have a specific goal?[/] "
+                "[dim](e.g. 'find auth bypass vulnerabilities', 'test the API endpoints')[/]"
+            )
+            goal = Prompt.ask(
+                "[bold]Goal[/]",
+                default="general pentest",
+            )
+            if goal and goal.strip().lower() not in ("", "general pentest", "no", "none", "n/a"):
+                args.instruction = goal.strip()
+                console.print(f"[dim]Goal:[/] [#22d3ee]{args.instruction}[/]")
+            else:
+                console.print("[dim]Goal:[/] general penetration test")
+            console.print()
+
+    # --- Step 5: Confirm ---
     if not non_interactive:
         if not Confirm.ask("[bold]Proceed with scan?[/]", default=True):
             console.print("[dim]Scan cancelled.[/]")
             return False
+
+    # --- Step 6: Video recording settings ---
+    if args is not None:
+        if non_interactive:
+            # Non-interactive: no video by default
+            args.video_enabled = False
+            args.video_speed = 10.0
+            args.video_resolution = (1920, 1080)
+            args.video_output = None
+        else:
+            console.print()
+            record_video = Confirm.ask(
+                "[bold]Record video replay of this scan?[/]", default=True
+            )
+            args.video_enabled = record_video
+
+            if record_video:
+                # Speed selection
+                console.print()
+                console.print("[bold]Video speed:[/]")
+                console.print("  1. [cyan]5x[/]   — slow, detailed")
+                console.print("  2. [cyan]10x[/]  — balanced [dim](default)[/]")
+                console.print("  3. [cyan]20x[/]  — fast overview")
+                console.print("  4. [cyan]50x[/]  — ultra fast")
+                speed_choice = Prompt.ask(
+                    "Select speed",
+                    choices=["1", "2", "3", "4"],
+                    default="2",
+                )
+                speed_map = {"1": 5.0, "2": 10.0, "3": 20.0, "4": 50.0}
+                args.video_speed = speed_map[speed_choice]
+
+                # Resolution selection
+                res_choice = Prompt.ask(
+                    "[bold]Resolution[/]",
+                    choices=["1080p", "720p"],
+                    default="1080p",
+                )
+                res_map = {"1080p": (1920, 1080), "720p": (1280, 720)}
+                args.video_resolution = res_map[res_choice]
+
+                # Save path
+                default_path = "esprit_runs/<run>/replay.mp4"
+                custom_path = Prompt.ask(
+                    "[bold]Save video to[/]",
+                    default=default_path,
+                )
+                if custom_path == default_path:
+                    args.video_output = None  # Will use default run dir
+                else:
+                    args.video_output = custom_path
+                dep_issue = _video_export_dependency_issue()
+                if dep_issue:
+                    console.print(
+                        f"[yellow]Video export dependency check:[/] {dep_issue}"
+                    )
+
+                speed_label = f"{args.video_speed:.0f}x"
+                console.print(
+                    f"[dim]Video:[/] {speed_label} · {res_choice}"
+                    + (f" · {custom_path}" if args.video_output else "")
+                )
+            else:
+                args.video_speed = 10.0
+                args.video_resolution = (1920, 1080)
+                args.video_output = None
 
     console.print()
     return True
@@ -512,28 +692,15 @@ async def warm_up_llm() -> None:
     from esprit.llm.api_base import (
         configured_api_base,
         detect_conflicting_provider_base_env,
-        resolve_api_base,
     )
-    from esprit.providers.litellm_integration import (
-        get_provider_api_key,
-        get_provider_headers,
-        should_use_oauth,
-    )
+    from esprit.llm.completion_args import build_completion_args
 
     console = Console()
     model_name = ""
 
     try:
         model_name = Config.get("esprit_llm") or DEFAULT_MODEL
-        api_key = Config.get("llm_api_key")
-        api_base = resolve_api_base(model_name)
-
-        # Codex OAuth models use a non-standard API — skip warm-up test
         model_lower = model_name.lower() if model_name else ""
-        is_codex_oauth = "codex" in model_lower
-        if is_codex_oauth and should_use_oauth(model_name):
-            console.print("[dim]Codex OAuth configured — skipping warm-up test[/]")
-            return
 
         # Esprit subscription routes through proxy — skip warm-up test
         if model_lower.startswith("esprit/"):
@@ -554,44 +721,63 @@ async def warm_up_llm() -> None:
             console.print("[dim]Antigravity configured — skipping warm-up test[/]")
             return
 
-        # If no direct API key, check OAuth providers
-        if not api_key:
-            oauth_key = get_provider_api_key(model_name)
-            if oauth_key:
-                api_key = oauth_key
-
         test_messages = [
             {"role": "system", "content": "You are a helpful assistant."},
             {"role": "user", "content": "Reply with just 'OK'."},
         ]
 
         llm_timeout = int(Config.get("llm_timeout") or "300")
+        warmup_timeout = min(llm_timeout, 45)
+        candidates = _warmup_fallback_models(model_name)
+        max_candidates = 4
+        last_error: Exception | None = None
 
-        completion_kwargs: dict[str, Any] = {
-            "model": model_name,
-            "messages": test_messages,
-            "timeout": llm_timeout,
-        }
+        for idx, candidate_model in enumerate(candidates[:max_candidates]):
+            try:
+                completion_kwargs = build_completion_args(
+                    model_name=candidate_model,
+                    messages=test_messages,
+                    timeout=warmup_timeout,
+                )
+                response = litellm.completion(**completion_kwargs)
+                validate_llm_response(response)
 
-        # Translate google/ → gemini/ for litellm compatibility
-        if model_name and model_name.lower().startswith("google/"):
-            completion_kwargs["model"] = "gemini/" + model_name.split("/", 1)[1]
-        if api_key:
-            completion_kwargs["api_key"] = api_key
-        if api_base:
-            completion_kwargs["api_base"] = api_base
+                if candidate_model != model_name:
+                    os.environ["ESPRIT_LLM"] = candidate_model
+                    Config.save_current()
+                    console.print(
+                        "[yellow]Selected model was unavailable. "
+                        f"Falling back to: {candidate_model}[/]"
+                    )
+                return
+            except Exception as e:  # noqa: BLE001
+                last_error = e
+                if idx < min(len(candidates[:max_candidates]), max_candidates) - 1:
+                    console.print(
+                        f"[dim]Warm-up failed for {candidate_model}; trying fallback model...[/]"
+                    )
+                continue
 
-        # Add OAuth headers if applicable
-        if should_use_oauth(model_name):
-            extra_headers = get_provider_headers(model_name)
-            if extra_headers:
-                completion_kwargs["extra_headers"] = extra_headers
-
-        response = litellm.completion(**completion_kwargs)
-
-        validate_llm_response(response)
+        if last_error:
+            raise last_error
 
     except Exception as e:  # noqa: BLE001
+        error_detail = str(e)
+        error_detail_lower = error_detail.lower()
+        model_lower = (Config.get("esprit_llm") or DEFAULT_MODEL).lower()
+        if (
+            "nonetype' is not iterable" in error_detail_lower
+            and "codex" in model_lower
+            and "openai" in model_lower
+        ):
+            error_detail = (
+                "OpenAI credentials are not authorized for this Codex model. "
+                "This usually means missing `api.responses.write` scope or "
+                "insufficient project role permissions. "
+                "Use an OpenAI API key with Responses API write access, "
+                "or run `esprit provider login openai` and re-authenticate."
+            )
+
         error_text = Text()
         error_text.append("LLM CONNECTION FAILED", style="bold red")
         error_text.append("\n\n", style="white")
@@ -613,7 +799,7 @@ async def warm_up_llm() -> None:
                     f"Unset it in your shell: unset {env_name}\n",
                     style="dim white",
                 )
-        error_text.append(f"\nError: {e}", style="dim white")
+        error_text.append(f"\nError: {error_detail}", style="dim white")
 
         panel = Panel(
             error_text,
@@ -787,6 +973,35 @@ Supported providers:
     scan_parser.add_argument("-n", "--non-interactive", action="store_true", help="Non-interactive mode")
     scan_parser.add_argument("-m", "--scan-mode", choices=["quick", "standard", "deep"], default="deep")
     scan_parser.add_argument("--config", type=str, help="Path to custom config file")
+    scan_parser.add_argument("--resume", type=str, help="Path to checkpoint file to resume from")
+
+    # Report subcommand
+    report_parser = subparsers.add_parser(
+        "report",
+        help="Generate reports from a completed scan",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    report_parser.add_argument("run_id", help="Run ID or path to run directory")
+    report_parser.add_argument("--html", action="store_true", help="Generate HTML report")
+    report_parser.add_argument("--timelapse", action="store_true", help="Generate timelapse")
+    report_parser.add_argument("--output", "-o", type=str, help="Output directory for reports")
+    report_parser.add_argument(
+        "--video",
+        action="store_true",
+        help="Export scan replay as MP4 video",
+    )
+    report_parser.add_argument(
+        "--speed",
+        type=float,
+        default=10.0,
+        help="Video playback speed multiplier (default: 10)",
+    )
+    report_parser.add_argument(
+        "--resolution",
+        choices=["1080p", "720p"],
+        default="1080p",
+        help="Video resolution (default: 1080p)",
+    )
 
     # Uninstall subcommand
     subparsers.add_parser(
@@ -840,6 +1055,11 @@ Supported providers:
     # Handle uninstall subcommand
     if args.command == "uninstall":
         sys.exit(cmd_uninstall())
+
+    # Handle report subcommand
+    if args.command == "report":
+        _cmd_report(args)
+        sys.exit(0)
 
     # Handle scan subcommand or legacy --target
     targets = []
@@ -936,9 +1156,21 @@ def display_completion_message(args: argparse.Namespace, results_path: Path) -> 
             target_text.append("\n        ")
             target_text.append(target_info["original"], style="white")
 
+    # Show goal if one was set
+    goal_instruction = getattr(args, "instruction", None)
+    goal_parts: list[Any] = []
+    if goal_instruction:
+        goal_text = Text()
+        goal_text.append("\n")
+        goal_text.append("Goal", style="dim")
+        goal_text.append("    ")
+        goal_text.append(goal_instruction, style="#22d3ee")
+        goal_parts = ["\n", goal_text]
+
     stats_text = build_final_stats_text(tracer)
 
     panel_parts = [completion_text, "\n\n", target_text]
+    panel_parts.extend(goal_parts)
 
     if stats_text.plain:
         panel_parts.extend(["\n", stats_text])
@@ -950,6 +1182,59 @@ def display_completion_message(args: argparse.Namespace, results_path: Path) -> 
         results_text.append("  ")
         results_text.append(str(results_path), style="#60a5fa")
         panel_parts.extend(["\n", results_text])
+
+    if tracer and tracer.vulnerability_reports:
+        vuln_text = Text()
+        vuln_text.append("\n")
+        vuln_text.append("Vulnerabilities", style="dim")
+        for report in tracer.vulnerability_reports:
+            title = str(report.get("title", "Untitled"))
+            severity = str(report.get("severity", "info")).lower()
+            color = get_severity_color(severity)
+            vuln_text.append("\n  ")
+            vuln_text.append(f"{severity.upper():<8}", style=f"bold {color}")
+            vuln_text.append("  ")
+            vuln_text.append(title, style="white")
+        panel_parts.extend(["\n", vuln_text])
+
+    if scan_completed or has_vulnerabilities:
+        artifacts = [
+            results_path / "penetration_test_report.md",
+            results_path / "vulnerabilities.csv",
+            results_path / "vulnerabilities",
+            results_path / "replay.mp4",
+            results_path / "checkpoint.json",
+            results_path / "run.log",
+        ]
+        artifacts_text = Text()
+        first = True
+        for artifact_path in artifacts:
+            if artifact_path.exists():
+                if first:
+                    artifacts_text.append("\n")
+                    artifacts_text.append("Saved", style="dim")
+                    first = False
+                artifacts_text.append("\n  ")
+                artifacts_text.append(str(artifact_path), style="#60a5fa")
+        if not first:
+            panel_parts.extend(["\n", artifacts_text])
+
+    # Show video save path if auto-export was configured
+    video_path = getattr(args, "video_saved_path", None)
+    if video_path:
+        video_text = Text()
+        video_text.append("\n")
+        video_text.append("Video", style="dim")
+        video_text.append("   ")
+        video_text.append(str(video_path), style="#a78bfa")
+        panel_parts.extend(["\n", video_text])
+    elif getattr(args, "video_enabled", False):
+        video_text = Text()
+        video_text.append("\n")
+        video_text.append("Video", style="dim")
+        video_text.append("   ")
+        video_text.append("export may still be running in background", style="dim #fbbf24")
+        panel_parts.extend(["\n", video_text])
 
     panel_content = Text.assemble(*panel_parts)
 
@@ -1029,9 +1314,9 @@ def display_cost_estimate(
 ) -> None:
     console = Console()
     try:
-        from esprit.llm.cost_estimator import estimate_scan_cost
+        from esprit.llm.cost_estimator import estimate_scan_profile
 
-        estimate = estimate_scan_cost(
+        estimate = estimate_scan_profile(
             model_name=model_name,
             scan_mode=scan_mode,
             target_count=target_count,
@@ -1040,6 +1325,8 @@ def display_cost_estimate(
         if estimate["estimated_cost_mid"] > 0:
             low = estimate["estimated_cost_low"]
             high = estimate["estimated_cost_high"]
+            time_low = estimate.get("estimated_time_low_min")
+            time_high = estimate.get("estimated_time_high_min")
             mode = scan_mode.capitalize()
             targets = f"{target_count} target{'s' if target_count > 1 else ''}"
             wb = " + source code" if is_whitebox else ""
@@ -1047,9 +1334,50 @@ def display_cost_estimate(
                 f"[dim]Estimated cost:[/] [cyan]${low:.2f}[/] - [cyan]${high:.2f}[/] "
                 f"[dim]({mode} mode, {targets}{wb})[/]"
             )
+            if isinstance(time_low, (int, float)) and isinstance(time_high, (int, float)):
+                console.print(
+                    f"[dim]Estimated time:[/] [cyan]~{int(round(time_low))}-{int(round(time_high))} min[/]"
+                )
             console.print()
     except Exception:
         pass  # Non-critical — don't block scan
+
+
+def _cmd_report(args: argparse.Namespace) -> None:
+    """Handle the ``esprit report`` subcommand."""
+    console = Console()
+
+    run_dir = Path("esprit_runs") / args.run_id
+    if not run_dir.exists():
+        run_dir = Path(args.run_id)
+
+    if not run_dir.exists():
+        console.print(f"[red]Run directory not found:[/] {run_dir}")
+        sys.exit(1)
+
+    from esprit.telemetry.tracer import Tracer
+
+    tracer = Tracer.load_from_dir(run_dir)
+    if tracer is None:
+        console.print(f"[red]Could not load tracer data from:[/] {run_dir}")
+        sys.exit(1)
+
+    if getattr(args, "video", False):
+        resolution_map = {"1080p": (1920, 1080), "720p": (1280, 720)}
+        resolution = resolution_map.get(getattr(args, "resolution", "1080p"), (1920, 1080))
+        speed = getattr(args, "speed", 10.0)
+        output_arg = getattr(args, "output", None)
+        output = Path(output_arg) if output_arg else run_dir / "replay.mp4"
+        try:
+            from esprit.reporting.video_exporter import MissingDependencyError, VideoExporter
+
+            video_exporter = VideoExporter(tracer)
+            with console.status("[cyan]Rendering video…"):
+                out = video_exporter.export_video(output, speed=speed, resolution=resolution)
+            console.print(f"[green]Video:[/] {out}")
+        except MissingDependencyError as e:
+            console.print(f"[red]Missing dependency:[/] {e}")
+            sys.exit(1)
 
 
 def main() -> None:
@@ -1075,7 +1403,7 @@ def main() -> None:
     # Interactive pre-scan checks: provider, model, account selection.
     # Launchpad now owns this flow when a scan is started from its UI.
     if not getattr(args, "skip_pre_scan_checks", False):
-        if not pre_scan_setup(non_interactive=args.non_interactive):
+        if not pre_scan_setup(non_interactive=args.non_interactive, args=args):
             sys.exit(1)
 
     validate_environment()

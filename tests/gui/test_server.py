@@ -1,11 +1,6 @@
 """Tests for the GUI server module."""
 
-import asyncio
-import json
-import threading
-from unittest.mock import AsyncMock, MagicMock, patch
-
-import pytest
+from unittest.mock import MagicMock
 
 from esprit.telemetry.tracer import Tracer
 
@@ -88,6 +83,15 @@ class TestGUIServerStaticDir:
         assert "agents-panel" in content
         assert "vulns-panel" in content
 
+    def test_index_html_contains_activity_strip_ids(self) -> None:
+        from esprit.gui.server import _STATIC_DIR
+
+        content = (_STATIC_DIR / "index.html").read_text()
+        assert "status-activity" in content
+        assert "status-activity-text" in content
+        assert "status-activity-metrics" in content
+        assert "scan-config-live" in content
+
     def test_app_js_safe_dom_methods(self) -> None:
         """Verify app.js uses safe DOM methods for content rendering."""
         from esprit.gui.server import _STATIC_DIR
@@ -98,12 +102,27 @@ class TestGUIServerStaticDir:
         assert "textContent" in content
         assert "appendChild" in content
 
+    def test_app_js_contains_activity_strip_renderer_markers(self) -> None:
+        from esprit.gui.server import _STATIC_DIR
+
+        content = (_STATIC_DIR / "app.js").read_text()
+        assert "_renderActivityStrip" in content
+        assert "HEX_SPINNER_FRAMES" in content
+
     def test_style_css_dark_theme(self) -> None:
         from esprit.gui.server import _STATIC_DIR
 
         content = (_STATIC_DIR / "style.css").read_text()
         assert "#050505" in content  # Dark background
         assert "#22d3ee" in content  # Accent color
+
+    def test_style_css_contains_activity_strip_anti_shift_rules(self) -> None:
+        from esprit.gui.server import _STATIC_DIR
+
+        content = (_STATIC_DIR / "style.css").read_text()
+        assert "#status-activity" in content
+        assert "font-variant-numeric: tabular-nums" in content
+        assert "text-overflow: ellipsis" in content
 
     def test_style_css_browser_hidden_by_default(self) -> None:
         """Browser viewer starts hidden, only shown when screenshots exist."""

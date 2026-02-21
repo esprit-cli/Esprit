@@ -1,3 +1,4 @@
+import asyncio
 import inspect
 import os
 from typing import Any
@@ -23,9 +24,74 @@ from .registry import (
 )
 
 
-_SERVER_TIMEOUT = float(Config.get("esprit_sandbox_execution_timeout") or "120")
-SANDBOX_EXECUTION_TIMEOUT = _SERVER_TIMEOUT + 30
+_SERVER_TIMEOUT = float(Config.get("esprit_sandbox_execution_timeout") or "300")
+_CLIENT_GRACE_TIMEOUT = float(Config.get("esprit_sandbox_client_grace_timeout") or "120")
+SANDBOX_EXECUTION_TIMEOUT = _SERVER_TIMEOUT + max(30.0, _CLIENT_GRACE_TIMEOUT)
 SANDBOX_CONNECT_TIMEOUT = float(Config.get("esprit_sandbox_connect_timeout") or "10")
+SANDBOX_REQUEST_RETRIES = max(0, int(Config.get("esprit_sandbox_request_retries") or "2"))
+SANDBOX_RETRY_BASE_DELAY_MS = max(
+    100,
+    int(Config.get("esprit_sandbox_retry_base_delay_ms") or "400"),
+)
+
+
+def _compute_tool_request_timeout(kwargs: dict[str, Any]) -> httpx.Timeout:
+    tool_timeout = kwargs.get("timeout")
+    tool_timeout_s = 0.0
+    if isinstance(tool_timeout, (int, float)):
+        tool_timeout_s = max(0.0, float(tool_timeout))
+    total_timeout = max(SANDBOX_EXECUTION_TIMEOUT, tool_timeout_s + 120.0)
+    return httpx.Timeout(timeout=total_timeout, connect=SANDBOX_CONNECT_TIMEOUT)
+
+
+def _is_retryable_request_error(error: httpx.RequestError) -> bool:
+    return isinstance(
+        error,
+        (
+            httpx.ConnectError,
+            httpx.ConnectTimeout,
+            httpx.ReadError,
+            httpx.ReadTimeout,
+            httpx.RemoteProtocolError,
+            httpx.WriteError,
+        ),
+    )
+
+
+def _is_retryable_tool_server_error(error_msg: str) -> bool:
+    message = error_msg.lower()
+    return (
+        "active tool request" in message
+        or "cancelled by newer request" in message
+        or "tool timed out after" in message
+    )
+
+
+async def _recover_sandbox_connectivity(runtime: Any, agent_state: Any) -> bool:
+    revive = getattr(runtime, "revive_sandbox", None)
+    if not callable(revive):
+        return False
+
+    try:
+        revived_info = await revive(agent_state.sandbox_id)
+    except Exception:  # noqa: BLE001
+        return False
+
+    if not isinstance(revived_info, dict):
+        return False
+
+    token = revived_info.get("auth_token")
+    port = revived_info.get("tool_server_port")
+    if isinstance(token, str) and token:
+        agent_state.sandbox_token = token
+    if isinstance(port, int) and hasattr(agent_state, "sandbox_info"):
+        agent_state.sandbox_info["tool_server_port"] = port
+    return True
+
+
+async def _retry_delay(attempt: int) -> None:
+    delay_s = min(8.0, (SANDBOX_RETRY_BASE_DELAY_MS / 1000.0) * (2**attempt))
+    await asyncio.sleep(delay_s)
 
 
 async def execute_tool(tool_name: str, agent_state: Any | None = None, **kwargs: Any) -> Any:
@@ -56,9 +122,6 @@ async def _execute_tool_in_sandbox(tool_name: str, agent_state: Any, **kwargs: A
         )
 
     runtime = get_runtime()
-    tool_server_port = agent_state.sandbox_info["tool_server_port"]
-    server_url = await runtime.get_sandbox_url(agent_state.sandbox_id, tool_server_port)
-    request_url = f"{server_url}/execute"
 
     agent_id = getattr(agent_state, "agent_id", "unknown")
 
@@ -68,36 +131,66 @@ async def _execute_tool_in_sandbox(tool_name: str, agent_state: Any, **kwargs: A
         "kwargs": kwargs,
     }
 
-    headers = {
-        "Authorization": f"Bearer {agent_state.sandbox_token}",
-        "Content-Type": "application/json",
-    }
-
-    timeout = httpx.Timeout(
-        timeout=SANDBOX_EXECUTION_TIMEOUT,
-        connect=SANDBOX_CONNECT_TIMEOUT,
-    )
+    timeout = _compute_tool_request_timeout(kwargs)
+    max_attempts = SANDBOX_REQUEST_RETRIES + 1
 
     async with httpx.AsyncClient(trust_env=False) as client:
-        try:
-            response = await client.post(
-                request_url, json=request_data, headers=headers, timeout=timeout
-            )
-            response.raise_for_status()
-            response_data = response.json()
-            if response_data.get("error"):
-                posthog.error("tool_execution_error", f"{tool_name}: {response_data['error']}")
-                raise RuntimeError(f"Sandbox execution error: {response_data['error']}")
-            return response_data.get("result")
-        except httpx.HTTPStatusError as e:
-            posthog.error("tool_http_error", f"{tool_name}: HTTP {e.response.status_code}")
-            if e.response.status_code == 401:
-                raise RuntimeError("Authentication failed: Invalid or missing sandbox token") from e
-            raise RuntimeError(f"HTTP error calling tool server: {e.response.status_code}") from e
-        except httpx.RequestError as e:
-            error_type = type(e).__name__
-            posthog.error("tool_request_error", f"{tool_name}: {error_type}")
-            raise RuntimeError(f"Request error calling tool server: {error_type}") from e
+        for attempt in range(max_attempts):
+            try:
+                tool_server_port = agent_state.sandbox_info["tool_server_port"]
+                server_url = await runtime.get_sandbox_url(agent_state.sandbox_id, tool_server_port)
+                request_url = f"{server_url}/execute"
+                headers = {
+                    "Authorization": f"Bearer {agent_state.sandbox_token}",
+                    "Content-Type": "application/json",
+                }
+
+                response = await client.post(
+                    request_url,
+                    json=request_data,
+                    headers=headers,
+                    timeout=timeout,
+                )
+                response.raise_for_status()
+                response_data = response.json()
+                if response_data.get("error"):
+                    error_msg = str(response_data["error"])
+                    if (
+                        attempt < max_attempts - 1
+                        and _is_retryable_tool_server_error(error_msg)
+                    ):
+                        await _retry_delay(attempt)
+                        continue
+                    posthog.error("tool_execution_error", f"{tool_name}: {error_msg}")
+                    raise RuntimeError(f"Sandbox execution error: {error_msg}")
+                return response_data.get("result")
+            except httpx.HTTPStatusError as e:
+                status_code = e.response.status_code
+                posthog.error("tool_http_error", f"{tool_name}: HTTP {status_code}")
+                if status_code == 401:
+                    if attempt < max_attempts - 1 and await _recover_sandbox_connectivity(
+                        runtime, agent_state
+                    ):
+                        await _retry_delay(attempt)
+                        continue
+                    raise RuntimeError(
+                        "Authentication failed: Invalid or missing sandbox token"
+                    ) from e
+                if attempt < max_attempts - 1 and status_code in (408, 429, 500, 502, 503, 504):
+                    await _retry_delay(attempt)
+                    continue
+                raise RuntimeError(f"HTTP error calling tool server: {status_code}") from e
+            except httpx.RequestError as e:
+                error_type = type(e).__name__
+                is_retryable = _is_retryable_request_error(e)
+                if attempt < max_attempts - 1 and is_retryable:
+                    await _recover_sandbox_connectivity(runtime, agent_state)
+                    await _retry_delay(attempt)
+                    continue
+                posthog.error("tool_request_error", f"{tool_name}: {error_type}")
+                raise RuntimeError(f"Request error calling tool server: {error_type}") from e
+
+    raise RuntimeError("Tool execution failed after retry attempts")
 
 
 async def _execute_tool_locally(tool_name: str, agent_state: Any | None, **kwargs: Any) -> Any:

@@ -3,6 +3,8 @@
  * Uses safe DOM methods (textContent, createElement) — no innerHTML.
  */
 
+const HEX_SPINNER_FRAMES = ['⬢', '⬡', '⬢', '⬡'];
+
 class EspritDashboard {
   constructor() {
     this.agents = [];
@@ -82,6 +84,7 @@ class EspritDashboard {
         this.agents = delta.agents || [];
         this._renderAgents();
         this._renderTerminal();
+        this._renderActivityStrip();
         break;
       case 'tools_update':
         this.tools = this.tools.concat(delta.tools || []);
@@ -101,6 +104,7 @@ class EspritDashboard {
         this.streaming = delta.streaming || {};
         this._terminalDirty = true;
         this._renderTerminal();
+        this._renderActivityStrip();
         break;
       case 'screenshot_update':
         this.screenshotAgents.add(delta.agent_id);
@@ -123,6 +127,7 @@ class EspritDashboard {
         this.finalReport = delta.final_report || null;
         this._renderReport();
         this._setStatus('completed', 'completed');
+        this._renderActivityStrip();
         break;
     }
   }
@@ -239,6 +244,7 @@ class EspritDashboard {
     this._renderScanConfig();
     this._renderBrowserTabs();
     this._renderStatusBar();
+    this._renderActivityStrip();
 
     if (this.finalReport) {
       this._renderReport();
@@ -720,6 +726,8 @@ class EspritDashboard {
 
     // Status bar
     this._renderStatusBar();
+    this._renderActivityStrip();
+    this._renderScanConfigLiveStatus();
 
     this._setStatus(s.status || 'running', s.status || 'running');
   }
@@ -744,14 +752,34 @@ class EspritDashboard {
     bar.style.display = 'flex';
 
     const target = document.getElementById('scan-config-target');
+    const model = document.getElementById('scan-config-model');
     const mode = document.getElementById('scan-config-mode');
+    const estimate = document.getElementById('scan-config-estimate');
+    const live = document.getElementById('scan-config-live');
     const name = document.getElementById('scan-config-name');
 
     if (target) {
       this._clearEl(target);
       target.appendChild(this._el('span', { className: 'config-label', textContent: 'Target: ' }));
-      const targetVal = (sc.targets && sc.targets.length > 0) ? sc.targets.join(', ') : (sc.target || '');
+      let targetVal = sc.target || '';
+      if (sc.targets && sc.targets.length > 0) {
+        const labels = sc.targets.map(t => {
+          if (typeof t === 'string') return t;
+          if (t && typeof t === 'object') return t.original || t.type || JSON.stringify(t);
+          return String(t);
+        });
+        targetVal = labels.join(', ');
+      }
       target.appendChild(this._el('span', { className: 'config-value', textContent: targetVal }));
+    }
+
+    if (model && sc.model) {
+      this._clearEl(model);
+      model.appendChild(this._el('span', { className: 'config-label', textContent: 'Model: ' }));
+      const modelVal = String(sc.model).includes('/')
+        ? String(sc.model).split('/', 2)[1]
+        : String(sc.model);
+      model.appendChild(this._el('span', { className: 'config-value', textContent: modelVal }));
     }
 
     if (mode && sc.scan_mode) {
@@ -760,10 +788,38 @@ class EspritDashboard {
       mode.appendChild(this._el('span', { className: 'config-value', textContent: sc.scan_mode }));
     }
 
+    if (estimate) {
+      const costLow = Number(sc.estimated_cost_low || 0);
+      const costHigh = Number(sc.estimated_cost_high || 0);
+      const timeLow = Number(sc.estimated_time_low_min || 0);
+      const timeHigh = Number(sc.estimated_time_high_min || 0);
+
+      if (costHigh > 0 || timeHigh > 0) {
+        this._clearEl(estimate);
+        estimate.appendChild(this._el('span', { className: 'config-label', textContent: 'Estimate: ' }));
+        const costText = costHigh > 0
+          ? `$${costLow.toFixed(2)}-$${costHigh.toFixed(2)}`
+          : '$0.00';
+        const timeText = timeHigh > 0
+          ? `~${Math.round(timeLow)}-${Math.round(timeHigh)}m`
+          : '~n/a';
+        estimate.appendChild(this._el('span', { className: 'config-value', textContent: `${costText}  ${timeText}` }));
+      }
+    }
+
     if (name && this.stats && this.stats.run_name) {
       this._clearEl(name);
       name.appendChild(this._el('span', { className: 'config-label', textContent: 'Run: ' }));
       name.appendChild(this._el('span', { className: 'config-value', textContent: this.stats.run_name }));
+    }
+
+    if (live) {
+      const metricsText = this._buildLiveMetricsText();
+      this._clearEl(live);
+      if (metricsText) {
+        live.appendChild(this._el('span', { className: 'config-label', textContent: 'Live: ' }));
+        live.appendChild(this._el('span', { className: 'config-value', textContent: metricsText }));
+      }
     }
   }
 
@@ -771,7 +827,10 @@ class EspritDashboard {
 
   _renderStatusBar() {
     const s = this.stats;
-    if (!s) return;
+    if (!s) {
+      this._renderActivityStrip();
+      return;
+    }
 
     const runIdEl = document.getElementById('status-run-id');
     const durationEl = document.getElementById('status-duration');
@@ -804,6 +863,89 @@ class EspritDashboard {
       const runName = (s.run_name) ? 'esprit-cli \u2014 ' + s.run_name : 'esprit-cli';
       titleEl.textContent = runName;
     }
+
+    this._renderActivityStrip();
+    this._renderScanConfigLiveStatus();
+  }
+
+  _buildLiveMetricsText() {
+    const s = this.stats || {};
+    const llmTotal = (s.llm && s.llm.total) || {};
+    const inRaw = Number(llmTotal.input_tokens || 0);
+    const outRaw = Number(llmTotal.output_tokens || 0);
+    const cachedRaw = Number(llmTotal.cached_tokens || 0);
+
+    const inTok = this._fmtNum(inRaw);
+    const outTok = this._fmtNum(outRaw);
+
+    const tps = Number(s.tokens_per_second || 0);
+    const speed = Number.isFinite(tps) ? tps.toFixed(1) : '0.0';
+
+    let elapsed = '0:00';
+    if (s.start_time) {
+      const start = new Date(s.start_time);
+      const end = s.end_time ? new Date(s.end_time) : new Date();
+      const elapsedS = Math.max(0, Math.floor((end - start) / 1000));
+      const mins = Math.floor(elapsedS / 60);
+      const secs = elapsedS % 60;
+      elapsed = `${mins}:${secs.toString().padStart(2, '0')}`;
+    }
+
+    let cacheText = '';
+    if (inRaw > 0 && cachedRaw > 0) {
+      cacheText = `  ${Math.round((cachedRaw / inRaw) * 100)}% hit`;
+    }
+
+    return `In ${inTok}  Out ${outTok}  ${speed} tok/s  ${elapsed}${cacheText}`;
+  }
+
+  _renderScanConfigLiveStatus() {
+    const live = document.getElementById('scan-config-live');
+    if (!live) return;
+    const metricsText = this._buildLiveMetricsText();
+    this._clearEl(live);
+    if (!metricsText) return;
+    live.appendChild(this._el('span', { className: 'config-label', textContent: 'Live: ' }));
+    live.appendChild(this._el('span', { className: 'config-value', textContent: metricsText }));
+  }
+
+  _renderActivityStrip() {
+    const strip = document.getElementById('status-activity');
+    const spinnerEl = document.getElementById('status-activity-spinner');
+    const textEl = document.getElementById('status-activity-text');
+    const metricsEl = document.getElementById('status-activity-metrics');
+    if (!strip || !spinnerEl || !textEl || !metricsEl) return;
+
+    const selectedAgent = this.agents.find(a => a.id === this.selectedAgentId)
+      || this.agents.find(a => a.status === 'running')
+      || this.agents.find(a => a.status === 'queued')
+      || this.agents.find(a => a.status === 'waiting')
+      || this.agents[0]
+      || null;
+
+    const terminalStatuses = ['completed', 'finished', 'stopped', 'failed', 'llm_failed'];
+    const globalStatus = String((this.stats && this.stats.status) || '');
+    const agentStatus = String((selectedAgent && selectedAgent.status) || '');
+    const done = terminalStatuses.includes(globalStatus) || terminalStatuses.includes(agentStatus);
+
+    const streamText = selectedAgent ? (this.streaming[selectedAgent.id] || '') : '';
+    const summaryLine = streamText.trim().split('\n').filter(Boolean).slice(-1)[0] || '';
+    const agentTask = selectedAgent && selectedAgent.task ? selectedAgent.task : '';
+    const hasStreaming = Boolean(summaryLine);
+    const hasRunningAgent = this.agents.some(
+      a => a && ['running', 'queued', 'waiting'].includes(String(a.status || ''))
+    );
+    const isIdle = !done && !hasStreaming && !hasRunningAgent;
+
+    const frameIdx = Math.floor(Date.now() / 250) % HEX_SPINNER_FRAMES.length;
+    spinnerEl.textContent = (done || isIdle) ? '⬡' : HEX_SPINNER_FRAMES[frameIdx];
+
+    const idleText = 'Idle — waiting for agent activity';
+    textEl.textContent = isIdle ? idleText : (summaryLine || agentTask || idleText);
+
+    metricsEl.textContent = this._buildLiveMetricsText();
+
+    strip.classList.toggle('is-dim', done);
   }
 
   // ------- Report -------
@@ -902,6 +1044,7 @@ class EspritDashboard {
     this._renderAgents();
     this._renderTerminal();
     this._renderBrowserTabs();
+    this._renderActivityStrip();
 
     if (this.screenshotAgents.has(agentId)) {
       this._fetchScreenshot(agentId);
@@ -1258,6 +1401,8 @@ class EspritDashboard {
   _createStatusDot(status) {
     const colors = {
       running: '#22d3ee',
+      queued: '#f59e0b',
+      waiting: '#f59e0b',
       completed: '#22c55e',
       failed: '#dc2626',
       stopped: '#eab308',

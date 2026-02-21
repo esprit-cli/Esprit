@@ -7,6 +7,7 @@ import pytest
 
 from esprit.llm.config import LLMConfig
 from esprit.llm.llm import LLM, LLMRequestFailedError, _mask_email
+from esprit.llm.utils import normalize_messages_for_provider
 
 
 class TestMaskEmail:
@@ -258,3 +259,219 @@ class TestStreamIdleTimeout:
             chunks.append(chunk)
 
         assert chunks == [1, 2]
+
+class TestMessageNormalization:
+    def test_tool_without_tool_call_id_is_downgraded(self) -> None:
+        messages = [
+            {"role": "assistant", "content": "working"},
+            {"role": "tool", "content": "result without id"},
+        ]
+
+        normalized = normalize_messages_for_provider(messages)
+
+        assert normalized[1]["role"] == "user"
+        assert "tool metadata was incomplete" in normalized[1]["content"]
+
+    def test_orphan_tool_call_id_is_downgraded(self) -> None:
+        messages = [
+            {
+                "role": "assistant",
+                "content": "I will inspect files",
+            },
+            {"role": "tool", "tool_call_id": "call_missing", "content": "result"},
+        ]
+
+        normalized = normalize_messages_for_provider(messages)
+
+        assert normalized[1]["role"] == "user"
+        assert "tool metadata was incomplete" in normalized[1]["content"]
+
+    def test_valid_native_tool_sequence_is_preserved(self) -> None:
+        messages = [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "list_files", "arguments": "{}"},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call_1", "content": "ok"},
+        ]
+
+        normalized = normalize_messages_for_provider(messages)
+
+        assert normalized == messages
+
+    def test_tool_sequence_with_interleaved_non_tool_message_is_downgraded(self) -> None:
+        messages = [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "list_files", "arguments": "{}"},
+                    }
+                ],
+            },
+            {"role": "user", "content": "status update from another agent"},
+            {"role": "tool", "tool_call_id": "call_1", "content": "ok"},
+        ]
+
+        normalized = normalize_messages_for_provider(messages)
+
+        assert "tool_calls" not in normalized[0]
+        assert normalized[1]["role"] == "user"
+        assert normalized[2]["role"] == "user"
+        assert "tool metadata was incomplete" in normalized[2]["content"]
+
+    def test_partial_tool_results_for_multi_call_assistant_are_downgraded(self) -> None:
+        messages = [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "list_files", "arguments": "{}"},
+                    },
+                    {
+                        "id": "call_2",
+                        "type": "function",
+                        "function": {"name": "read_file", "arguments": "{}"},
+                    },
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call_1", "content": "ok"},
+        ]
+
+        normalized = normalize_messages_for_provider(messages)
+
+        assert "tool_calls" not in normalized[0]
+        assert normalized[1]["role"] == "user"
+        assert "tool metadata was incomplete" in normalized[1]["content"]
+
+    def test_valid_multi_tool_sequence_is_preserved(self) -> None:
+        messages = [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "list_files", "arguments": "{}"},
+                    },
+                    {
+                        "id": "call_2",
+                        "type": "function",
+                        "function": {"name": "read_file", "arguments": "{}"},
+                    },
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call_1", "content": "result 1"},
+            {"role": "tool", "tool_call_id": "call_2", "content": "result 2"},
+            {"role": "assistant", "content": "done"},
+        ]
+
+        normalized = normalize_messages_for_provider(messages)
+
+        assert normalized == messages
+
+    def test_prepare_messages_normalizes_invalid_tool_history(self) -> None:
+        llm = LLM(LLMConfig(model_name="ollama/llama3"), "EspritAgent")
+        conversation_history = [
+            {"role": "assistant", "content": "processing"},
+            {"role": "tool", "content": "orphan result without id"},
+        ]
+
+        prepared = llm._prepare_messages(conversation_history)
+
+        assert any(
+            message.get("role") == "user"
+            and "tool metadata was incomplete" in str(message.get("content"))
+            for message in prepared
+        )
+        assert conversation_history[1]["role"] == "user"
+
+
+class TestRaiseErrorMapping:
+    def test_maps_masked_openai_codex_scope_failure(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        llm = LLM.__new__(LLM)
+        llm.config = SimpleNamespace(model_name="openai/gpt-5.1-codex-mini")
+        monkeypatch.setattr("esprit.telemetry.posthog.error", lambda *_args, **_kwargs: None)
+
+        class _FakeOpenAIError(Exception):
+            llm_provider = "openai"
+
+        err = _FakeOpenAIError("OpenAIException - argument of type 'NoneType' is not iterable")
+
+        with pytest.raises(LLMRequestFailedError) as exc:
+            llm._raise_error(err)
+
+        assert "LLM request failed" in str(exc.value)
+        assert "api.responses.write" in str(exc.value.details)
+
+    def test_keeps_generic_error_details_for_non_openai_case(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        llm = LLM.__new__(LLM)
+        llm.config = SimpleNamespace(model_name="anthropic/claude-haiku-4-5-20251001")
+        monkeypatch.setattr("esprit.telemetry.posthog.error", lambda *_args, **_kwargs: None)
+
+        err = RuntimeError("plain failure")
+
+        with pytest.raises(LLMRequestFailedError) as exc:
+            llm._raise_error(err)
+
+        assert exc.value.details == "plain failure"
+
+
+class TestRateLimitPacing:
+    def test_compute_retry_delay_respects_retry_after(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        llm = LLM.__new__(LLM)
+        llm.config = SimpleNamespace(model_name="anthropic/claude-haiku-4-5-20251001")
+
+        config_values = {
+            "esprit_llm_retry_max_wait_s": "120",
+            "esprit_llm_retry_jitter_ratio": "0",
+        }
+        monkeypatch.setattr("esprit.llm.llm.Config.get", lambda name: config_values.get(name))
+        monkeypatch.setattr("esprit.llm.llm.random.uniform", lambda _a, _b: 0.0)
+
+        err = RuntimeError("rate limited")
+        err.response = SimpleNamespace(headers={"retry-after": "45"})  # type: ignore[attr-defined]
+
+        delay = llm._compute_retry_delay(err, attempt=0)
+        assert delay == 45.0
+
+    def test_429_registers_global_cooldown_without_provider_rotation(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        llm = LLM.__new__(LLM)
+        llm.config = SimpleNamespace(model_name="anthropic/claude-haiku-4-5-20251001")
+
+        class _PacerStub:
+            def __init__(self) -> None:
+                self.retry_after_values: list[float | None] = []
+
+            def register_rate_limit(self, retry_after_s: float | None = None) -> None:
+                self.retry_after_values.append(retry_after_s)
+
+        pacer = _PacerStub()
+        monkeypatch.setattr("esprit.llm.llm.get_request_pacer", lambda: pacer)
+        monkeypatch.setattr("esprit.llm.llm.PROVIDERS_AVAILABLE", False)
+
+        err = RuntimeError("429")
+        err.status_code = 429  # type: ignore[attr-defined]
+        err.response = SimpleNamespace(headers={"retry-after": "11"})  # type: ignore[attr-defined]
+
+        rotated = llm._try_rotate_on_rate_limit(err)
+        assert rotated is False
+        assert pacer.retry_after_values == [11.0]

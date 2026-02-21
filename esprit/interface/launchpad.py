@@ -1,10 +1,13 @@
 import os
+import re
+import threading
 import webbrowser
 from dataclasses import dataclass
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as pkg_version
 from pathlib import Path
 from typing import Any, ClassVar
+from urllib.parse import urlparse
 
 from rich.style import Style
 from rich.text import Text
@@ -17,6 +20,7 @@ from textual.widgets import Input, Static
 
 from esprit.config import Config
 from esprit.llm.config import DEFAULT_MODEL
+from esprit.llm.cost_estimator import estimate_scan_profile
 from esprit.providers import PROVIDER_NAMES, get_provider_auth
 from esprit.providers.base import AuthMethod, OAuthCredentials
 from esprit.providers.config import AVAILABLE_MODELS
@@ -307,6 +311,10 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
         self._project_name, self._project_type = _detect_project(self._cwd)
         self._dir_suggester = DirectorySuggester()
 
+        # Preview state
+        self._preview_fetch_id: int = 0  # Incremented to cancel stale async fetches
+        self._preview_cache: dict[str, Text] = {}  # Cache URL metadata previews
+
     def compose(self) -> ComposeResult:
         yield Vertical(
             Static("", id="launchpad_ghost"),
@@ -314,6 +322,7 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
             Static("", id="launchpad_title"),
             Static("", id="launchpad_menu"),
             Input(placeholder="", id="launchpad_input"),
+            Static("", id="launchpad_preview"),
             Static("", id="launchpad_status"),
             Static("", id="launchpad_hint"),
             id="launchpad_root",
@@ -324,6 +333,8 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
         self._apply_theme_class()
         input_widget = self.query_one("#launchpad_input", Input)
         input_widget.display = False
+        preview_widget = self.query_one("#launchpad_preview", Static)
+        preview_widget.display = False
         self._set_view("main", push=False)
         self._ghost_timer = self.set_interval(0.15, self._tick_animation)
 
@@ -429,6 +440,30 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
         else:
             status_widget.update("")
 
+    def _current_model(self) -> str:
+        return Config.get("esprit_llm") or DEFAULT_MODEL
+
+    def _short_model(self, model_name: str) -> str:
+        return model_name.split("/", 1)[-1] if "/" in model_name else model_name
+
+    def _estimate_hint_for_mode(self, mode: str) -> str:
+        model_name = self._current_model()
+        try:
+            estimate = estimate_scan_profile(
+                model_name=model_name,
+                scan_mode=mode,
+                target_count=1,
+                is_whitebox=False,
+            )
+        except Exception:  # noqa: BLE001
+            return "est unavailable"
+
+        cost_low = float(estimate.get("estimated_cost_low", 0.0) or 0.0)
+        cost_high = float(estimate.get("estimated_cost_high", 0.0) or 0.0)
+        time_low = int(round(float(estimate.get("estimated_time_low_min", 0.0) or 0.0)))
+        time_high = int(round(float(estimate.get("estimated_time_high_min", 0.0) or 0.0)))
+        return f"${cost_low:.2f}-${cost_high:.2f}  ~{time_low}-{time_high}m"
+
     def _set_view(self, view: str, push: bool = True) -> None:  # noqa: PLR0915
         if push and self._view != view:
             self._history.append(self._view)
@@ -443,15 +478,33 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
         input_widget.suggester = None
         self._input_mode = None
 
+        # Hide preview by default
+        try:
+            preview_widget = self.query_one("#launchpad_preview", Static)
+            preview_widget.update("")
+            preview_widget.display = False
+        except (ValueError, Exception):
+            pass
+
         if view == "main":
             entries = list(self.MAIN_OPTIONS)
             # Dynamically set scan hint with project info
             project_hint = self._project_name
             if self._project_type:
                 project_hint += f" ({self._project_type})"
+            current_model = self._short_model(self._current_model())
+            mode_estimate = self._estimate_hint_for_mode(self._scan_mode)
             for i, e in enumerate(entries):
                 if e.key == "scan":
                     entries[i] = _MenuEntry("scan", "Scan", project_hint)
+                elif e.key == "model":
+                    entries[i] = _MenuEntry("model", "Model Config", f"Current: {current_model}")
+                elif e.key == "scan_mode":
+                    entries[i] = _MenuEntry(
+                        "scan_mode",
+                        "Scan Mode",
+                        f"{self._scan_mode.title()}  ·  {mode_estimate}",
+                    )
                 elif e.key == "theme":
                     entries[i] = _MenuEntry("theme", "Theme", self._active_theme().label)
             self._current_entries = entries
@@ -486,7 +539,11 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
         elif view == "scan_mode":
             self._current_entries = self._build_scan_mode_entries()
             self._current_title = "Scan Mode"
-            self._current_hint = "quick = fast  deep = thorough  esc to go back"
+            self._current_hint = (
+                "quick = fast  deep = thorough"
+                f"  ·  estimates for 1 target on {self._short_model(self._current_model())}"
+                "  ·  esc to go back"
+            )
         elif view == "theme":
             self._current_entries = self._build_theme_entries()
             self._current_title = "Theme"
@@ -537,14 +594,18 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
         # Provider badges and display info
         _BADGES: dict[str, str] = {
             "antigravity": "AG",
+            "esprit": "ES",
             "openai": "OAI",
+            "openrouter": "OR",
             "anthropic": "CC",
             "google": "GG",
             "github-copilot": "CO",
         }
         _PROVIDER_LABELS: dict[str, str] = {
             "antigravity": "ANTIGRAVITY",
+            "esprit": "ESPRIT",
             "openai": "OPENAI",
+            "openrouter": "OPENROUTER",
             "anthropic": "ANTHROPIC",
             "google": "GOOGLE",
             "github-copilot": "COPILOT",
@@ -570,13 +631,18 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
             label = _PROVIDER_LABELS.get(provider_id, provider_id.upper())
             is_connected = connected.get(provider_id, False)
 
-            # Filter models
+            # Filter models — entries are 5-tuples: (id, name, cost_in, cost_out, ctx)
             matching_models = []
-            for model_id, model_name in models:
+            for entry in models:
+                model_id, model_name = entry[0], entry[1]
+                cost_in = entry[2] if len(entry) > 2 else 0.0
+                cost_out = entry[3] if len(entry) > 3 else 0.0
+                ctx = entry[4] if len(entry) > 4 else 0
                 full_model = f"{provider_id}/{model_id}"
-                if query and query not in model_name.lower() and query not in model_id.lower() and query not in badge.lower() and query not in label.lower():
+                searchable = f"{model_name} {model_id} {badge} {label}".lower()
+                if query and query not in searchable:
                     continue
-                matching_models.append((model_id, model_name, full_model))
+                matching_models.append((model_id, model_name, full_model, cost_in, cost_out, ctx))
 
             if not matching_models:
                 continue
@@ -590,21 +656,61 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
                 f"[{badge}] {conn_label}",
             ))
 
-            # Model entries
-            for model_id, model_name, full_model in matching_models:
-                marker = "\u25cf" if full_model == current else "\u25cb"
+            # Model entries with inline pricing
+            for model_id, model_name, full_model, cost_in, cost_out, ctx in matching_models:
+                is_current = full_model == current
+                marker = "\u25cf" if is_current else "\u25cb"
                 dim = "" if is_connected else "\u2022 "
+
+                # Build hint: pricing + context + active badge
+                hint_parts: list[str] = []
+
+                if cost_in > 0:
+                    hint_parts.append(f"${cost_in:.2f}/M in")
+                    hint_parts.append(f"${cost_out:.2f}/M out")
+                else:
+                    hint_parts.append("$0")
+
+                if ctx >= 1_000_000:
+                    hint_parts.append(f"{ctx // 1_000_000}M ctx")
+                elif ctx > 0:
+                    hint_parts.append(f"{ctx // 1000}K ctx")
+
+                try:
+                    est = estimate_scan_profile(
+                        model_name=full_model,
+                        scan_mode=self._scan_mode,
+                        target_count=1,
+                        is_whitebox=False,
+                    )
+                    hint_parts.append(
+                        f"est ${float(est['estimated_cost_low']):.2f}-${float(est['estimated_cost_high']):.2f}"
+                    )
+                    hint_parts.append(
+                        f"~{int(round(float(est['estimated_time_low_min'])))}-"
+                        f"{int(round(float(est['estimated_time_high_min'])))}m"
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
+
+                if is_current:
+                    hint_parts.append("\u2605 active")
+
+                hint = "  ".join(hint_parts) if hint_parts else badge
+
+                model_label = f"    {marker} {dim}{model_name}"
+
                 entries.append(_MenuEntry(
                     f"model:{full_model}",
-                    f"    {marker} {dim}{model_name}",
-                    badge,
+                    model_label,
+                    hint,
                 ))
 
         entries.append(_MenuEntry("back", "\u2190 Back"))
         return entries
 
     def _build_provider_entries(self) -> list[_MenuEntry]:
-        provider_order = ["antigravity", "anthropic", "openai", "google", "github-copilot"]
+        provider_order = ["antigravity", "openrouter", "anthropic", "openai", "google", "github-copilot"]
         entries: list[_MenuEntry] = []
 
         for provider_id in provider_order:
@@ -640,7 +746,13 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
         entries: list[_MenuEntry] = []
         for mode in ["quick", "standard", "deep"]:
             marker = "\u25cf" if mode == self._scan_mode else "\u25cb"
-            entries.append(_MenuEntry(f"scan_mode:{mode}", f"{marker} {mode.title()}"))
+            entries.append(
+                _MenuEntry(
+                    f"scan_mode:{mode}",
+                    f"{marker} {mode.title()}",
+                    self._estimate_hint_for_mode(mode),
+                )
+            )
         entries.append(_MenuEntry("back", "\u2190 Back"))
         return entries
 
@@ -838,24 +950,41 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
             elif is_selected:
                 prefix = "\u276f "
                 label_style = Style(color=theme.accent, bold=True)
-                hint_style = Style(color=theme.selected_hint)
                 menu_text.append(prefix, style=label_style)
                 menu_text.append(entry.label, style=label_style)
                 if entry.hint:
-                    menu_text.append(f"  {entry.hint}", style=hint_style)
+                    self._append_styled_hint(menu_text, entry.hint, selected=True)
             else:
                 prefix = "  "
                 label_style = Style(color=theme.menu_label)
-                hint_style = Style(color=theme.menu_hint)
                 menu_text.append(prefix, style=label_style)
                 menu_text.append(entry.label, style=label_style)
                 if entry.hint:
-                    menu_text.append(f"  {entry.hint}", style=hint_style)
+                    self._append_styled_hint(menu_text, entry.hint, selected=False)
 
             if idx < len(self._current_entries) - 1:
                 menu_text.append("\n")
 
         menu_widget.update(menu_text)
+
+    def _append_styled_hint(self, text: Text, hint: str, selected: bool) -> None:
+        """Append a hint with special styling for keywords like pricing, active, ctx."""
+        text.append("  ", style=Style(color="#555555"))
+        parts = hint.split("  ")
+        for i, part in enumerate(parts):
+            if i > 0:
+                text.append("  ", style=Style(color="#3f3f3f"))
+            part_stripped = part.strip()
+            if part_stripped == "$0":
+                text.append("$0", style=Style(color="#22c55e"))
+            elif "\u2605 active" in part_stripped:
+                text.append(part_stripped, style=Style(color="#fbbf24", bold=True))
+            elif "ctx" in part_stripped:
+                text.append(part_stripped, style=Style(color="#0e7490" if selected else "#555555"))
+            elif part_stripped.startswith("$"):
+                text.append(part_stripped, style=Style(color="#a1a1aa" if selected else "#555555"))
+            else:
+                text.append(part_stripped, style=Style(color="#0e7490" if selected else "#555555"))
 
     # ── Actions (bound to keys via BINDINGS) ──────────────────────────
 
@@ -1101,10 +1230,246 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
             ):
                 self.selected_index += 1
             self._render_menu()
+        elif self._input_mode == "scan_local":
+            self._render_path_preview(event.value)
+        elif self._input_mode == "scan_target":
+            self._render_target_preview(event.value)
+
+    # ── Preview rendering ─────────────────────────────────────────────
+
+    def _show_preview(self, content: "Text | str") -> None:
+        try:
+            w = self.query_one("#launchpad_preview", Static)
+            w.update(content)
+            w.display = True
+        except (ValueError, Exception):
+            pass
+
+    def _hide_preview(self) -> None:
+        try:
+            w = self.query_one("#launchpad_preview", Static)
+            w.update("")
+            w.display = False
+        except (ValueError, Exception):
+            pass
+
+    def _render_path_preview(self, raw: str) -> None:
+        """Show directory listing for local path input."""
+        from rich.style import Style
+
+        if not raw.strip():
+            self._hide_preview()
+            return
+
+        p = Path(raw.strip()).expanduser()
+        list_dir = p if p.is_dir() else (p.parent if p.parent.is_dir() else None)
+
+        if list_dir is None:
+            self._hide_preview()
+            return
+
+        try:
+            entries = sorted(list_dir.iterdir(), key=lambda x: (not x.is_dir(), x.name.lower()))
+        except PermissionError:
+            self._hide_preview()
+            return
+
+        prefix = p.name.lower() if not p.is_dir() else ""
+        filtered = [e for e in entries if not prefix or e.name.lower().startswith(prefix)]
+        if not filtered:
+            filtered = entries
+
+        if not filtered:
+            self._hide_preview()
+            return
+
+        t = Text()
+        t.append(str(list_dir) + "\n", style=Style(color="#3f3f3f"))
+
+        MAX_ITEMS = 10
+        shown = filtered[:MAX_ITEMS]
+        for entry in shown:
+            if entry.is_dir():
+                t.append("  📁 ", style=Style(color="#22d3ee"))
+                t.append(entry.name + "/\n", style=Style(color="#22d3ee"))
+            elif entry.is_symlink():
+                t.append("  ⇢ ", style=Style(color="#947575"))
+                t.append(entry.name + "\n", style=Style(color="#947575"))
+            else:
+                t.append("  📄 ", style=Style(color="#555555"))
+                t.append(entry.name + "\n", style=Style(color="#555555"))
+
+        if len(filtered) > MAX_ITEMS:
+            t.append(f"  … {len(filtered) - MAX_ITEMS} more", style=Style(color="#3f3f3f", italic=True))
+
+        self._show_preview(t)
+
+    def _render_target_preview(self, raw: str) -> None:
+        """Show metadata for URL/GitHub repo targets."""
+        from rich.style import Style
+
+        value = raw.strip()
+        if not value:
+            self._hide_preview()
+            return
+
+        # GitHub repo pattern
+        gh_match = re.match(
+            r"(?:https?://)?github\.com/([A-Za-z0-9_.\-]+)/([A-Za-z0-9_.\-]+)/?",
+            value,
+        )
+        if gh_match:
+            owner, repo = gh_match.group(1), gh_match.group(2)
+            cache_key = f"gh:{owner}/{repo}"
+            if cache_key in self._preview_cache:
+                self._show_preview(self._preview_cache[cache_key])
+                return
+
+            loading = Text()
+            loading.append("⟳ ", style=Style(color="#555555"))
+            loading.append(f"github.com/{owner}/{repo}", style=Style(color="#22d3ee"))
+            loading.append("  fetching…", style=Style(color="#555555", italic=True))
+            self._show_preview(loading)
+
+            fetch_id = self._preview_fetch_id + 1
+            self._preview_fetch_id = fetch_id
+
+            def _fetch_github(owner: str = owner, repo: str = repo,
+                              fid: int = fetch_id, key: str = cache_key) -> None:
+                import json as _json
+                import urllib.request as _req
+                try:
+                    r = _req.Request(
+                        f"https://api.github.com/repos/{owner}/{repo}",
+                        headers={"Accept": "application/vnd.github+json", "User-Agent": "esprit/1.0"},
+                    )
+                    with _req.urlopen(r, timeout=6) as resp:  # noqa: S310
+                        data = _json.loads(resp.read())
+                except Exception:  # noqa: BLE001
+                    data = {}
+
+                if self._preview_fetch_id != fid:
+                    return
+
+                t = Text()
+                t.append("⬡ ", style=Style(color="#22d3ee"))
+                t.append(f"{owner}/{repo}", style=Style(color="#22d3ee", bold=True))
+                if data.get("private"):
+                    t.append("  🔒", style=Style(color="#947575"))
+                t.append("\n")
+                if data.get("description"):
+                    desc = data["description"][:70]
+                    t.append(f"  {desc}\n", style=Style(color="#c0c0c0"))
+                parts: list[str] = []
+                if data.get("language"):
+                    parts.append(data["language"])
+                if data.get("stargazers_count") is not None:
+                    parts.append(f"★ {data['stargazers_count']:,}")
+                if data.get("forks_count") is not None:
+                    parts.append(f"⑂ {data['forks_count']:,}")
+                if data.get("open_issues_count") is not None:
+                    parts.append(f"⊙ {data['open_issues_count']} issues")
+                if parts:
+                    t.append("  " + "  ·  ".join(parts) + "\n", style=Style(color="#555555"))
+                if data.get("license") and data["license"].get("name"):
+                    t.append(f"  {data['license']['name']}\n", style=Style(color="#3f3f3f"))
+                if data.get("topics"):
+                    tags = "  ".join(f"#{tp}" for tp in data["topics"][:6])
+                    t.append(f"  {tags}\n", style=Style(color="#0e7490"))
+
+                self._preview_cache[key] = t
+                self.call_from_thread(self._show_preview, t)
+
+            threading.Thread(target=_fetch_github, daemon=True).start()
+            return
+
+        # Generic URL — fetch page title + description
+        try:
+            url_str = value if "://" in value else f"https://{value}"
+            parsed = urlparse(url_str)
+            if parsed.scheme in ("http", "https") and parsed.netloc:
+                cache_key = f"url:{parsed.netloc}{parsed.path[:40]}"
+                if cache_key in self._preview_cache:
+                    self._show_preview(self._preview_cache[cache_key])
+                    return
+
+                loading = Text()
+                loading.append("⟳ ", style=Style(color="#555555"))
+                loading.append(parsed.netloc, style=Style(color="#22d3ee"))
+                loading.append("  fetching…", style=Style(color="#555555", italic=True))
+                self._show_preview(loading)
+
+                fetch_id = self._preview_fetch_id + 1
+                self._preview_fetch_id = fetch_id
+
+                def _fetch_url(url: str = url_str, netloc: str = parsed.netloc,
+                               fid: int = fetch_id, key: str = cache_key) -> None:
+                    import re as _re
+                    import urllib.request as _req
+                    try:
+                        req = _req.Request(url, headers={"User-Agent": "esprit/1.0"})
+                        with _req.urlopen(req, timeout=6) as resp:  # noqa: S310
+                            html = resp.read(32_000).decode("utf-8", errors="replace")
+                    except Exception:  # noqa: BLE001
+                        html = ""
+
+                    if self._preview_fetch_id != fid:
+                        return
+
+                    title_m = _re.search(r"<title[^>]*>(.*?)</title>", html, _re.I | _re.S)
+                    desc_m = _re.search(
+                        r'<meta[^>]+name=["\']description["\'][^>]+content=["\'](.*?)["\']',
+                        html, _re.I,
+                    ) or _re.search(
+                        r'<meta[^>]+content=["\'](.*?)["\'][^>]+name=["\']description["\']',
+                        html, _re.I,
+                    )
+                    title = _re.sub(r"<[^>]+>", "", title_m.group(1)).strip() if title_m else ""
+                    desc = desc_m.group(1).strip() if desc_m else ""
+
+                    t = Text()
+                    t.append("🌐 ", style=Style(color="#22d3ee"))
+                    t.append(netloc + "\n", style=Style(color="#22d3ee", bold=True))
+                    if title:
+                        t.append(f"  {title[:70]}\n", style=Style(color="#c0c0c0"))
+                    if desc:
+                        t.append(f"  {desc[:100]}\n", style=Style(color="#555555"))
+
+                    self._preview_cache[key] = t
+                    self.call_from_thread(self._show_preview, t)
+
+                threading.Thread(target=_fetch_url, daemon=True).start()
+                return
+        except Exception:  # noqa: BLE001
+            pass
+
+        # Local path in the general target box
+        p = Path(value).expanduser()
+        if p.exists():
+            t = Text()
+            if p.is_dir():
+                t.append("📁 ", style=Style(color="#22d3ee"))
+                t.append(str(p), style=Style(color="#22d3ee"))
+                try:
+                    n = sum(1 for _ in p.iterdir())
+                    t.append(f"  {n} items", style=Style(color="#555555"))
+                except OSError:
+                    pass
+            else:
+                t.append("📄 ", style=Style(color="#555555"))
+                t.append(str(p), style=Style(color="#555555"))
+                try:
+                    t.append(f"  {p.stat().st_size:,} bytes", style=Style(color="#555555"))
+                except OSError:
+                    pass
+            self._show_preview(t)
+        else:
+            self._hide_preview()
 
     # ── Input submission ──────────────────────────────────────────────
 
     async def on_input_submitted(self, event: Input.Submitted) -> None:  # noqa: PLR0911
+        self._hide_preview()
         value = event.value.strip()
 
         if self._input_mode == "scan_target":

@@ -29,17 +29,22 @@ from textual.widgets import Button, Label, Static, TextArea, Tree
 from textual.widgets.tree import TreeNode
 
 from esprit.agents.EspritAgent import EspritAgent
+from esprit.agents.base_agent import compute_default_llm_watchdog_timeout
+from esprit.config import Config
 from esprit.interface.streaming_parser import parse_streaming_content
 from esprit.interface.tool_components.agent_message_renderer import AgentMessageRenderer
 from esprit.interface.tool_components.registry import get_tool_renderer
 from esprit.interface.tool_components.user_message_renderer import UserMessageRenderer
-from esprit.interface.utils import build_tui_stats_text, _ACTIVITY_SPINNER
+from esprit.interface.utils import _ACTIVITY_SPINNER, build_tui_stats_text, infer_scan_state
 from esprit.llm.config import LLMConfig
+from esprit.llm.cost_estimator import estimate_scan_profile
 from esprit.telemetry.tracer import Tracer, set_global_tracer
 
 
 # Type alias for the optional GUI server
 _GUIServerType = Any
+
+HEX_SPINNER_FRAMES = ["⬢", "⬡", "⬢", "⬡"]
 
 
 def get_package_version() -> str:
@@ -70,6 +75,21 @@ class ChatTextArea(TextArea):  # type: ignore[misc]
             text_content = str(self.text)  # type: ignore[has-type]
             message = text_content.strip()
             if message:
+                app = self._app_reference
+                if app.tracer and app.selected_agent_id:
+                    has_running_tools = any(
+                        t.get("agent_id") == app.selected_agent_id
+                        and t.get("status") == "running"
+                        for t in list(app.tracer.tool_executions.values())
+                    )
+                    if has_running_tools:
+                        # Queue the message to steer the agent after current
+                        # tool execution finishes (instead of blocking input)
+                        app._queued_steering_message = message
+                        self.text = ""
+                        event.prevent_default()
+                        return
+
                 self.text = ""
 
                 self._app_reference._send_user_message(message)
@@ -294,7 +314,11 @@ class HelpScreen(ModalScreen):  # type: ignore[misc]
             Label(
                 "F1        Help\nCtrl+Q/C  Quit\nESC       Stop Agent\n"
                 "Enter     Send message to agent\nTab       Switch panels\n↑/↓       Navigate tree\n"
-                "b         Browser preview",
+                "b         Browser preview\ne         Export vulnerabilities\n\n"
+                "Typing while an agent is running\n"
+                "queues your message. It will be\n"
+                "sent automatically when the current\n"
+                "tool finishes to steer the agent.",
                 id="help_content",
             ),
             id="dialog",
@@ -859,6 +883,135 @@ class QuitScreen(ModalScreen):  # type: ignore[misc]
             self.app.pop_screen()
 
 
+class ExportScreen(ModalScreen):  # type: ignore[misc]
+    """Modal screen for exporting vulnerabilities in various formats."""
+
+    EXPORT_FORMATS: ClassVar[list[tuple[str, str, str]]] = [
+        ("export_json", "JSON", "Machine-readable, all fields"),
+        ("export_csv", "CSV", "Spreadsheet-compatible"),
+        ("export_md", "Markdown", "Human-readable report"),
+        ("export_html", "HTML", "Standalone web report"),
+        ("export_sarif", "SARIF", "CI/CD tool integration"),
+        ("export_video", "MP4 Video", "Cinematic scan replay"),
+    ]
+
+    def compose(self) -> ComposeResult:
+        buttons = [
+            Button(f"{name}  {desc}", id=btn_id)
+            for btn_id, name, desc in self.EXPORT_FORMATS
+        ]
+        yield Grid(
+            Label("Export Vulnerabilities", id="export_title"),
+            Vertical(*buttons, id="export_buttons"),
+            id="export_dialog",
+        )
+
+    def on_mount(self) -> None:
+        try:
+            first_btn = self.query_one("#export_json", Button)
+            first_btn.focus()
+        except (ValueError, Exception):
+            pass
+
+    def on_key(self, event: events.Key) -> None:
+        if event.key == "escape":
+            self.app.pop_screen()
+            event.prevent_default()
+        elif event.key == "enter":
+            focused = self.focused
+            if focused and isinstance(focused, Button):
+                focused.press()
+            event.prevent_default()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        btn_id = event.button.id
+        if not btn_id or not btn_id.startswith("export_"):
+            self.app.pop_screen()
+            return
+
+        if btn_id == "export_video":
+            if isinstance(self.app, EspritTUIApp):
+                self.app.pop_screen()
+                self.app.push_screen(VideoExportScreen())
+            return
+
+        fmt = btn_id.replace("export_", "")
+        if isinstance(self.app, EspritTUIApp):
+            self.app.pop_screen()
+            self.app._do_export_vulnerabilities(fmt)
+
+
+class VideoExportScreen(ModalScreen):  # type: ignore[misc]
+    """Modal screen for configuring and triggering video export."""
+
+    def compose(self) -> ComposeResult:
+        yield Grid(
+            Label("Export as Video (MP4)", id="video_export_title"),
+            Label("Speed", id="video_speed_label"),
+            Horizontal(
+                Button("5x", id="speed_5", classes="speed_btn"),
+                Button("10x", id="speed_10", classes="speed_btn active_speed"),
+                Button("20x", id="speed_20", classes="speed_btn"),
+                Button("50x", id="speed_50", classes="speed_btn"),
+                id="speed_buttons",
+            ),
+            Label("Resolution", id="video_res_label"),
+            Horizontal(
+                Button("1080p", id="res_1080", classes="res_btn active_res"),
+                Button("720p", id="res_720", classes="res_btn"),
+                id="res_buttons",
+            ),
+            Button("Render Video", id="render_video", variant="primary"),
+            Button("Cancel", id="cancel_video"),
+            id="video_export_dialog",
+        )
+
+    def on_mount(self) -> None:
+        self._speed = 10.0
+        self._resolution = (1920, 1080)
+        try:
+            self.query_one("#render_video", Button).focus()
+        except Exception:
+            pass
+
+    def on_key(self, event: events.Key) -> None:
+        if event.key == "escape":
+            self.app.pop_screen()
+            event.prevent_default()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        btn_id = event.button.id
+
+        if btn_id and btn_id.startswith("speed_"):
+            speed_map = {"speed_5": 5.0, "speed_10": 10.0, "speed_20": 20.0, "speed_50": 50.0}
+            self._speed = speed_map.get(btn_id, 10.0)
+            for b in self.query(".speed_btn"):
+                b.remove_class("active_speed")
+            event.button.add_class("active_speed")
+            return
+
+        if btn_id == "res_1080":
+            self._resolution = (1920, 1080)
+            for b in self.query(".res_btn"):
+                b.remove_class("active_res")
+            event.button.add_class("active_res")
+            return
+        if btn_id == "res_720":
+            self._resolution = (1280, 720)
+            for b in self.query(".res_btn"):
+                b.remove_class("active_res")
+            event.button.add_class("active_res")
+            return
+
+        if btn_id == "cancel_video":
+            self.app.pop_screen()
+            return
+
+        if btn_id == "render_video" and isinstance(self.app, EspritTUIApp):
+            self.app.pop_screen()
+            self.app._do_export_video(self._speed, self._resolution)
+
+
 class EspritTUIApp(App):  # type: ignore[misc]
     CSS_PATH = "assets/tui_styles.tcss"
 
@@ -876,6 +1029,7 @@ class EspritTUIApp(App):  # type: ignore[misc]
         Binding("ctrl+c", "request_quit", "Quit", priority=True),
         Binding("escape", "stop_selected_agent", "Stop Agent", priority=True),
         Binding("b", "show_browser_preview", "Browser Preview", priority=False),
+        Binding("e", "show_export", "Export Vulnerabilities", priority=False),
     ]
 
     def __init__(self, args: argparse.Namespace, gui_server: _GUIServerType = None):
@@ -896,11 +1050,16 @@ class EspritTUIApp(App):  # type: ignore[misc]
 
         self._streaming_render_cache: dict[str, tuple[int, Any]] = {}
         self._last_streaming_len: dict[str, int] = {}
+        self._last_thinking_len: dict[str, int] = {}
+
+        self._queued_steering_message: str | None = None
 
         self._scan_thread: threading.Thread | None = None
         self._scan_stop_event = threading.Event()
         self._scan_completed = threading.Event()
         self._scan_failed = threading.Event()
+        self._video_export_triggered = False
+        self._completion_notified = False
         self._stats_spinner_frame: int = 0
 
         self._spinner_frame_index: int = 0  # Current animation frame index
@@ -930,20 +1089,47 @@ class EspritTUIApp(App):  # type: ignore[misc]
         self._setup_cleanup_handlers()
 
     def _build_scan_config(self, args: argparse.Namespace) -> dict[str, Any]:
+        scan_mode = getattr(args, "scan_mode", "deep")
+        model_name = Config.get("esprit_llm") or ""
+        target_count = len(getattr(args, "targets_info", []) or [])
+        is_whitebox = bool(getattr(args, "local_sources", None))
+        estimate = estimate_scan_profile(
+            model_name=model_name,
+            scan_mode=scan_mode,
+            target_count=max(1, target_count),
+            is_whitebox=is_whitebox,
+        ) if model_name else {}
         return {
             "scan_id": args.run_name,
             "targets": args.targets_info,
             "user_instructions": args.instruction or "",
             "run_name": args.run_name,
+            "scan_mode": scan_mode,
+            "model": model_name,
+            "target_count": max(1, target_count),
+            "is_whitebox": is_whitebox,
+            "estimated_cost_low": estimate.get("estimated_cost_low"),
+            "estimated_cost_mid": estimate.get("estimated_cost_mid"),
+            "estimated_cost_high": estimate.get("estimated_cost_high"),
+            "estimated_time_low_min": estimate.get("estimated_time_low_min"),
+            "estimated_time_mid_min": estimate.get("estimated_time_mid_min"),
+            "estimated_time_high_min": estimate.get("estimated_time_high_min"),
         }
 
     def _build_agent_config(self, args: argparse.Namespace) -> dict[str, Any]:
         scan_mode = getattr(args, "scan_mode", "deep")
         llm_config = LLMConfig(scan_mode=scan_mode)
+        llm_timeout = int(getattr(llm_config, "timeout", 300) or 300)
+        llm_watchdog_timeout_s = compute_default_llm_watchdog_timeout(llm_timeout)
 
         config = {
             "llm_config": llm_config,
             "max_iterations": 300,
+            "stall_policy": "auto_recover",
+            "llm_watchdog_timeout_s": llm_watchdog_timeout_s,
+            "tool_watchdog_timeout_s": 180,
+            "stall_grace_period_s": 90,
+            "max_stall_recoveries": 3,
         }
 
         if getattr(args, "local_sources", None):
@@ -1013,7 +1199,7 @@ class EspritTUIApp(App):  # type: ignore[misc]
             keymap_indicator = Static("", id="keymap_indicator")
 
             agent_status_display = Horizontal(
-                status_text, keymap_indicator, id="agent_status_display", classes="hidden"
+                status_text, keymap_indicator, id="agent_status_display"
             )
 
             chat_prompt = Static("> ", id="chat_prompt")
@@ -1092,7 +1278,7 @@ class EspritTUIApp(App):  # type: ignore[misc]
             except Exception:  # noqa: BLE001
                 logging.debug("Failed to start GUI server", exc_info=True)
 
-        self.set_interval(0.35, self._update_ui_from_tracer)
+        self.set_interval(0.15, self._update_ui_from_tracer)
 
     def _update_ui_from_tracer(self) -> None:
         if self.show_splash:
@@ -1135,6 +1321,8 @@ class EspritTUIApp(App):  # type: ignore[misc]
 
         self._cleanup_browser_screenshots()
 
+        self._deliver_queued_steering_message()
+
     def _cleanup_browser_screenshots(self) -> None:
         """Free memory by replacing older browser screenshots with a placeholder.
 
@@ -1173,6 +1361,25 @@ class EspritTUIApp(App):  # type: ignore[misc]
                 if isinstance(result, dict) and result.get("screenshot"):
                     result["screenshot"] = "[rendered]"
 
+    def _deliver_queued_steering_message(self) -> None:
+        """Deliver a queued steering message once agent tools finish running."""
+        if not self._queued_steering_message or not self.selected_agent_id:
+            return
+
+        if not self.tracer:
+            return
+
+        has_running_tools = any(
+            t.get("agent_id") == self.selected_agent_id
+            and t.get("status") == "running"
+            for t in list(self.tracer.tool_executions.values())
+        )
+
+        if not has_running_tools:
+            message = self._queued_steering_message
+            self._queued_steering_message = None
+            self._send_user_message(message)
+
     def _update_agent_node(self, agent_id: str, agent_data: dict[str, Any]) -> bool:
         if agent_id not in self.agent_nodes:
             return False
@@ -1184,8 +1391,11 @@ class EspritTUIApp(App):  # type: ignore[misc]
 
             status_indicators = {
                 "running": _ACTIVITY_SPINNER[self._stats_spinner_frame % len(_ACTIVITY_SPINNER)],
+                "queued": "⌛",
                 "waiting": "⏸",
+                "stalled_recovered": "↻",
                 "completed": "✓",
+                "finished": "✓",
                 "failed": "✗",
                 "stopped": "■",
                 "stopping": "○",
@@ -1224,19 +1434,36 @@ class EspritTUIApp(App):  # type: ignore[misc]
         )
 
         if not events and not streaming and not is_root:
-            return self._get_chat_placeholder_content(
-                "Starting agent...", "placeholder-no-activity"
-            )
+            # Also check for streaming thinking - agent might be thinking before producing text
+            thinking = self.tracer.get_streaming_thinking(self.selected_agent_id)
+            if not thinking:
+                agent_data = self.tracer.agents.get(self.selected_agent_id, {})
+                status = str(agent_data.get("status", "")).lower()
+                if status in {"completed", "finished", "failed", "llm_failed", "stopped"}:
+                    return self._get_chat_placeholder_content(
+                        "No activity recorded for this agent.", "placeholder-no-activity"
+                    )
+                return self._get_chat_placeholder_content(
+                    "Starting agent...", "placeholder-no-activity"
+                )
 
         current_event_ids = [e["id"] for e in events]
         current_streaming_len = len(streaming) if streaming else 0
         last_streaming_len = self._last_streaming_len.get(self.selected_agent_id, 0)
 
+        # Also track streaming thinking for cache invalidation
+        streaming_thinking = self.tracer.get_streaming_thinking(self.selected_agent_id)
+        current_thinking_len = len(streaming_thinking) if streaming_thinking else 0
+
         # Skip cache when root has running children (shimmer animation needs refresh)
         has_running = is_root and self._has_running_children(self.selected_agent_id)
 
+        # Also invalidate cache when thinking changes
+        has_thinking_change = current_thinking_len != self._last_thinking_len.get(self.selected_agent_id, 0)
+
         if (
             not has_running
+            and not has_thinking_change
             and current_event_ids == self._displayed_events
             and current_streaming_len == last_streaming_len
         ):
@@ -1244,6 +1471,7 @@ class EspritTUIApp(App):  # type: ignore[misc]
 
         self._displayed_events = current_event_ids
         self._last_streaming_len[self.selected_agent_id] = current_streaming_len
+        self._last_thinking_len[self.selected_agent_id] = current_thinking_len
 
         rendered = self._get_rendered_events_content(events)
 
@@ -1273,7 +1501,12 @@ class EspritTUIApp(App):  # type: ignore[misc]
             return
 
         try:
-            is_at_bottom = chat_history.scroll_y >= chat_history.max_scroll_y
+            # Use a tolerance so the user doesn't lose auto-scroll from
+            # a tiny content reflow that shifts max_scroll_y up by a few px.
+            is_at_bottom = (
+                chat_history.max_scroll_y <= 0
+                or chat_history.scroll_y >= chat_history.max_scroll_y - 3
+            )
         except (AttributeError, ValueError):
             is_at_bottom = True
 
@@ -1286,7 +1519,10 @@ class EspritTUIApp(App):  # type: ignore[misc]
         chat_display.set_classes(css_class)
 
         if is_at_bottom:
+            # Double-schedule: once immediately after update, once after
+            # Textual has reflowed the widget, so we always hit true bottom.
             self.call_later(chat_history.scroll_end, animate=False)
+            self.call_after_refresh(chat_history.scroll_end, animate=False)
 
     def _get_chat_placeholder_content(
         self, message: str, placeholder_class: str
@@ -1316,6 +1552,15 @@ class EspritTUIApp(App):  # type: ignore[misc]
                 renderables.append(content)
 
         if self.selected_agent_id:
+            # Show streaming thinking indicator
+            streaming_thinking = self.tracer.get_streaming_thinking(self.selected_agent_id)
+            if streaming_thinking:
+                thinking_indicator = self._render_streaming_thinking(streaming_thinking)
+                if thinking_indicator:
+                    if renderables:
+                        renderables.append(Text(""))
+                    renderables.append(thinking_indicator)
+
             streaming = self.tracer.get_streaming_content(self.selected_agent_id)
             if streaming:
                 streaming_text = self._render_streaming_content(streaming)
@@ -1349,6 +1594,28 @@ class EspritTUIApp(App):  # type: ignore[misc]
         text.append("Compacting memory", style="#d97706 bold")
         text.append("  ·  ", style="dim")
         text.append("summarizing older messages to free context", style="dim")
+        return text
+
+    def _render_streaming_thinking(self, thinking_content: str) -> Text:
+        """Render a live thinking indicator with animated spinner and content preview."""
+        text = Text()
+        frames = ["◐", "◓", "◑", "◒"]
+        frame = frames[self._stats_spinner_frame % len(frames)]
+        text.append(f" {frame} ", style="#a855f7")
+        text.append("🧠 Thinking", style="bold #a855f7")
+
+        # Show last few lines of thinking content
+        lines = [ln for ln in thinking_content.strip().splitlines() if ln.strip()]
+        if lines:
+            # Show up to 6 lines of the latest thinking
+            show_lines = lines[-6:]
+            text.append("\n")
+            for line in show_lines:
+                display = line if len(line) <= 120 else line[:117] + "..."
+                text.append(f"  {display}\n", style="italic #c4b5fd")
+        else:
+            text.append("...", style="dim #a855f7")
+
         return text
 
     # ------------------------------------------------------------------
@@ -1422,6 +1689,14 @@ class EspritTUIApp(App):  # type: ignore[misc]
             if lines:
                 return lines[-1].strip()
 
+        # Check for streaming thinking (agent is reasoning)
+        thinking = self.tracer.get_streaming_thinking(agent_id)
+        if thinking and thinking.strip():
+            lines = [ln for ln in thinking.strip().splitlines() if ln.strip()]
+            if lines:
+                snippet = lines[-1].strip()
+                return f"Thinking: {snippet}"
+
         # Fall back to the most recent chat message
         agent_msgs = [
             m for m in reversed(list(self.tracer.chat_messages))
@@ -1448,6 +1723,129 @@ class EspritTUIApp(App):  # type: ignore[misc]
 
         return None
 
+    def _get_agent_current_tool(self, agent_id: str) -> str | None:
+        """Get the currently running tool for an agent, if any."""
+        running_tools = [
+            t for t in list(self.tracer.tool_executions.values())
+            if t.get("agent_id") == agent_id and t.get("status") == "running"
+            and t.get("tool_name") not in ("scan_start_info", "subagent_start_info")
+        ]
+        if running_tools:
+            last = max(running_tools, key=lambda t: t.get("timestamp", ""))
+            name = last.get("tool_name", "")
+            if name:
+                _TOOL_ICONS = {
+                    "terminal_command": "⌨", "browser_action": "🌐",
+                    "code_analysis": "📄", "web_search": "🔍",
+                    "file_edit": "✏", "python_repl": "🐍",
+                }
+                icon = _TOOL_ICONS.get(name, "⚙")
+                return f"{icon} {name}"
+        return None
+
+    def _get_activity_summary(self, agent_id: str) -> str | None:
+        """Build a short human-readable summary of what the agent is currently doing."""
+        _TOOL_VERBS = {
+            "terminal_command": "Running command",
+            "browser_action": "Browsing",
+            "code_analysis": "Analyzing code",
+            "web_search": "Searching the web",
+            "file_edit": "Editing file",
+            "python_repl": "Running Python",
+            "think": "Reasoning",
+            "create_agent": "Spawning agent",
+            "send_message_to_agent": "Messaging agent",
+            "create_vulnerability_report": "Reporting vulnerability",
+            "view_agent_graph": "Viewing agents",
+            "notes": "Taking notes",
+            "finish": "Finishing",
+        }
+
+        # Check for running tools first
+        running_tools = [
+            t for t in list(self.tracer.tool_executions.values())
+            if t.get("agent_id") == agent_id and t.get("status") == "running"
+            and t.get("tool_name") not in ("scan_start_info", "subagent_start_info")
+        ]
+        if running_tools:
+            last = max(running_tools, key=lambda t: t.get("timestamp", ""))
+            name = last.get("tool_name", "")
+            verb = _TOOL_VERBS.get(name, f"Using {name}")
+            # Add context from args
+            args = last.get("args", {})
+            if name == "terminal_command" and args.get("command"):
+                cmd = str(args["command"])
+                if len(cmd) > 40:
+                    cmd = cmd[:37] + "..."
+                return f"{verb}: {cmd}"
+            if name == "browser_action" and args.get("url"):
+                return f"{verb}: {args['url'][:50]}"
+            if name == "file_edit" and args.get("file_path"):
+                return f"{verb}: {args['file_path'][:50]}"
+            if name == "web_search" and args.get("query"):
+                return f"{verb}: {args['query'][:50]}"
+            return verb
+
+        # Check for streaming content (agent is generating text)
+        streaming = self.tracer.get_streaming_content(agent_id)
+        if streaming and streaming.strip():
+            lines = [ln for ln in streaming.strip().splitlines() if ln.strip()]
+            if lines:
+                last = lines[-1].strip()
+                if len(last) > 60:
+                    last = last[:57] + "..."
+                return f"Writing: {last}"
+            return "Generating response"
+
+        return None
+
+    def _get_watchdog_state(self, agent_id: str, status: str) -> dict[str, Any] | None:
+        heartbeat = self.tracer.get_agent_heartbeat(agent_id)
+        if not heartbeat:
+            return None
+
+        timestamp = heartbeat.get("timestamp")
+        if not isinstance(timestamp, str):
+            return None
+
+        phase = str(heartbeat.get("phase") or "")
+        detail = str(heartbeat.get("detail") or "")
+
+        try:
+            from datetime import datetime, timezone
+
+            heartbeat_dt = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+            age_s = max(0, int((datetime.now(timezone.utc) - heartbeat_dt).total_seconds()))
+        except (TypeError, ValueError):
+            return None
+
+        grace_raw = 90
+        if isinstance(getattr(self, "agent_config", None), dict):
+            grace_raw = self.agent_config.get("stall_grace_period_s", 90)
+        try:
+            grace_s = max(1, int(grace_raw))
+        except (TypeError, ValueError):
+            grace_s = 90
+
+        if phase == "recovery":
+            return {
+                "kind": "recovered",
+                "age_s": age_s,
+                "phase": phase,
+                "detail": detail,
+            }
+
+        if status in ("running", "queued", "stalled_recovered") and age_s > grace_s:
+            return {
+                "kind": "stalled",
+                "age_s": age_s,
+                "phase": phase,
+                "detail": detail,
+                "grace_s": grace_s,
+            }
+
+        return None
+
     def _build_subagent_dashboard(self, root_agent_id: str) -> Any:
         """Build a renderable dashboard showing snippets of all child agents."""
         children = self._get_child_agents(root_agent_id)
@@ -1468,8 +1866,11 @@ class EspritTUIApp(App):  # type: ignore[misc]
 
         status_styles: dict[str, tuple[str, str]] = {
             "running": (spinner, "#22d3ee"),
+            "queued": ("⌛", "#fbbf24"),
             "waiting": ("⏸", "#fbbf24"),
+            "stalled_recovered": ("↻", "#f59e0b"),
             "completed": ("✓", "#22c55e"),
+            "finished": ("✓", "#22c55e"),
             "failed": ("✗", "#ef4444"),
             "stopped": ("■", "#a1a1aa"),
             "stopping": ("○", "#a1a1aa"),
@@ -1480,8 +1881,11 @@ class EspritTUIApp(App):  # type: ignore[misc]
             agent_id = child["id"]
             agent_name = child.get("name", "Agent")
             status = child.get("status", "running")
+            watchdog_state = self._get_watchdog_state(agent_id, status)
             icon, color = status_styles.get(status, ("○", "#a1a1aa"))
-            is_active = status in ("running", "waiting")
+            if watchdog_state and watchdog_state["kind"] == "stalled":
+                icon, color = ("⚠", "#f59e0b")
+            is_active = status in ("running", "queued", "waiting", "stalled_recovered")
 
             card = Text()
             # Agent name line with status icon
@@ -1492,11 +1896,54 @@ class EspritTUIApp(App):  # type: ignore[misc]
             if vuln_count > 0:
                 card.append(f"  ⚡{vuln_count}", style="bold #ef4444")
 
+            # Show thinking indicator if agent is currently thinking
+            streaming_thinking = self.tracer.get_streaming_thinking(agent_id)
+            if streaming_thinking and is_active:
+                card.append("  🧠", style="#a855f7")
+
+            # Elapsed time for this agent
+            agent_start = child.get("started_at") or child.get("created_at") or child.get("timestamp")
+            if agent_start:
+                try:
+                    from datetime import datetime, timezone
+                    start_dt = datetime.fromisoformat(agent_start)
+                    if status in ("completed", "failed", "stopped", "llm_failed", "finished"):
+                        end_str = child.get("ended_at") or child.get("completed_at")
+                        if end_str:
+                            elapsed_s = (datetime.fromisoformat(end_str) - start_dt).total_seconds()
+                        else:
+                            elapsed_s = (datetime.now(timezone.utc) - start_dt).total_seconds()
+                    else:
+                        elapsed_s = (datetime.now(timezone.utc) - start_dt).total_seconds()
+                    mins, secs = divmod(int(elapsed_s), 60)
+                    card.append(f"  {mins}:{secs:02d}", style="dim #525252")
+                except (ValueError, TypeError):
+                    pass
+
+            # Iteration count
+            iterations = child.get("iterations", 0)
+            if iterations > 0:
+                card.append(f"  iter {iterations}", style="dim #525252")
+
+            # Status label for non-running agents
+            if watchdog_state and watchdog_state["kind"] == "stalled":
+                card.append("  stalled", style="dim #f59e0b")
+            elif watchdog_state and watchdog_state["kind"] == "recovered":
+                card.append("  recovered", style="dim #f59e0b")
+            elif status == "queued":
+                card.append("  queued", style="dim #fbbf24")
+            elif status == "waiting":
+                card.append("  waiting", style="dim #fbbf24")
+            elif status in ("failed", "llm_failed"):
+                card.append("  failed", style="dim #ef4444")
+            elif status in ("completed", "finished"):
+                card.append("  done", style="dim #22c55e")
+
+            # Line 1: Primary activity snippet
             snippet = self._get_agent_snippet(agent_id)
             if snippet:
                 card.append("\n")
                 if is_active:
-                    # Shimmer effect for running agents
                     card.append("    ")
                     shimmer = self._shimmer_text(snippet, max_len=90)
                     card.append_text(shimmer)
@@ -1504,9 +1951,63 @@ class EspritTUIApp(App):  # type: ignore[misc]
                     card.append("    ", style="dim")
                     display = snippet if len(snippet) <= 90 else snippet[:89] + "…"
                     card.append(display, style="dim")
+
+                # Line 2: Watchdog diagnostics when stale/recovered
+                if watchdog_state and watchdog_state["kind"] == "stalled":
+                    phase = watchdog_state.get("phase") or "unknown"
+                    age_s = watchdog_state.get("age_s", 0)
+                    card.append("\n    ")
+                    card.append(f"No heartbeat for {age_s}s ({phase})", style="dim #f59e0b")
+                elif watchdog_state and watchdog_state["kind"] == "recovered":
+                    detail = watchdog_state.get("detail") or "Auto-recovered"
+                    display_recovery = detail if len(detail) <= 85 else detail[:82] + "…"
+                    card.append("\n    ")
+                    card.append(display_recovery, style="dim #f59e0b")
+                else:
+                    # Line 2: Second line of streaming or tool usage
+                    streaming = self.tracer.get_streaming_content(agent_id) if is_active else None
+                    if streaming and streaming.strip():
+                        lines = [ln for ln in streaming.strip().splitlines() if ln.strip()]
+                        if len(lines) >= 2:
+                            second_line = lines[-2].strip()
+                            if second_line and second_line != snippet:
+                                display2 = second_line if len(second_line) <= 85 else second_line[:82] + "…"
+                                card.append("\n    ")
+                                card.append(display2, style="dim #71717a")
+
+                # Line 3: Current tool being used (if different from snippet)
+                if is_active:
+                    current_tool = self._get_agent_current_tool(agent_id)
+                    if current_tool and not snippet.startswith("Using "):
+                        card.append("\n    ")
+                        card.append(current_tool, style="italic dim #525252")
+
             elif is_active:
                 card.append("\n    ", style="dim")
-                card.append_text(self._shimmer_text("Initializing…", max_len=90))
+                # Show more informative initializing state with elapsed time
+                agent_start = child.get("started_at") or child.get("created_at") or child.get("timestamp")
+                elapsed_msg = ""
+                if agent_start:
+                    try:
+                        from datetime import datetime, timezone
+                        start_dt = datetime.fromisoformat(agent_start)
+                        elapsed_s = (datetime.now(timezone.utc) - start_dt).total_seconds()
+                        if elapsed_s > 45:
+                            # Agent has been initializing for over 45s - provider may be busy or request still in flight
+                            card.append_text(self._shimmer_text("Waiting for LLM response…", max_len=90))
+                            card.append("\n    ", style="dim")
+                            card.append(
+                                f"({int(elapsed_s)}s elapsed — no response yet)",
+                                style="dim #22d3ee",
+                            )
+                        elif elapsed_s > 15:
+                            card.append_text(self._shimmer_text("Preparing context…", max_len=90))
+                        else:
+                            card.append_text(self._shimmer_text("Initializing…", max_len=90))
+                    except (ValueError, TypeError):
+                        card.append_text(self._shimmer_text("Initializing…", max_len=90))
+                else:
+                    card.append_text(self._shimmer_text("Initializing…", max_len=90))
 
             renderables.append(card)
 
@@ -1518,18 +2019,20 @@ class EspritTUIApp(App):  # type: ignore[misc]
     def _has_running_children(self, agent_id: str) -> bool:
         """Check if any child agents are currently running."""
         return any(
-            data.get("status") in ("running", "waiting")
+            data.get("status") in ("running", "queued", "waiting", "stalled_recovered")
             for data in list(self.tracer.agents.values())
             if data.get("parent_id") == agent_id
         )
 
     def _render_streaming_content(self, content: str, agent_id: str | None = None) -> Any:
         cache_key = agent_id or self.selected_agent_id or ""
-        content_len = len(content)
+        # Include cursor phase in cache key so blink animation works
+        cursor_phase = self._stats_spinner_frame % 4
+        content_key = (len(content), cursor_phase)
 
         if cache_key in self._streaming_render_cache:
-            cached_len, cached_output = self._streaming_render_cache[cache_key]
-            if cached_len == content_len:
+            cached_key, cached_output = self._streaming_render_cache[cache_key]
+            if cached_key == content_key:
                 return cached_output
 
         renderables: list[Any] = []
@@ -1537,7 +2040,7 @@ class EspritTUIApp(App):  # type: ignore[misc]
 
         for segment in segments:
             if segment.type == "text":
-                text_content = AgentMessageRenderer.render_simple(segment.content)
+                text_content = AgentMessageRenderer.render_simple(segment.content, is_streaming=True)
                 if renderables:
                     renderables.append(Text(""))
                 renderables.append(text_content)
@@ -1552,6 +2055,12 @@ class EspritTUIApp(App):  # type: ignore[misc]
                     renderables.append(Text(""))
                 renderables.append(tool_renderable)
 
+        # Add blinking cursor to show active streaming
+        if renderables:
+            cursor_char = "█" if (self._stats_spinner_frame % 4) < 2 else " "
+            cursor = Text(cursor_char, style="bold #22d3ee")
+            renderables.append(cursor)
+
         if not renderables:
             result = Text()
         elif len(renderables) == 1:
@@ -1559,7 +2068,7 @@ class EspritTUIApp(App):  # type: ignore[misc]
         else:
             result = Group(*renderables)
 
-        self._streaming_render_cache[cache_key] = (content_len, result)
+        self._streaming_render_cache[cache_key] = (content_key, result)
         return result
 
     def _render_streaming_tool(
@@ -1611,13 +2120,30 @@ class EspritTUIApp(App):  # type: ignore[misc]
     ) -> Text:
         text = Text()
 
-        if is_complete:
-            text.append("✓ ", style="green")
-        else:
-            text.append("● ", style="yellow")
+        # Color-coded tool icons for streaming
+        _TOOL_STYLES: dict[str, tuple[str, str, str]] = {
+            "terminal_command": (">_", "#22c55e", "bold #22c55e"),
+            "terminal_execute": (">_", "#22c55e", "bold #22c55e"),
+            "browser_action": ("🌐", "#60a5fa", "bold #60a5fa"),
+            "code_analysis": ("📄", "#f59e0b", "bold #f59e0b"),
+            "web_search": ("🔍", "#818cf8", "bold #818cf8"),
+            "file_edit": ("✏", "#fb923c", "bold #fb923c"),
+            "python_repl": ("🐍", "#22c55e", "bold #22c55e"),
+            "create_agent": ("◈", "#a78bfa", "bold #a78bfa"),
+            "send_message_to_agent": ("→", "#60a5fa", "bold #60a5fa"),
+        }
 
-        text.append("Using tool ", style="dim")
-        text.append(tool_name, style="bold blue")
+        tool_icon, _icon_color, name_style = _TOOL_STYLES.get(
+            tool_name, ("⚙", "#a1a1aa", "bold #a1a1aa")
+        )
+
+        if is_complete:
+            text.append("✓ ", style="#22c55e")
+        else:
+            text.append("● ", style="#f59e0b")
+
+        text.append(f"{tool_icon} ", style="dim")
+        text.append(tool_name, style=name_style)
 
         if args:
             for key, value in list(args.items())[:3]:
@@ -1644,36 +2170,125 @@ class EspritTUIApp(App):  # type: ignore[misc]
                 t.append(action, style="dim")
             return t
 
+        def _token_stats_text() -> Text:
+            """Build compact live usage metrics for the status line."""
+            t = Text()
+            try:
+                from datetime import datetime, timezone
+
+                from esprit.interface.utils import format_token_count
+
+                llm_stats = self.tracer.get_total_llm_stats()
+                total = llm_stats.get("total", {})
+                inp = int(total.get("input_tokens", 0) or 0)
+                out = int(total.get("output_tokens", 0) or 0)
+                cached = int(total.get("cached_tokens", 0) or 0)
+
+                elapsed_s = 0.0
+                start_iso = getattr(self.tracer, "start_time", None)
+                if start_iso:
+                    start_dt = datetime.fromisoformat(str(start_iso).replace("Z", "+00:00"))
+                    end_iso = getattr(self.tracer, "end_time", None)
+                    if end_iso:
+                        end_dt = datetime.fromisoformat(str(end_iso).replace("Z", "+00:00"))
+                    else:
+                        end_dt = datetime.now(timezone.utc)
+                    elapsed_s = max(0.0, (end_dt - start_dt).total_seconds())
+
+                if inp or out:
+                    t.append("In ", style="dim")
+                    t.append(format_token_count(inp), style="#22d3ee")
+                    t.append("  Out ", style="dim")
+                    t.append(format_token_count(out), style="#a78bfa")
+
+                    if elapsed_s > 0 and out > 0:
+                        tps = out / elapsed_s
+                        t.append("  ", style="dim")
+                        t.append(f"{tps:.1f}", style="#22d3ee")
+                        t.append(" tok/s", style="dim")
+
+                    if elapsed_s > 0:
+                        mins, secs = divmod(int(elapsed_s), 60)
+                        t.append("  ", style="dim")
+                        t.append(f"{mins}:{secs:02d}", style="#fbbf24")
+
+                    if cached > 0 and inp > 0:
+                        pct = int((cached / max(inp, 1)) * 100)
+                        t.append("  ", style="dim")
+                        t.append(f"{pct}% hit", style="dim #22c55e")
+            except Exception:  # noqa: BLE001
+                pass
+            return t
+
         simple_statuses: dict[str, tuple[str, str]] = {
             "stopping": ("Agent stopping...", ""),
             "stopped": ("Agent stopped", ""),
             "completed": ("Agent completed", ""),
+            "finished": ("Agent completed", ""),
         }
 
         if status in simple_statuses:
             msg, _ = simple_statuses[status]
             text = Text()
-            text.append(msg)
-            return (text, Text(), False)
+            text.append("⬡ ", style="dim")
+            text.append(msg, style="dim")
+            keymap = Text()
+            ts = _token_stats_text()
+            if ts.plain:
+                keymap.append_text(ts)
+            return (text, keymap, False)
 
         if status == "llm_failed":
             error_msg = agent_data.get("error_message", "")
             text = Text()
+            text.append("⬡ ", style="dim")
             if error_msg:
-                text.append(error_msg, style="red")
+                text.append(error_msg, style="dim red")
             else:
-                text.append("LLM request failed", style="red")
+                text.append("LLM request failed", style="dim red")
             self._stop_dot_animation()
             keymap = Text()
             keymap.append("Send message to retry", style="dim")
+            ts = _token_stats_text()
+            if ts.plain:
+                keymap.append("  ", style="dim")
+                keymap.append_text(ts)
             return (text, keymap, False)
 
-        if status == "waiting":
+        if status in {"queued", "waiting"}:
+            text = Text()
+            text.append("⬡ ", style="dim")
+            if status == "queued":
+                text.append("Queued — waiting for execution slot", style="#fbbf24")
+            else:
+                text.append("Idle — waiting for agent activity", style="dim")
             keymap = Text()
-            keymap.append("Send message to resume", style="dim")
-            return (Text(" "), keymap, False)
+            if status == "queued":
+                keymap.append("Auto-resumes when slot is free", style="dim #fbbf24")
+            else:
+                keymap.append("Send message to resume", style="dim")
+            ts = _token_stats_text()
+            if ts.plain:
+                keymap.append("  ", style="dim")
+                keymap.append_text(ts)
+            return (text, keymap, False)
 
-        if status == "running":
+        watchdog_state = self._get_watchdog_state(agent_id, status)
+
+        if status in ("running", "queued", "stalled_recovered"):
+            frame = HEX_SPINNER_FRAMES[
+                self._spinner_frame_index % len(HEX_SPINNER_FRAMES)
+            ]
+            # Build queued-message indicator for keymap
+            has_queued = self._queued_steering_message is not None
+
+            def _keymap_with_steering(keys: list[tuple[str, str]]) -> Text:
+                km = keymap_styled(keys)
+                if has_queued:
+                    km.append("  ", style="dim")
+                    km.append("↵ queued", style="#fbbf24")
+                return km
+
             # Check if this agent is compacting memory
             if agent_id in self.tracer.compacting_agents:
                 animated_text = Text()
@@ -1683,19 +2298,91 @@ class EspritTUIApp(App):  # type: ignore[misc]
                 )
                 animated_text.append("Compacting", style="#fbbf24")
                 animated_text.append(" memory", style="#d97706")
-                return (animated_text, keymap_styled([("ctrl-q", "quit")]), True)
+                km = _keymap_with_steering([("ctrl-q", "quit")])
+                ts = _token_stats_text()
+                if ts.plain:
+                    km.append("  ")
+                    km.append_text(ts)
+                return (animated_text, km, True)
+            # Check if this agent is currently thinking
+            streaming_thinking = self.tracer.get_streaming_thinking(agent_id)
+            if streaming_thinking:
+                animated_text = Text()
+                animated_text.append(f"{frame} ", style="#22d3ee")
+                animated_text.append_text(self._get_sweep_animation(["#000000", "#1a001a", "#3d0040", "#5c0066", "#7a0099", "#a300cc", "#c44dff", "#a855f7"]))
+                animated_text.append("🧠 Thinking", style="#a855f7")
+                animated_text.append("  ", style="dim")
+                animated_text.append("esc", style="white")
+                animated_text.append(" stop", style="dim")
+                km = _keymap_with_steering([("ctrl-q", "quit")])
+                ts = _token_stats_text()
+                if ts.plain:
+                    km.append("  ")
+                    km.append_text(ts)
+                return (animated_text, km, True)
+            if watchdog_state and watchdog_state["kind"] == "stalled":
+                animated_text = Text()
+                animated_text.append(f"{frame} ", style="#22d3ee")
+                animated_text.append_text(self._get_sweep_animation(self._compact_sweep_colors))
+                age_s = watchdog_state.get("age_s", 0)
+                phase = watchdog_state.get("phase") or "unknown"
+                animated_text.append("Watchdog: no heartbeat", style="#f59e0b")
+                animated_text.append(f" ({age_s}s)", style="dim #f59e0b")
+                animated_text.append(f" [{phase}]", style="dim #f59e0b")
+                animated_text.append("  ", style="dim")
+                animated_text.append("esc", style="white")
+                animated_text.append(" stop", style="dim")
+                km = _keymap_with_steering([("ctrl-q", "quit")])
+                ts = _token_stats_text()
+                if ts.plain:
+                    km.append("  ")
+                    km.append_text(ts)
+                return (animated_text, km, True)
+
+            if watchdog_state and watchdog_state["kind"] == "recovered":
+                animated_text = Text()
+                animated_text.append(f"{frame} ", style="#22d3ee")
+                animated_text.append_text(self._get_sweep_animation(self._compact_sweep_colors))
+                animated_text.append("Watchdog recovered stall", style="#f59e0b")
+                animated_text.append("  ", style="dim")
+                animated_text.append("esc", style="white")
+                animated_text.append(" stop", style="dim")
+                km = _keymap_with_steering([("ctrl-q", "quit")])
+                ts = _token_stats_text()
+                if ts.plain:
+                    km.append("  ")
+                    km.append_text(ts)
+                return (animated_text, km, True)
+
             if self._agent_has_real_activity(agent_id):
                 animated_text = Text()
                 animated_text.append_text(self._build_running_ghost_indicator())
                 animated_text.append_text(self._get_sweep_animation(self._sweep_colors))
+                # Show a descriptive summary of current activity
+                activity_summary = self._get_activity_summary(agent_id)
+                if activity_summary:
+                    animated_text.append(activity_summary, style="#22d3ee")
+                    animated_text.append("  ", style="dim")
                 animated_text.append("esc", style="white")
                 animated_text.append(" ", style="dim")
                 animated_text.append("stop", style="dim")
-                return (animated_text, keymap_styled([("ctrl-q", "quit")]), True)
+                km = _keymap_with_steering([("ctrl-q", "quit")])
+                ts = _token_stats_text()
+                if ts.plain:
+                    km.append("  ")
+                    km.append_text(ts)
+                return (animated_text, km, True)
             animated_text = Text()
             animated_text.append_text(self._build_running_ghost_indicator())
-            animated_text.append_text(self._get_animated_verb_text(agent_id, "Initializing"))
-            return (animated_text, keymap_styled([("ctrl-q", "quit")]), True)
+            animated_text.append_text(
+                self._get_animated_verb_text(agent_id, "Initializing")
+            )
+            km = _keymap_with_steering([("ctrl-q", "quit")])
+            ts = _token_stats_text()
+            if ts.plain:
+                km.append("  ")
+                km.append_text(ts)
+            return (animated_text, km, True)
 
         return (None, Text(), False)
 
@@ -1726,7 +2413,12 @@ class EspritTUIApp(App):  # type: ignore[misc]
             return
 
         if not self.selected_agent_id:
-            self._safe_widget_operation(status_display.add_class, "hidden")
+            idle = Text()
+            idle.append("⬡ ", style="dim")
+            idle.append("Idle — waiting for agent activity", style="dim")
+            self._safe_widget_operation(status_text.update, idle)
+            self._safe_widget_operation(keymap_indicator.update, Text(""))
+            self._safe_widget_operation(status_display.remove_class, "hidden")
             return
 
         try:
@@ -1736,7 +2428,13 @@ class EspritTUIApp(App):  # type: ignore[misc]
             )
 
             if not content:
-                self._safe_widget_operation(status_display.add_class, "hidden")
+                idle = Text()
+                idle.append("⬡ ", style="dim")
+                idle.append("Idle — waiting for agent activity", style="dim")
+                self._safe_widget_operation(status_text.update, idle)
+                self._safe_widget_operation(keymap_indicator.update, Text(""))
+                self._safe_widget_operation(status_display.remove_class, "hidden")
+                self._stop_dot_animation()
                 return
 
             self._safe_widget_operation(status_text.update, content)
@@ -1745,9 +2443,29 @@ class EspritTUIApp(App):  # type: ignore[misc]
 
             if should_animate:
                 self._start_dot_animation()
+            else:
+                self._stop_dot_animation()
 
         except (KeyError, Exception):
-            self._safe_widget_operation(status_display.add_class, "hidden")
+            idle = Text()
+            idle.append("⬡ ", style="dim")
+            idle.append("Idle — waiting for agent activity", style="dim")
+            self._safe_widget_operation(status_text.update, idle)
+            self._safe_widget_operation(keymap_indicator.update, Text(""))
+            self._safe_widget_operation(status_display.remove_class, "hidden")
+            self._stop_dot_animation()
+
+        # Update chat prompt to reflect queued steering state
+        try:
+            chat_prompt = self.query_one("#chat_prompt", Static)
+            if self._queued_steering_message is not None:
+                prompt_text = Text()
+                prompt_text.append("↵ ", style="bold #fbbf24")
+                self._safe_widget_operation(chat_prompt.update, prompt_text)
+            else:
+                self._safe_widget_operation(chat_prompt.update, "> ")
+        except (ValueError, Exception):
+            pass
 
     def _update_stats_display(self) -> None:
         try:
@@ -1762,25 +2480,28 @@ class EspritTUIApp(App):  # type: ignore[misc]
         scan_done = self._scan_completed.is_set()
         scan_failed = self._scan_failed.is_set()
 
-        # Detect agent-level failures even if the scan thread is still alive
-        # (e.g. LLM 400 error caught inside the agent loop)
-        if not scan_failed and not scan_done and self.tracer and self.tracer.agents:
-            _FAIL_STATUSES = {"failed", "llm_failed"}
-            _DONE_STATUSES = _FAIL_STATUSES | {"completed", "stopped"}
-            all_agents_done = all(
-                a.get("status") in _DONE_STATUSES
-                for a in list(self.tracer.agents.values())
-            )
-            any_failed = any(
-                a.get("status") in _FAIL_STATUSES
-                for a in list(self.tracer.agents.values())
-            )
-            if all_agents_done and any_failed:
-                scan_failed = True
-                self._scan_failed.set()
-                if not self.tracer.end_time:
-                    from datetime import datetime, timezone
-                    self.tracer.end_time = datetime.now(timezone.utc).isoformat()
+        # Infer terminal status from tracer metadata and agent states.
+        inferred_done, inferred_failed = infer_scan_state(
+            self.tracer,
+            scan_completed=scan_done,
+            scan_failed=scan_failed,
+        )
+        if inferred_done and not scan_done:
+            scan_done = True
+            self._scan_completed.set()
+        if inferred_failed and not scan_failed:
+            scan_failed = True
+            self._scan_failed.set()
+
+        if (scan_done or scan_failed) and not self.tracer.end_time:
+            from datetime import datetime, timezone
+
+            run_metadata = getattr(self.tracer, "run_metadata", {}) or {}
+            end_iso = run_metadata.get("end_time")
+            if isinstance(end_iso, str) and end_iso:
+                self.tracer.end_time = end_iso
+            else:
+                self.tracer.end_time = datetime.now(timezone.utc).isoformat()
 
         stats_content = Text()
 
@@ -1808,6 +2529,30 @@ class EspritTUIApp(App):  # type: ignore[misc]
         )
 
         self._safe_widget_operation(stats_display.update, stats_panel)
+
+        if (scan_done or scan_failed) and not self._completion_notified:
+            self._completion_notified = True
+            self._notify_completion_paths(scan_failed=scan_failed)
+
+        # Auto-export video when scan completes (if configured)
+        if (scan_done or scan_failed) and not self._video_export_triggered:
+            self._video_export_triggered = True
+            if getattr(self.args, "video_enabled", False):
+                self._auto_export_video()
+
+    def _notify_completion_paths(self, scan_failed: bool = False) -> None:
+        try:
+            run_dir = self.tracer.get_run_dir()
+        except Exception:
+            return
+
+        vuln_count = len(getattr(self.tracer, "vulnerability_reports", []) or [])
+        summary = (
+            f"Scan {'failed' if scan_failed else 'completed'}"
+            f" · {vuln_count} vulnerability{'ies' if vuln_count != 1 else ''} "
+            f"· saved in {run_dir}"
+        )
+        self.notify(summary, title="Scan Summary", timeout=10)
 
     def _update_vulnerabilities_panel(self) -> None:
         """Update the vulnerabilities panel with current vulnerability data."""
@@ -1903,7 +2648,7 @@ class EspritTUIApp(App):  # type: ignore[misc]
         if self.selected_agent_id and self.selected_agent_id in self.tracer.agents:
             agent_data = self.tracer.agents[self.selected_agent_id]
             status = agent_data.get("status", "running")
-            if status in ["running", "waiting"]:
+            if status in ["running", "queued", "waiting"]:
                 has_active_agents = True
                 num_colors = len(self._sweep_colors)
                 offset = num_colors - 1
@@ -1915,7 +2660,7 @@ class EspritTUIApp(App):  # type: ignore[misc]
 
         if not has_active_agents:
             has_active_agents = any(
-                agent_data.get("status", "running") in ["running", "waiting"]
+                agent_data.get("status", "running") in ["running", "queued", "waiting"]
                 for agent_data in list(self.tracer.agents.values())
             )
 
@@ -1933,7 +2678,10 @@ class EspritTUIApp(App):  # type: ignore[misc]
                     return True
 
         streaming = self.tracer.get_streaming_content(agent_id)
-        return bool(streaming and streaming.strip())
+        if streaming and streaming.strip():
+            return True
+        streaming_thinking = self.tracer.get_streaming_thinking(agent_id)
+        return bool(streaming_thinking and streaming_thinking.strip())
 
     def _agent_vulnerability_count(self, agent_id: str) -> int:
         count = 0
@@ -1985,6 +2733,7 @@ class EspritTUIApp(App):  # type: ignore[misc]
         self._displayed_events.clear()
         self._streaming_render_cache.clear()
         self._last_streaming_len.clear()
+        self._last_thinking_len.clear()
 
         self.call_later(self._update_chat_view)
         self._update_agent_status_display()
@@ -2052,8 +2801,10 @@ class EspritTUIApp(App):  # type: ignore[misc]
 
         status_indicators = {
             "running": "◐",
+            "queued": "⌛",
             "waiting": "⏸",
             "completed": "✓",
+            "finished": "✓",
             "failed": "✗",
             "stopped": "■",
             "stopping": "○",
@@ -2125,8 +2876,10 @@ class EspritTUIApp(App):  # type: ignore[misc]
 
         status_indicators = {
             "running": "◐",
+            "queued": "⌛",
             "waiting": "⏸",
             "completed": "✓",
+            "finished": "✓",
             "failed": "✗",
             "stopped": "■",
             "stopping": "○",
@@ -2182,12 +2935,32 @@ class EspritTUIApp(App):  # type: ignore[misc]
         parent_node.allow_expand = True
         parent_node.expand()
 
+    def _render_thinking_blocks(self, thinking_blocks: list[dict[str, Any]]) -> Text:
+        """Render thinking blocks with distinctive styling."""
+        text = Text()
+        text.append("🧠 ", style="bold #a855f7")
+        text.append("Thinking", style="bold #a855f7")
+        text.append("\n")
+        for block in thinking_blocks:
+            thinking_text = block.get("thinking", block.get("text", ""))
+            if thinking_text:
+                # Show thinking content, truncate if very long
+                lines = thinking_text.strip().splitlines()
+                for i, line in enumerate(lines):
+                    if i >= 12:
+                        remaining = len(lines) - i
+                        text.append(f"  ... ({remaining} more lines)", style="dim #7c3aed")
+                        break
+                    text.append(f"  {line}\n", style="italic #c4b5fd")
+        return text
+
     def _render_chat_content(self, msg_data: dict[str, Any]) -> Any:
         role = msg_data.get("role")
         content = msg_data.get("content", "")
         metadata = msg_data.get("metadata", {})
+        thinking_blocks = msg_data.get("thinking_blocks")
 
-        if not content:
+        if not content and not thinking_blocks:
             return None
 
         if role == "user":
@@ -2201,7 +2974,20 @@ class EspritTUIApp(App):  # type: ignore[misc]
             interrupted_text.append("Interrupted by user", style="yellow dim")
             return Group(streaming_result, interrupted_text)
 
-        return AgentMessageRenderer.render_simple(content)
+        parts: list[Any] = []
+
+        # Render thinking blocks before the message content
+        if thinking_blocks:
+            parts.append(self._render_thinking_blocks(thinking_blocks))
+
+        if content:
+            parts.append(AgentMessageRenderer.render_simple(content))
+
+        if len(parts) == 0:
+            return None
+        if len(parts) == 1:
+            return parts[0]
+        return Group(*parts)
 
     def _render_tool_content_simple(self, tool_data: dict[str, Any]) -> Any:
         tool_name = tool_data.get("tool_name", "Unknown Tool")
@@ -2220,14 +3006,33 @@ class EspritTUIApp(App):  # type: ignore[misc]
         if tool_name in ("llm_error_details", "sandbox_error_details"):
             return self._render_error_details(text, tool_name, args)
 
-        text.append("→ Using tool ")
-        text.append(tool_name, style="bold blue")
+        # Color-coded tool icons
+        _TOOL_STYLES: dict[str, tuple[str, str, str]] = {
+            "terminal_command": (">_", "#22c55e", "bold #22c55e"),
+            "terminal_execute": (">_", "#22c55e", "bold #22c55e"),
+            "browser_action": ("🌐", "#60a5fa", "bold #60a5fa"),
+            "code_analysis": ("📄", "#f59e0b", "bold #f59e0b"),
+            "web_search": ("🔍", "#818cf8", "bold #818cf8"),
+            "file_edit": ("✏", "#fb923c", "bold #fb923c"),
+            "python_repl": ("🐍", "#22c55e", "bold #22c55e"),
+            "create_agent": ("◈", "#a78bfa", "bold #a78bfa"),
+            "send_message_to_agent": ("→", "#60a5fa", "bold #60a5fa"),
+            "create_vulnerability_report": ("🐞", "#ef4444", "bold #ef4444"),
+        }
+
+        tool_icon, icon_color, name_style = _TOOL_STYLES.get(
+            tool_name, ("⚙", "#a1a1aa", "bold #a1a1aa")
+        )
+        text.append(f"{tool_icon} ", style=icon_color)
+        text.append(tool_name, style=name_style)
 
         status_styles = {
-            "running": ("●", "yellow"),
-            "completed": ("✓", "green"),
-            "failed": ("✗", "red"),
-            "error": ("✗", "red"),
+            "running": ("●", "#f59e0b"),
+            "queued": ("⌛", "#fbbf24"),
+            "waiting": ("⏸", "#fbbf24"),
+            "completed": ("✓", "#22c55e"),
+            "failed": ("✗", "#ef4444"),
+            "error": ("✗", "#ef4444"),
         }
         icon, style = status_styles.get(status, ("○", "dim"))
         text.append(" ")
@@ -2287,6 +3092,14 @@ class EspritTUIApp(App):  # type: ignore[misc]
             agent_id = node.data.get("agent_id")
             if agent_id:
                 self.selected_agent_id = agent_id
+                # Scroll to bottom of new agent's chat
+                self._displayed_events.clear()
+                self._update_chat_view()
+                try:
+                    chat_history = self.query_one("#chat_history", VerticalScroll)
+                    self.call_after_refresh(chat_history.scroll_end, animate=False)
+                except (ValueError, Exception):
+                    pass
 
     @on(Tree.NodeSelected)  # type: ignore[misc]
     def handle_tree_node_selected(self, event: Tree.NodeSelected) -> None:
@@ -2403,6 +3216,170 @@ class EspritTUIApp(App):  # type: ignore[misc]
             return
 
         self.push_screen(BrowserPreviewScreen(screenshot_b64, url, agent_id=self.selected_agent_id))
+
+    def action_show_export(self) -> None:
+        """Show the export vulnerabilities dialog."""
+        if self.show_splash or not self.is_mounted:
+            return
+
+        if len(self.screen_stack) > 1:
+            return
+
+        # Don't open when chat input is focused (user might be typing 'e')
+        try:
+            chat_input = self.query_one("#chat_input", ChatTextArea)
+            if self.focused == chat_input:
+                return
+        except (ValueError, Exception):
+            pass
+
+        if not self.tracer or not self.tracer.vulnerability_reports:
+            return
+
+        self.push_screen(ExportScreen())
+
+    def _do_export_vulnerabilities(self, fmt: str) -> None:
+        """Perform the vulnerability export in the given format."""
+        try:
+            from esprit.reporting.exporter import ReportExporter
+
+            exporter = ReportExporter(self.tracer)
+            export_methods = {
+                "json": exporter.export_json,
+                "csv": exporter.export_csv,
+                "md": exporter.export_markdown,
+                "html": exporter.generate_html_report,
+                "sarif": exporter.export_sarif,
+            }
+
+            method = export_methods.get(fmt)
+            if not method:
+                logging.warning(f"Unknown export format: {fmt}")
+                return
+
+            if fmt == "html":
+                out = method(exporter._get_output_dir() / "vulnerabilities.html")
+            else:
+                out = method()
+
+            self.notify(f"Exported to {out}", title="Export Complete", timeout=5)
+
+        except Exception as e:  # noqa: BLE001
+            logging.error(f"Export failed: {e}")
+            self.notify(f"Export failed: {e}", title="Error", severity="error", timeout=5)
+
+    def _do_export_video(self, speed: float, resolution: tuple[int, int]) -> None:
+        """Trigger video export in a background thread."""
+        import threading
+
+        def _run() -> None:
+            try:
+                from esprit.reporting.video_exporter import MissingDependencyError, VideoExporter
+
+                exporter = VideoExporter(self.tracer)
+                out_path = self.tracer.get_run_dir() / "replay.mp4"
+                self.call_from_thread(
+                    self.notify,
+                    "Rendering video… this may take a minute.",
+                    title="Video Export",
+                    timeout=60,
+                )
+                out = exporter.export_video(out_path, speed=speed, resolution=resolution)
+                self.call_from_thread(
+                    self.notify,
+                    f"Saved to {out}",
+                    title="Video Export Complete",
+                    timeout=8,
+                )
+            except MissingDependencyError as e:
+                logging.getLogger(__name__).error("Video export failed (missing dep): %s", e)
+                self.call_from_thread(
+                    self.notify,
+                    str(e),
+                    title="Missing Dependency",
+                    severity="error",
+                    timeout=10,
+                )
+            except Exception as e:  # noqa: BLE001
+                logging.getLogger(__name__).error("Video export failed: %s", e)
+                self.call_from_thread(
+                    self.notify,
+                    f"Export failed: {e}",
+                    title="Error",
+                    severity="error",
+                    timeout=8,
+                )
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    def _auto_export_video(self) -> None:
+        """Automatically export video after scan completes using pre-configured settings."""
+        speed = getattr(self.args, "video_speed", 10.0)
+        resolution = getattr(self.args, "video_resolution", (1920, 1080))
+        custom_output = getattr(self.args, "video_output", None)
+        logger = logging.getLogger(__name__)
+
+        import threading
+
+        def _run() -> None:
+            try:
+                from esprit.reporting.video_exporter import MissingDependencyError, VideoExporter
+
+                exporter = VideoExporter(self.tracer)
+
+                if custom_output:
+                    from pathlib import Path
+                    run_name = str(self.scan_config.get("run_name") or "")
+                    resolved_output = str(custom_output).replace("<run>", run_name).replace("{run}", run_name)
+                    out_path = Path(resolved_output)
+                    out_path.parent.mkdir(parents=True, exist_ok=True)
+                else:
+                    out_path = self.tracer.get_run_dir() / "replay.mp4"
+
+                logger.info(
+                    "Starting auto video export: output=%s speed=%sx resolution=%sx%s",
+                    out_path,
+                    f"{speed:.0f}",
+                    resolution[0],
+                    resolution[1],
+                )
+
+                self.call_from_thread(
+                    self.notify,
+                    f"Auto-exporting video ({speed:.0f}x)… this may take a minute.",
+                    title="Video Export",
+                    timeout=60,
+                )
+                out = exporter.export_video(out_path, speed=speed, resolution=resolution)
+                self.call_from_thread(
+                    self.notify,
+                    f"Video saved to {out}",
+                    title="Video Export Complete",
+                    timeout=10,
+                )
+                logger.info("Auto video export complete: %s", out)
+                # Store the path so display_completion_message can show it
+                self.args.video_saved_path = str(out)
+            except MissingDependencyError as e:
+                logger.error("Auto video export failed (missing dep): %s", e)
+                self.call_from_thread(
+                    self.notify,
+                    str(e),
+                    title="Video Export — Missing Dependency",
+                    severity="error",
+                    timeout=10,
+                )
+            except Exception as e:  # noqa: BLE001
+                logger.error("Auto video export failed: %s", e, exc_info=True)
+                self.call_from_thread(
+                    self.notify,
+                    f"Video export failed: {e}",
+                    title="Error",
+                    severity="error",
+                    timeout=8,
+                )
+
+        threading.Thread(target=_run, daemon=False).start()
 
     def _get_latest_browser_screenshot(self, agent_id: str) -> tuple[str | None, str]:
         """Find the latest browser screenshot for an agent."""

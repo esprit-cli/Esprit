@@ -61,12 +61,30 @@ Screen {
     display: none;
 }
 
-#left_panel_header,
-#center_panel_header,
+#left_panel_header {
+    height: 3;
+    background: #120505 62%;
+    color: #a78bfa;
+    border-bottom: solid #2f0f0f;
+    padding: 0 2;
+    content-align: left middle;
+    text-style: bold;
+}
+
+#center_panel_header {
+    height: 3;
+    background: #120505 62%;
+    color: #22d3ee;
+    border-bottom: solid #2f0f0f;
+    padding: 0 2;
+    content-align: left middle;
+    text-style: bold;
+}
+
 #right_panel_header {
     height: 3;
     background: #120505 62%;
-    color: #947575;
+    color: #ef4444;
     border-bottom: solid #2f0f0f;
     padding: 0 2;
     content-align: left middle;
@@ -234,12 +252,13 @@ VulnerabilityDetailScreen {
 }
 
 #agent_status_display {
-    height: 1;
-    background: #120505 60%;
+    height: 3;
+    background: #0a1520 55%;
     margin: 0;
     padding: 0 2;
-    border-top: solid #2f0f0f;
-    border-bottom: solid #2f0f0f;
+    border-top: solid #123847;
+    border-bottom: solid #123847;
+    content-align: left middle;
 }
 
 #agent_status_display.hidden {
@@ -250,7 +269,7 @@ VulnerabilityDetailScreen {
     width: 1fr;
     height: 100%;
     background: transparent;
-    color: #947575;
+    color: #a8c7d6;
     text-align: left;
     content-align: left middle;
     text-style: none;
@@ -262,7 +281,7 @@ VulnerabilityDetailScreen {
     width: auto;
     height: 100%;
     background: transparent;
-    color: #947575;
+    color: #9bc7cf;
     text-align: right;
     content-align: right middle;
     text-style: none;
@@ -759,4 +778,110 @@ BrowserPreviewScreen {
     background: transparent;
     color: #22d3ee;
     border: none;
+}
+
+ExportScreen {
+    align: center middle;
+    background: #0a0202 84%;
+}
+
+#export_dialog {
+    grid-size: 1;
+    grid-gutter: 1;
+    grid-rows: auto auto;
+    padding: 1 2;
+    width: 42;
+    height: auto;
+    border: round #2f0f0f;
+    background: #160606 98%;
+}
+
+#export_title {
+    color: #22d3ee;
+    text-style: bold;
+    text-align: center;
+    width: 100%;
+    margin-bottom: 0;
+}
+
+#export_buttons {
+    width: 100%;
+    height: auto;
+    padding: 0;
+}
+
+#export_buttons Button {
+    width: 100%;
+    height: 1;
+    min-height: 1;
+    background: transparent;
+    color: #d4d4d4;
+    border: none;
+    text-style: none;
+    margin: 0;
+    padding: 0 1;
+}
+
+#export_buttons Button:hover,
+#export_buttons Button:focus {
+    background: #2a0a0a;
+    color: #22d3ee;
+    border: none;
+    text-style: bold;
+}
+
+/* ── VIDEO EXPORT MODAL ── */
+#video_export_dialog {
+    grid-size: 2;
+    grid-rows: auto auto auto auto auto auto;
+    grid-columns: 1fr;
+    width: 50;
+    height: auto;
+    background: #110404;
+    border: solid #2f0f0f;
+    padding: 2 3;
+    align: center middle;
+}
+
+#video_export_title {
+    column-span: 2;
+    text-align: center;
+    color: #22d3ee;
+    text-style: bold;
+    padding-bottom: 1;
+}
+
+#video_speed_label, #video_res_label {
+    color: #6b4444;
+    margin-top: 1;
+}
+
+#speed_buttons, #res_buttons {
+    height: auto;
+}
+
+.speed_btn, .res_btn {
+    background: #160606;
+    border: solid #2f0f0f;
+    color: #947575;
+    min-width: 6;
+}
+
+.active_speed, .active_res {
+    background: #0a3d47;
+    border: solid #22d3ee;
+    color: #22d3ee;
+}
+
+#render_video {
+    margin-top: 2;
+    background: #0a3d47;
+    border: solid #22d3ee;
+    color: #22d3ee;
+}
+
+#cancel_video {
+    background: #160606;
+    border: solid #2f0f0f;
+    color: #6b4444;
 }
