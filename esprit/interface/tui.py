@@ -998,6 +998,7 @@ class VulnerabilityOverlayScreen(ModalScreen):  # type: ignore[misc]
             severity_color = self.SEVERITY_COLORS.get(severity, "#6b7280")
             is_selected = idx == self._selected_index
             row_background = " on #2a0e0e" if is_selected else ""
+            row_style = row_background or None
 
             text.append("▌ " if is_selected else "  ", style=f"bold {severity_color}{row_background}")
             text.append(f"{idx + 1:>2}. ", style=f"bold #9ca3af{row_background}")
@@ -1015,14 +1016,14 @@ class VulnerabilityOverlayScreen(ModalScreen):  # type: ignore[misc]
             if cvss_label:
                 text.append(f"  {cvss_label}", style=f"bold #f1f5f9{row_background}")
 
-            text.append("\n", style=row_background)
-            text.append("    ", style=row_background)
+            text.append("\n", style=row_style)
+            text.append("    ", style=row_style)
             text.append(title, style=f"bold #ffffff{row_background}")
 
             location = endpoint or target
             if location:
-                text.append("\n", style=row_background)
-                text.append("    ", style=row_background)
+                text.append("\n", style=row_style)
+                text.append("    ", style=row_style)
                 text.append(location, style=f"dim #bdbdbd{row_background}")
 
             if idx < len(vulnerabilities) - 1:
