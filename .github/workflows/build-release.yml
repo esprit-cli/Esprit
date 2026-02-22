@@ -42,12 +42,13 @@ jobs:
           mkdir -p dist/release
 
           if [[ "${{ runner.os }}" == "Windows" ]]; then
-            cp dist/esprit.exe "dist/release/esprit-${VERSION}-${{ matrix.target }}.exe"
-            (cd dist/release && 7z a "esprit-${VERSION}-${{ matrix.target }}.zip" "esprit-${VERSION}-${{ matrix.target }}.exe")
+            cp dist/esprit.exe "dist/release/esprit.exe"
+            (cd dist/release && 7z a "esprit-${VERSION}-${{ matrix.target }}.zip" "esprit.exe" && rm esprit.exe)
           else
-            cp dist/esprit "dist/release/esprit-${VERSION}-${{ matrix.target }}"
-            chmod +x "dist/release/esprit-${VERSION}-${{ matrix.target }}"
-            tar -C dist/release -czvf "dist/release/esprit-${VERSION}-${{ matrix.target }}.tar.gz" "esprit-${VERSION}-${{ matrix.target }}"
+            cp dist/esprit "dist/release/esprit"
+            chmod +x "dist/release/esprit"
+            tar -C dist/release -czvf "dist/release/esprit-${VERSION}-${{ matrix.target }}.tar.gz" "esprit"
+            rm "dist/release/esprit"
           fi
 
       - uses: actions/upload-artifact@v4
