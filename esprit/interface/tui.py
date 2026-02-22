@@ -5,6 +5,7 @@ import logging
 import signal
 import sys
 import threading
+import time
 from collections.abc import Callable
 from datetime import UTC, datetime
 from importlib.metadata import PackageNotFoundError
@@ -14,6 +15,8 @@ from typing import TYPE_CHECKING, Any, ClassVar
 
 if TYPE_CHECKING:
     from textual.timer import Timer
+
+    from esprit.interface.updater import UpdateInfo
 
 from rich.align import Align
 from rich.console import Group
@@ -353,7 +356,8 @@ class HelpScreen(ModalScreen):  # type: ignore[misc]
                 "Enter     Send message to agent\nTab       Switch panels\n↑/↓       Navigate tree\n"
                 "b         Browser preview\n"
                 "Ctrl+V    Vulnerability overlay\n"
-                "Ctrl+H    Agent health popup",
+                "Ctrl+H    Agent health popup\n"
+                "Ctrl+U    Check for updates",
                 id="help_content",
             ),
             id="dialog",
@@ -1315,6 +1319,120 @@ class QuitScreen(ModalScreen):  # type: ignore[misc]
             self.app.pop_screen()
 
 
+class UpdateScreen(ModalScreen):  # type: ignore[misc]
+    """Update notification modal — shown automatically at startup or via Ctrl+U."""
+
+    def __init__(
+        self,
+        update_info: "UpdateInfo | None" = None,
+        checking: bool = False,
+    ) -> None:
+        super().__init__()
+        self._update_info = update_info
+        self._checking = checking
+
+    def compose(self) -> ComposeResult:
+        yield Grid(
+            Label("", id="update_title"),
+            Label("", id="update_body"),
+            Grid(
+                Button("Update Now", variant="success", id="update_now_btn"),
+                Button("Next Launch", variant="default", id="update_next_btn"),
+                Button("Skip", variant="default", id="update_skip_btn"),
+                id="update_action_buttons",
+            ),
+            Button("OK", variant="default", id="update_ok_btn"),
+            id="update_dialog",
+        )
+
+    def on_mount(self) -> None:
+        self._render_state()
+        if self._checking:
+            threading.Thread(target=self._run_check, daemon=True).start()
+
+    def _render_state(self) -> None:
+        from esprit.interface.updater import _current_version
+
+        title = self.query_one("#update_title", Label)
+        body = self.query_one("#update_body", Label)
+        action_btns = self.query_one("#update_action_buttons")
+        ok_btn = self.query_one("#update_ok_btn", Button)
+
+        if self._checking:
+            title.update("Checking for Updates")
+            body.update("Connecting to GitHub…")
+            action_btns.display = False
+            ok_btn.display = False
+        elif self._update_info is not None:
+            title.update("Update Available")
+            body.update(
+                f"Esprit v{self._update_info.latest} is available"
+                f"  ·  you have v{self._update_info.current}"
+            )
+            action_btns.display = True
+            ok_btn.display = False
+            self.query_one("#update_now_btn", Button).focus()
+        else:
+            current = _current_version()
+            title.update("Esprit is up to date")
+            body.update(f"You're running v{current}, the latest version.")
+            action_btns.display = False
+            ok_btn.display = True
+            ok_btn.focus()
+
+    def _run_check(self) -> None:
+        from esprit.interface.updater import check_for_update
+
+        result = check_for_update(force=True)
+        self.app.call_from_thread(self._on_check_done, result)
+
+    def _on_check_done(self, update_info: "UpdateInfo | None") -> None:
+        self._checking = False
+        self._update_info = update_info
+        self._render_state()
+
+    def on_key(self, event: events.Key) -> None:
+        if event.key in ("left", "right", "up", "down", "tab"):
+            buttons = [b for b in self.query(Button) if b.display]
+            if not buttons:
+                return
+            try:
+                focused = self.focused
+                idx = buttons.index(focused) if focused in buttons else -1  # type: ignore[arg-type]
+                if event.key in ("right", "down", "tab"):
+                    buttons[(idx + 1) % len(buttons)].focus()
+                else:
+                    buttons[(idx - 1) % len(buttons)].focus()
+            except (ValueError, Exception):
+                buttons[0].focus()
+            event.prevent_default()
+        elif event.key == "escape":
+            self.app.pop_screen()
+            event.prevent_default()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        btn_id = event.button.id
+        if btn_id == "update_now_btn":
+            self.app.exit("update_now")
+        elif btn_id == "update_next_btn":
+            from esprit.interface.updater import schedule_update
+
+            schedule_update()
+            self.app.pop_screen()
+            try:
+                tokens = get_theme_tokens(Config.get_launchpad_theme())
+                success_color = str(tokens.get("success", "#22c55e"))
+                keymap = self.app.query_one("#keymap_indicator", Static)
+                msg = Text()
+                msg.append("✓ ", style=f"bold {success_color}")
+                msg.append("Update scheduled — will apply on next launch", style="dim")
+                keymap.update(msg)
+            except Exception:
+                pass
+        else:  # skip or ok
+            self.app.pop_screen()
+
+
 class EspritTUIApp(App):  # type: ignore[misc]
     CSS_PATH = "assets/tui_styles.tcss"
     DEFAULT_THEME = DEFAULT_THEME_ID
@@ -1335,6 +1453,7 @@ class EspritTUIApp(App):  # type: ignore[misc]
         Binding("b", "show_browser_preview", "Browser Preview", priority=False),
         Binding("ctrl+v", "toggle_vulnerability_overlay", "Vulnerabilities", priority=False),
         Binding("ctrl+h", "toggle_agent_health_popup", "Agent Health", priority=False),
+        Binding("ctrl+u", "check_for_updates", "Updates", priority=True),
     ]
 
     def __init__(self, args: argparse.Namespace, gui_server: _GUIServerType = None):
@@ -1564,6 +1683,30 @@ class EspritTUIApp(App):  # type: ignore[misc]
                 logging.debug("Failed to start GUI server", exc_info=True)
 
         self.set_interval(0.35, self._update_ui_from_tracer)
+
+        # Background update check — uses a 24 h cache so it's essentially instant
+        # on repeat launches.  Notification is shown 3 s after the TUI starts.
+        threading.Thread(target=self._background_update_check, daemon=True).start()
+
+    def _background_update_check(self) -> None:
+        """Run in background thread; push UpdateScreen if a newer version exists."""
+        try:
+            from esprit.interface.updater import check_for_update
+
+            info = check_for_update()
+            if info is not None:
+                time.sleep(3.0)  # Let the TUI fully render before interrupting
+                self.call_from_thread(self._show_update_notification, info)
+        except Exception:
+            pass
+
+    def _show_update_notification(self, info: "UpdateInfo") -> None:
+        """Called on the main thread after a background update check finds a new version."""
+        if not self.is_mounted or self.show_splash:
+            return
+        if len(self.screen_stack) > 1:
+            return  # Another modal is already open; skip silently
+        self.push_screen(UpdateScreen(update_info=info))
 
     def _update_ui_from_tracer(self) -> None:
         if self.show_splash:
@@ -2325,10 +2468,10 @@ class EspritTUIApp(App):  # type: ignore[misc]
         if status in {"completed", "stopped", "stopping"}:
             return (
                 line,
-                keymap_styled([("Ctrl+V", "vulns"), ("Ctrl+H", "health"), ("ctrl-q", "quit")]),
+                keymap_styled([("Ctrl+V", "vulns"), ("Ctrl+H", "health"), ("Ctrl+U", "update"), ("ctrl-q", "quit")]),
                 False,
             )
-        return (line, keymap_styled([("Ctrl+V", "vulns"), ("Ctrl+H", "health")]), False)
+        return (line, keymap_styled([("Ctrl+V", "vulns"), ("Ctrl+H", "health"), ("Ctrl+U", "update")]), False)
 
     def _build_running_spinner_indicator(self) -> Text:
         """Render a stable-width spinner prefix for running-status affordance."""
@@ -3228,6 +3371,19 @@ class EspritTUIApp(App):  # type: ignore[misc]
 
         self.push_screen(AgentHealthPopupScreen())
 
+    def action_check_for_updates(self) -> None:
+        if self.show_splash or not self.is_mounted:
+            return
+
+        if isinstance(self.screen, UpdateScreen):
+            self.pop_screen()
+            return
+
+        if len(self.screen_stack) > 1:
+            return
+
+        self.push_screen(UpdateScreen(checking=True))
+
     def _get_latest_browser_screenshot(self, agent_id: str) -> tuple[str | None, str]:
         """Find the latest browser screenshot for an agent."""
         latest_exec_id = self.tracer.latest_browser_screenshots.get(agent_id)
@@ -3403,7 +3559,7 @@ class EspritTUIApp(App):  # type: ignore[misc]
         self._apply_responsive_layout(event.size.width)
 
 
-async def run_tui(args: argparse.Namespace, gui_server: Any = None) -> None:
+async def run_tui(args: argparse.Namespace, gui_server: Any = None) -> Any:
     """Run esprit in interactive TUI mode with textual."""
     app = EspritTUIApp(args, gui_server=gui_server)
-    await app.run_async()
+    return await app.run_async()

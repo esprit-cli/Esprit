@@ -873,6 +873,97 @@ HelpScreen {
     text-style: none;
 }
 
+UpdateScreen {
+    align: center middle;
+    background: $background 0%;
+}
+
+#update_dialog {
+    grid-size: 1;
+    grid-gutter: 0 1;
+    grid-rows: auto auto auto auto;
+    padding: 1 2;
+    width: 58;
+    height: auto;
+    border: round #2f0f0f;
+    background: #160606 98%;
+}
+
+#update_title {
+    color: #22d3ee;
+    text-style: bold;
+    text-align: center;
+    width: 100%;
+    margin-bottom: 1;
+}
+
+#update_body {
+    color: #e8d5d5;
+    text-align: center;
+    width: 100%;
+    margin-bottom: 1;
+    padding: 0;
+    background: transparent;
+}
+
+#update_action_buttons {
+    grid-size: 3;
+    grid-gutter: 1;
+    grid-columns: 1fr 1fr 1fr;
+    width: 100%;
+    height: 1;
+}
+
+#update_action_buttons Button,
+#update_ok_btn {
+    height: 1;
+    min-height: 1;
+    border: none;
+    text-style: bold;
+}
+
+#update_now_btn {
+    background: transparent;
+    color: #22c55e;
+    border: none;
+}
+
+#update_now_btn:hover,
+#update_now_btn:focus {
+    background: #22c55e;
+    color: #000000;
+    border: none;
+}
+
+#update_next_btn {
+    background: transparent;
+    color: #94a3b8;
+    border: none;
+}
+
+#update_next_btn:hover,
+#update_next_btn:focus {
+    background: #1e293b;
+    color: #e2e8f0;
+    border: none;
+}
+
+#update_skip_btn,
+#update_ok_btn {
+    background: transparent;
+    color: #64748b;
+    border: none;
+}
+
+#update_skip_btn:hover,
+#update_skip_btn:focus,
+#update_ok_btn:hover,
+#update_ok_btn:focus {
+    background: #1e293b;
+    color: #94a3b8;
+    border: none;
+}
+
 BrowserPreviewScreen {
     align: center middle;
     background: #0a0202 84%;
@@ -1124,6 +1215,7 @@ Screen.theme-ember .tree--node .tree--node .tree--node .tree--node-label {
 Screen.theme-ember #stop_agent_dialog,
 Screen.theme-ember #quit_dialog,
 Screen.theme-ember #dialog,
+Screen.theme-ember #update_dialog,
 Screen.theme-ember #browser_preview_dialog,
 Screen.theme-ember #vuln_detail_dialog {
     border: solid #4b2a16;
@@ -1291,6 +1383,7 @@ Screen.theme-matrix .tree--node .tree--node .tree--node .tree--node-label {
 Screen.theme-matrix #stop_agent_dialog,
 Screen.theme-matrix #quit_dialog,
 Screen.theme-matrix #dialog,
+Screen.theme-matrix #update_dialog,
 Screen.theme-matrix #browser_preview_dialog,
 Screen.theme-matrix #vuln_detail_dialog {
     border: solid #1f3d27;
@@ -1458,6 +1551,7 @@ Screen.theme-glacier .tree--node .tree--node .tree--node .tree--node-label {
 Screen.theme-glacier #stop_agent_dialog,
 Screen.theme-glacier #quit_dialog,
 Screen.theme-glacier #dialog,
+Screen.theme-glacier #update_dialog,
 Screen.theme-glacier #browser_preview_dialog,
 Screen.theme-glacier #vuln_detail_dialog {
     border: solid #1a344d;
@@ -1626,6 +1720,7 @@ Screen.theme-crt .tree--node .tree--node .tree--node .tree--node-label {
 Screen.theme-crt #stop_agent_dialog,
 Screen.theme-crt #quit_dialog,
 Screen.theme-crt #dialog,
+Screen.theme-crt #update_dialog,
 Screen.theme-crt #browser_preview_dialog,
 Screen.theme-crt #vuln_detail_dialog {
     border: solid #1a801a;

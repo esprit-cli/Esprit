@@ -32,6 +32,7 @@ apply_saved_config()
 from esprit.interface.cli import run_cli  # noqa: E402
 from esprit.interface.launchpad import LaunchpadResult, run_launchpad  # noqa: E402
 from esprit.interface.tui import run_tui  # noqa: E402
+from esprit.interface.updater import apply_update, has_pending_update  # noqa: E402
 from esprit.interface.utils import (  # noqa: E402
     assign_workspace_subdirs,
     build_final_stats_text,
@@ -1169,7 +1170,18 @@ def main() -> None:
         has_instructions=bool(args.instruction),
     )
 
+    # Apply any update that was scheduled on the previous run.
+    # This runs in the terminal before Textual starts, so the install script
+    # output is visible.  apply_update() re-execs on success, so we never
+    # reach the lines below when an update is pending.
+    if has_pending_update():
+        console = Console()
+        console.print("\n[bold cyan]Applying scheduled update…[/bold cyan]")
+        apply_update(restart=True)
+        # If we reach here the update failed (non-zero exit); continue normally.
+
     exit_reason = "user_exit"
+    tui_result = None
     try:
         # Create GUI server (always available — serves live dashboard on localhost:7860)
         gui_server = None
@@ -1183,7 +1195,7 @@ def main() -> None:
         if args.non_interactive:
             asyncio.run(run_cli(args))
         else:
-            asyncio.run(run_tui(args, gui_server=gui_server))
+            tui_result = asyncio.run(run_tui(args, gui_server=gui_server))
     except KeyboardInterrupt:
         exit_reason = "interrupted"
     except Exception as e:
@@ -1194,6 +1206,14 @@ def main() -> None:
         tracer = get_global_tracer()
         if tracer:
             posthog.end(tracer, exit_reason=exit_reason)
+
+    # "Update Now" was chosen inside the TUI — apply immediately now that
+    # Textual has fully released the terminal.
+    if tui_result == "update_now":
+        console = Console()
+        console.print("\n[bold cyan]Downloading and installing update…[/bold cyan]")
+        apply_update(restart=True)
+        # If we reach here the update failed; fall through to completion message.
 
     results_path = Path("esprit_runs") / args.run_name
     display_completion_message(args, results_path)
