@@ -178,15 +178,19 @@ check_docker() {
     echo ""
     if ! command -v docker >/dev/null 2>&1; then
         echo -e "${YELLOW}⚠ Docker not found${NC}"
-        echo -e "${MUTED}Esprit requires Docker to run the security sandbox.${NC}"
-        echo -e "${MUTED}Please install Docker: ${NC}https://docs.docker.com/get-docker/"
+        echo -e "${MUTED}Docker is required for local mode (third-party LLM providers).${NC}"
+        echo -e "${MUTED}Install Docker: ${NC}https://docs.docker.com/get-docker/"
+        echo ""
+        echo -e "${MUTED}Alternatively, use ${NC}Esprit Cloud${MUTED} — no Docker needed:${NC}"
+        echo -e "  ${MUTED}esprit provider login esprit${NC}"
         echo ""
         return 1
     fi
 
     if ! docker info >/dev/null 2>&1; then
         echo -e "${YELLOW}⚠ Docker daemon not running${NC}"
-        echo -e "${MUTED}Please start Docker and run: ${NC}docker pull $ESPRIT_IMAGE"
+        echo -e "${MUTED}Start Docker for local mode, or use Esprit Cloud instead:${NC}"
+        echo -e "  ${MUTED}esprit provider login esprit${NC}"
         echo ""
         return 1
     fi
@@ -335,12 +339,13 @@ echo -e "${MUTED}  AI Penetration Testing Agent${NC}"
 echo ""
 echo -e "${MUTED}To get started:${NC}"
 echo ""
-echo -e "  ${CYAN}1.${NC} Set your LLM provider:"
-echo -e "     ${MUTED}export ESPRIT_LLM='openai/gpt-5'${NC}"
-echo -e "     ${MUTED}export LLM_API_KEY='your-api-key'${NC}"
+echo -e "  ${GREEN}Option A — Esprit Cloud (no Docker required):${NC}"
+echo -e "     ${MUTED}esprit provider login esprit${NC}"
+echo -e "     ${MUTED}esprit scan https://example.com${NC}"
 echo ""
-echo -e "  ${CYAN}2.${NC} Run a penetration test:"
-echo -e "     ${MUTED}esprit --target https://example.com${NC}"
+echo -e "  ${GREEN}Option B — Local mode (requires Docker):${NC}"
+echo -e "     ${MUTED}esprit provider login openai      ${NC}${MUTED}# or anthropic, google, etc.${NC}"
+echo -e "     ${MUTED}esprit scan https://example.com${NC}"
 echo ""
 echo -e "${MUTED}For more information visit ${NC}https://esprit.dev"
 echo -e "${MUTED}Join our community ${NC}https://discord.gg/esprit-ai"
