@@ -628,20 +628,29 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
         for provider_id in AVAILABLE_MODELS:
             if provider_id in _MULTI_ACCOUNT_PROVIDERS:
                 connected[provider_id] = self._account_pool.has_accounts(provider_id)
+            elif provider_id == "esprit":
+                try:
+                    from esprit.auth.credentials import is_authenticated
+                    connected[provider_id] = is_authenticated()
+                except Exception:
+                    connected[provider_id] = False
             else:
                 connected[provider_id] = self._token_store.has_credentials(provider_id)
 
-        # Sort: connected providers first
+        # Show only connected providers
         providers_sorted = sorted(
-            AVAILABLE_MODELS.keys(),
-            key=lambda p: (0 if connected.get(p) else 1, p),
+            [provider_id for provider_id in AVAILABLE_MODELS if connected.get(provider_id, False)]
         )
+
+        if not providers_sorted:
+            entries.append(_MenuEntry("info:no_connected_providers", "  No connected providers", "open Provider Config"))
+            entries.append(_MenuEntry("back", "\u2190 Back"))
+            return entries
 
         for provider_id in providers_sorted:
             models = AVAILABLE_MODELS[provider_id]
             badge = _BADGES.get(provider_id, provider_id[:3].upper())
             label = _PROVIDER_LABELS.get(provider_id, provider_id.upper())
-            is_connected = connected.get(provider_id, False)
 
             # Filter models
             matching_models = []
@@ -655,21 +664,18 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
                 continue
 
             # Provider section header
-            conn_indicator = "\u2713" if is_connected else "\u00b7"
-            conn_label = "connected" if is_connected else "not connected"
             entries.append(_MenuEntry(
                 f"separator:{provider_id}",
-                f"  {conn_indicator} {label}",
-                f"[{badge}] {conn_label}",
+                f"  \u2713 {label}",
+                f"[{badge}] connected",
             ))
 
             # Model entries
             for model_id, model_name, full_model in matching_models:
                 marker = "\u25cf" if full_model == current else "\u25cb"
-                dim = "" if is_connected else "\u2022 "
                 entries.append(_MenuEntry(
                     f"model:{full_model}",
-                    f"    {marker} {dim}{model_name}",
+                    f"    {marker} {model_name}",
                     badge,
                 ))
 
