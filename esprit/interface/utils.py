@@ -31,6 +31,36 @@ def format_token_count(count: float) -> str:
     return str(count)
 
 
+def _format_quota_value(value: Any) -> str:
+    if value in (None, "", -1):
+        return "unlimited"
+
+    try:
+        numeric = int(value)
+    except (TypeError, ValueError):
+        return str(value)
+
+    return f"{numeric:,}"
+
+
+def build_subscription_quota_lines(verification: dict[str, Any] | None) -> list[str]:
+    """Build display lines for subscription quota status."""
+    if not verification or not verification.get("valid"):
+        return []
+
+    plan = str(verification.get("plan", "free")).upper()
+    quota = verification.get("quota_remaining")
+    if not isinstance(quota, dict):
+        quota = {}
+
+    scans_remaining = _format_quota_value(quota.get("scans"))
+    tokens_remaining = _format_quota_value(quota.get("tokens"))
+
+    lines = [f"[dim]Plan:[/] [bold]{plan}[/]"]
+    lines.append(f"[dim]Quota:[/] scans {scans_remaining}  |  tokens {tokens_remaining}")
+    return lines
+
+
 # Display utilities
 def get_severity_color(severity: str) -> str:
     severity_colors = {

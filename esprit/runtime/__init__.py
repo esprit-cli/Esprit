@@ -1,3 +1,5 @@
+import os
+
 from esprit.config import Config
 
 from .runtime import AbstractRuntime
@@ -20,16 +22,31 @@ def get_runtime() -> AbstractRuntime:
 
     runtime_backend = Config.get("esprit_runtime_backend")
 
+    if runtime_backend == "cloud":
+        from esprit.auth.credentials import get_auth_token
+
+        from .cloud_runtime import CloudRuntime
+
+        auth_token = get_auth_token()
+        if not auth_token:
+            raise SandboxInitializationError(
+                "Esprit Cloud authentication required.",
+                "Run `esprit login` and try again.",
+            )
+
+        api_base = os.getenv("ESPRIT_API_URL", "https://esprit.dev/api/v1")
+        if _global_runtime is None or not isinstance(_global_runtime, CloudRuntime):
+            _global_runtime = CloudRuntime(access_token=auth_token, api_base=api_base)
+        return _global_runtime
+
     if runtime_backend == "docker":
         from .docker_runtime import DockerRuntime
 
-        if _global_runtime is None:
+        if _global_runtime is None or not isinstance(_global_runtime, DockerRuntime):
             _global_runtime = DockerRuntime()
         return _global_runtime
 
-    raise ValueError(
-        f"Unsupported runtime backend: {runtime_backend}. Only 'docker' is supported for now."
-    )
+    raise ValueError(f"Unsupported runtime backend: {runtime_backend}.")
 
 
 def cleanup_runtime() -> None:

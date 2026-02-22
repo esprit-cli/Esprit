@@ -19,6 +19,8 @@ console = Console()
 AVAILABLE_MODELS = {
     "esprit": [
         ("default", "Esprit Default"),
+        ("kimi-k2.5", "Esprit Pro"),
+        ("haiku", "Esprit Fast"),
     ],
     "openai": [
         ("gpt-5.3-codex", "GPT-5.3 Codex (recommended)"),

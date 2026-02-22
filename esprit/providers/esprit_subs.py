@@ -30,10 +30,16 @@ API_BASE_URL = os.getenv("ESPRIT_API_URL", "https://esprit.dev/api/v1")
 # LLM proxy endpoint — the Esprit backend forwards to AWS Bedrock
 LLM_PROXY_URL = f"{API_BASE_URL}/llm/generate"
 
-# Available Bedrock models exposed through the Esprit subscription.
-# The user-facing alias is simply "default"; it resolves to Haiku 4.5.
+# User-facing aliases -> Bedrock model IDs exposed by Esprit.
+# Keep aliases stable even if backend model IDs change.
 ESPRIT_BEDROCK_MODELS: dict[str, str] = {
     "default": "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+    "kimi-k2.5": "moonshotai.kimi-k2.5",
+    "kimi-k2": "moonshotai.kimi-k2.5",
+    "haiku": "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+    "haiku-4.5": "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+    "claude-haiku-4-5": "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+    "claude-haiku-4-5-20251001": "us.anthropic.claude-haiku-4-5-20251001-v1:0",
 }
 
 # Default model for new users
@@ -75,14 +81,11 @@ def _load_esprit_credentials() -> OAuthCredentials | None:
 
 
 def resolve_bedrock_model(model_alias: str) -> str:
-    """Resolve a short model alias to the full Bedrock model ID.
-
-    If *model_alias* is already a full Bedrock ID (contains ``anthropic.``),
-    return it as-is.  Otherwise look it up in ``ESPRIT_BEDROCK_MODELS``.
-    """
-    if "anthropic." in model_alias:
+    """Resolve a subscription model alias to a Bedrock model ID."""
+    normalized = model_alias.strip().lower()
+    if "anthropic." in normalized or normalized.count(".") >= 2:
         return model_alias
-    return ESPRIT_BEDROCK_MODELS.get(model_alias, model_alias)
+    return ESPRIT_BEDROCK_MODELS.get(normalized, model_alias)
 
 
 class EspritSubsProvider(ProviderAuth):

@@ -35,6 +35,7 @@ from esprit.interface.tui import run_tui  # noqa: E402
 from esprit.interface.utils import (  # noqa: E402
     assign_workspace_subdirs,
     build_final_stats_text,
+    build_subscription_quota_lines,
     check_docker_connection,
     clone_repository,
     collect_local_sources,
@@ -52,6 +53,44 @@ from esprit.telemetry.tracer import get_global_tracer  # noqa: E402
 
 
 logging.getLogger().setLevel(logging.ERROR)
+
+_PAID_SUBSCRIPTION_PLANS = {"pro", "team", "enterprise"}
+
+
+def _is_paid_subscription_plan(plan: str | None) -> bool:
+    return (plan or "").strip().lower() in _PAID_SUBSCRIPTION_PLANS
+
+
+def _is_cloud_subscription_model(model_name: str | None) -> bool:
+    if not model_name:
+        return True
+    model_lower = model_name.strip().lower()
+    return model_lower.startswith("esprit/") or model_lower.startswith("bedrock/")
+
+
+def _should_use_cloud_runtime() -> bool:
+    """Check if scan runtime should be routed to Esprit Cloud."""
+    from esprit.auth.credentials import get_user_plan, is_authenticated, verify_subscription
+
+    if not is_authenticated():
+        return False
+
+    if not _is_paid_subscription_plan(get_user_plan()):
+        return False
+
+    model_name = Config.get("esprit_llm")
+    if not _is_cloud_subscription_model(model_name):
+        return False
+
+    verification = verify_subscription()
+    if verification.get("valid", False):
+        cloud_enabled = verification.get("cloud_enabled")
+        return bool(cloud_enabled) if cloud_enabled is not None else True
+
+    # If subscription verification endpoint is temporarily unreachable,
+    # trust local credentials and continue with cloud mode.
+    error = str(verification.get("error", ""))
+    return error.startswith("Subscription verification failed:")
 
 
 def validate_environment() -> None:  # noqa: PLR0912, PLR0915
@@ -1056,6 +1095,7 @@ def main() -> None:
     if sys.platform == "win32":
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
+    console = Console()
     args = parse_arguments()
 
     if args.config:
@@ -1068,15 +1108,33 @@ def main() -> None:
         if not _apply_launchpad_result(args, launchpad_result):
             return
 
-    check_docker_installed()
-    ensure_docker_running()
-    pull_docker_image()
-
     # Interactive pre-scan checks: provider, model, account selection.
     # Launchpad now owns this flow when a scan is started from its UI.
     if not getattr(args, "skip_pre_scan_checks", False):
         if not pre_scan_setup(non_interactive=args.non_interactive):
             sys.exit(1)
+
+    use_cloud_runtime = _should_use_cloud_runtime()
+    if use_cloud_runtime:
+        os.environ["ESPRIT_RUNTIME_BACKEND"] = "cloud"
+        configured_model = (Config.get("esprit_llm") or "").strip()
+        if configured_model.lower().startswith("bedrock/"):
+            os.environ["ESPRIT_LLM"] = "esprit/default"
+            Config.save_current()
+
+        console.print("[green]\u2713[/] Using Esprit Cloud (no Docker required)")
+
+        from esprit.auth.credentials import verify_subscription
+
+        verification = verify_subscription()
+        for line in build_subscription_quota_lines(verification):
+            console.print(line)
+        console.print()
+    else:
+        os.environ["ESPRIT_RUNTIME_BACKEND"] = "docker"
+        check_docker_installed()
+        ensure_docker_running()
+        pull_docker_image()
 
     validate_environment()
     asyncio.run(warm_up_llm())

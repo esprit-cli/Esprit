@@ -57,6 +57,7 @@ docker = "^7.1.0"
 textual = "^4.0.0"
 xmltodict = "^0.13.0"
 requests = "^2.32.0"
+httpx = ">=0.24.0"
 cvss = "^3.2"
 Pillow = ">=10.0.0"
 
