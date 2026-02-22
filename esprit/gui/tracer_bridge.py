@@ -38,6 +38,7 @@ class TracerBridge:
         self._last_streaming: dict[str, str] = {}
         self._last_screenshot_ids: dict[str, int] = {}
         self._last_stats_hash = ""
+        self._last_theme_hash = ""
         self._last_scan_config: dict[str, Any] | None = None
         self._sent_final_report = False
 
@@ -79,6 +80,7 @@ class TracerBridge:
         vulns = list(t.vulnerability_reports)
         streaming = dict(t.streaming_content)
         stats = self._get_stats()
+        theme = self._get_theme()
 
         # Track which agents have screenshots
         screenshot_agents: list[str] = []
@@ -94,6 +96,7 @@ class TracerBridge:
             "streaming": streaming,
             "screenshot_agents": screenshot_agents,
             "stats": stats,
+            "theme": theme,
             "scan_config": t.scan_config,
             "final_report": t.final_scan_result,
             "timestamp": datetime.now(UTC).isoformat(),
@@ -211,6 +214,12 @@ class TracerBridge:
             deltas.append({"type": "stats_update", "stats": stats})
             self._last_stats_hash = stats_hash
 
+        theme = self._get_theme()
+        theme_hash = json.dumps(theme, sort_keys=True)
+        if theme_hash != self._last_theme_hash:
+            deltas.append({"type": "theme_update", "theme": theme})
+            self._last_theme_hash = theme_hash
+
         # Scan config
         if t.scan_config and t.scan_config != self._last_scan_config:
             deltas.append({"type": "scan_config_update", "scan_config": t.scan_config})
@@ -319,14 +328,15 @@ class TracerBridge:
 
         # Compute tokens per second
         tokens_per_second = 0.0
+        elapsed_seconds = 0.0
         output_tokens = stats.get("total", {}).get("output_tokens", 0)
-        if t.start_time and output_tokens > 0:
+        if t.start_time:
             try:
                 start = datetime.fromisoformat(t.start_time)
                 end = datetime.fromisoformat(t.end_time) if t.end_time else datetime.now(UTC)
-                elapsed = (end - start).total_seconds()
-                if elapsed > 0:
-                    tokens_per_second = round(output_tokens / elapsed, 1)
+                elapsed_seconds = max(0.0, (end - start).total_seconds())
+                if elapsed_seconds > 0 and output_tokens > 0:
+                    tokens_per_second = round(output_tokens / elapsed_seconds, 1)
             except Exception:  # noqa: BLE001
                 pass
 
@@ -339,6 +349,12 @@ class TracerBridge:
                 context_limit = get_pricing_db().get_context_limit(model)
         except Exception:  # noqa: BLE001
             pass
+
+        elapsed_whole_seconds = float(int(elapsed_seconds))
+        projected_total_seconds, projected_cost, projected_remaining_seconds = self._estimate_projection(
+            elapsed_seconds=elapsed_whole_seconds,
+            current_cost=float(stats.get("total", {}).get("cost", 0.0) or 0.0),
+        )
 
         return {
             "llm": stats,
@@ -353,4 +369,54 @@ class TracerBridge:
             "tokens_per_second": tokens_per_second,
             "run_name": t.run_name,
             "run_id": t.run_id,
+            "elapsed_seconds": elapsed_whole_seconds,
+            "projected_total_seconds": projected_total_seconds,
+            "projected_cost": projected_cost,
+            "projected_remaining_seconds": projected_remaining_seconds,
         }
+
+    def _estimate_projection(self, *, elapsed_seconds: float, current_cost: float) -> tuple[float, float, float]:
+        if elapsed_seconds <= 0:
+            return (0.0, current_cost, 0.0)
+
+        run_status = self._derive_run_status()
+        if run_status in {"completed", "failed", "stopped"}:
+            return (elapsed_seconds, current_cost, 0.0)
+
+        statuses = [str(a.get("status", "running")).lower() for a in self._tracer.agents.values()]
+        if not statuses:
+            progress = 0.12
+        else:
+            status_weights = {
+                "completed": 1.0,
+                "stopped": 1.0,
+                "failed": 1.0,
+                "llm_failed": 1.0,
+                "error": 1.0,
+                "sandbox_failed": 1.0,
+                "stopping": 0.85,
+                "waiting": 0.55,
+                "running": 0.35,
+            }
+            progress = sum(status_weights.get(status, 0.25) for status in statuses) / len(statuses)
+            progress = max(0.08, min(0.98, progress))
+
+        projected_total = elapsed_seconds / progress
+        projected_total = max(elapsed_seconds, min(projected_total, elapsed_seconds * 8))
+        projected_cost = current_cost / progress if current_cost > 0 else 0.0
+        projected_cost = max(current_cost, projected_cost)
+        remaining = max(0.0, projected_total - elapsed_seconds)
+        return (round(projected_total, 2), round(projected_cost, 4), round(remaining, 2))
+
+    def _get_theme(self) -> dict[str, Any]:
+        try:
+            from esprit.config import Config
+            from esprit.interface.theme_tokens import get_theme_tokens, normalize_theme_id
+
+            theme_id = normalize_theme_id(Config.get_launchpad_theme())
+            return {
+                "id": theme_id,
+                "tokens": get_theme_tokens(theme_id),
+            }
+        except Exception:  # noqa: BLE001
+            return {"id": "esprit", "tokens": {}}

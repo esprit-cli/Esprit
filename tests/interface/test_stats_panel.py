@@ -87,3 +87,34 @@ def test_tui_stats_uses_ascii_markers_for_vulns_and_tips(monkeypatch: pytest.Mon
     assert "[run]" in plain
     for removed_marker in ("⚠", "💬", "🔄", "🔑", "📊", "🔀", "⌨️", "🔍", "💰", "📁", "👥"):
         assert removed_marker not in plain
+
+
+def test_tui_stats_show_projection_fields(monkeypatch: pytest.MonkeyPatch) -> None:
+    tracer = SimpleNamespace(
+        agents={"agent_1": {"status": "running"}},
+        tool_executions={},
+        vulnerability_reports=[],
+        start_time=datetime.now(timezone.utc).isoformat(),
+        get_real_tool_count=lambda: 0,
+        get_total_llm_stats=lambda: {
+            "total": {
+                "input_tokens": 2_000,
+                "output_tokens": 500,
+                "cached_tokens": 200,
+                "requests": 8,
+            },
+            "max_context_tokens": 1_200,
+            "uncached_input_tokens": 1_800,
+            "cache_hit_ratio": 10.0,
+        },
+    )
+    agent_config = {"llm_config": SimpleNamespace(model_name="openai/gpt-5")}
+
+    monkeypatch.setattr("esprit.llm.pricing.get_pricing_db", lambda: _FakePricingDB())
+    monkeypatch.setattr("esprit.llm.pricing.get_lifetime_cost", lambda: 0.0)
+
+    text = build_tui_stats_text(tracer, agent_config=agent_config, spinner_frame=0)
+    plain = text.plain
+
+    assert "Proj " in plain
+    assert "total " in plain

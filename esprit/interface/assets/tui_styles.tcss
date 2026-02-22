@@ -207,6 +207,177 @@ VulnerabilityDetailScreen {
     border: none;
 }
 
+VulnerabilityOverlayScreen {
+    align: center middle;
+    background: #0a0202 84%;
+}
+
+#vuln_overlay_dialog {
+    grid-size: 1;
+    grid-gutter: 1;
+    grid-rows: auto 1fr auto;
+    padding: 1 2;
+    width: 96%;
+    max-width: 180;
+    height: 92%;
+    max-height: 62;
+    border: solid #2f0f0f;
+    background: #160606;
+}
+
+#vuln_overlay_status {
+    height: auto;
+    border-bottom: solid #2f0f0f;
+    color: #d4d4d4;
+    padding: 0 0 1 0;
+}
+
+#vuln_overlay_main {
+    height: 1fr;
+    width: 100%;
+}
+
+#vuln_overlay_list_scroll {
+    width: 45%;
+    border-right: solid #2f0f0f;
+    padding-right: 1;
+    scrollbar-background: #160606;
+    scrollbar-color: #2f0f0f;
+    scrollbar-corner-color: #160606;
+    scrollbar-size: 1 1;
+}
+
+#vuln_overlay_detail_scroll {
+    width: 1fr;
+    padding-left: 1;
+    scrollbar-background: #160606;
+    scrollbar-color: #2f0f0f;
+    scrollbar-corner-color: #160606;
+    scrollbar-size: 1 1;
+}
+
+#vuln_overlay_list,
+#vuln_overlay_detail {
+    width: 100%;
+    background: transparent;
+}
+
+#vuln_overlay_buttons {
+    width: 100%;
+    border-top: solid #2f0f0f;
+    align: right middle;
+    padding-top: 1;
+}
+
+#copy_overlay_selected,
+#copy_overlay_all,
+#close_vuln_overlay {
+    width: auto;
+    min-width: 12;
+    height: auto;
+    background: transparent;
+    color: #e8d5d5;
+    border: none;
+    margin: 0 1;
+    padding: 0 2;
+}
+
+#copy_overlay_selected:hover, #copy_overlay_selected:focus,
+#copy_overlay_all:hover, #copy_overlay_all:focus,
+#close_vuln_overlay:hover, #close_vuln_overlay:focus {
+    background: transparent;
+    color: #22d3ee;
+    border: none;
+}
+
+AgentHealthPopupScreen {
+    align: center middle;
+    background: #0a0202 84%;
+}
+
+#health_popup_dialog {
+    grid-size: 1;
+    grid-gutter: 1;
+    grid-rows: auto 1fr auto;
+    padding: 1 2;
+    width: 94%;
+    max-width: 170;
+    height: 86%;
+    max-height: 54;
+    border: solid #2f0f0f;
+    background: #160606;
+}
+
+#health_popup_status {
+    height: auto;
+    border-bottom: solid #2f0f0f;
+    color: #d4d4d4;
+    padding: 0 0 1 0;
+}
+
+#health_popup_main {
+    height: 1fr;
+    width: 100%;
+}
+
+#health_popup_list_scroll {
+    width: 46%;
+    border-right: solid #2f0f0f;
+    padding-right: 1;
+    scrollbar-background: #160606;
+    scrollbar-color: #2f0f0f;
+    scrollbar-corner-color: #160606;
+    scrollbar-size: 1 1;
+}
+
+#health_popup_detail_scroll {
+    width: 1fr;
+    padding-left: 1;
+    scrollbar-background: #160606;
+    scrollbar-color: #2f0f0f;
+    scrollbar-corner-color: #160606;
+    scrollbar-size: 1 1;
+}
+
+#health_popup_list,
+#health_popup_detail {
+    width: 100%;
+    background: transparent;
+}
+
+#health_popup_buttons {
+    width: 100%;
+    border-top: solid #2f0f0f;
+    align: right middle;
+    padding-top: 1;
+}
+
+#health_stop_selected,
+#health_retry_selected,
+#close_health_popup {
+    width: auto;
+    min-width: 12;
+    height: auto;
+    background: transparent;
+    color: #e8d5d5;
+    border: none;
+    margin: 0 1;
+    padding: 0 2;
+}
+
+#health_stop_selected:hover, #health_stop_selected:focus {
+    background: transparent;
+    color: #ef4444;
+    border: none;
+}
+
+#health_retry_selected:hover, #health_retry_selected:focus,
+#close_health_popup:hover, #close_health_popup:focus {
+    background: transparent;
+    color: #22d3ee;
+    border: none;
+}
+
 #chat_area_container {
     width: 1fr;
     height: 100%;

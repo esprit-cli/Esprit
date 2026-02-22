@@ -405,6 +405,47 @@ def _format_elapsed(seconds: float) -> str:
     return f"{m}:{s:02d}"
 
 
+def _estimate_projection(
+    tracer: Any,
+    *,
+    elapsed_seconds: float,
+    current_cost: float,
+    scan_completed: bool,
+    scan_failed: bool,
+) -> tuple[float, float, float]:
+    """Estimate projected total duration/cost using live run-rate and agent progress."""
+    if elapsed_seconds <= 0:
+        return (0.0, 0.0, 0.0)
+
+    if scan_completed or scan_failed:
+        return (elapsed_seconds, current_cost, 0.0)
+
+    statuses = [str(a.get("status", "running")).lower() for a in tracer.agents.values()]
+    if not statuses:
+        progress = 0.12
+    else:
+        status_weights = {
+            "completed": 1.0,
+            "stopped": 1.0,
+            "failed": 1.0,
+            "llm_failed": 1.0,
+            "error": 1.0,
+            "sandbox_failed": 1.0,
+            "stopping": 0.85,
+            "waiting": 0.55,
+            "running": 0.35,
+        }
+        progress = sum(status_weights.get(status, 0.25) for status in statuses) / len(statuses)
+        progress = max(0.08, min(0.98, progress))
+
+    projected_total_duration = elapsed_seconds / progress
+    projected_total_duration = max(elapsed_seconds, min(projected_total_duration, elapsed_seconds * 8))
+    projected_cost = current_cost / progress if current_cost > 0 else 0.0
+    projected_cost = max(current_cost, projected_cost)
+    remaining_seconds = max(0.0, projected_total_duration - elapsed_seconds)
+    return (projected_total_duration, projected_cost, remaining_seconds)
+
+
 def build_tui_stats_text(
     tracer: Any,
     agent_config: dict[str, Any] | None = None,
@@ -591,6 +632,24 @@ def build_tui_stats_text(
     if lifetime_cost >= 0.01:
         stats_text.append("  all-time ", style=f"dim {muted}")
         stats_text.append(f"${lifetime_cost:.2f}", style="dim #a78bfa")
+
+    projected_duration, projected_cost, remaining_seconds = _estimate_projection(
+        tracer,
+        elapsed_seconds=elapsed,
+        current_cost=session_cost,
+        scan_completed=scan_completed,
+        scan_failed=scan_failed,
+    )
+    if projected_duration > 0:
+        stats_text.append("\n")
+        stats_text.append("  Proj ", style=f"dim {muted}")
+        projection_color = warning if projected_cost > (session_cost * 1.25) and session_cost > 0 else text_color
+        stats_text.append(f"${projected_cost:.2f}", style=f"bold {projection_color}")
+        stats_text.append("  total ", style=f"dim {muted}")
+        stats_text.append(_format_elapsed(projected_duration), style=f"bold {projection_color}")
+        if remaining_seconds > 0:
+            stats_text.append("  left ", style=f"dim {muted}")
+            stats_text.append(_format_elapsed(remaining_seconds), style=f"dim {projection_color}")
 
     # Vulnerabilities
     vuln_count = (
