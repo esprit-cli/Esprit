@@ -216,20 +216,24 @@ VulnerabilityOverlayScreen {
     grid-size: 1;
     grid-gutter: 1;
     grid-rows: auto 1fr auto;
-    padding: 1 2;
-    width: 96%;
-    max-width: 180;
-    height: 92%;
-    max-height: 62;
-    border: solid #2f0f0f;
-    background: #160606;
+    padding: 2 3;
+    width: 99%;
+    min-width: 120;
+    max-width: 220;
+    height: 96%;
+    min-height: 34;
+    max-height: 80;
+    border: solid #4a1616;
+    background: #130404;
 }
 
 #vuln_overlay_status {
     height: auto;
-    border-bottom: solid #2f0f0f;
-    color: #d4d4d4;
-    padding: 0 0 1 0;
+    border: solid #3a1414;
+    color: #f4f4f5;
+    background: #0d0303 60%;
+    padding: 1 2;
+    margin-bottom: 1;
 }
 
 #vuln_overlay_main {
@@ -238,9 +242,11 @@ VulnerabilityOverlayScreen {
 }
 
 #vuln_overlay_list_scroll {
-    width: 45%;
-    border-right: solid #2f0f0f;
+    width: 48%;
+    min-width: 52;
+    border-right: solid #3a1414;
     padding-right: 1;
+    margin-right: 1;
     scrollbar-background: #160606;
     scrollbar-color: #2f0f0f;
     scrollbar-corner-color: #160606;
@@ -249,6 +255,7 @@ VulnerabilityOverlayScreen {
 
 #vuln_overlay_detail_scroll {
     width: 1fr;
+    min-width: 60;
     padding-left: 1;
     scrollbar-background: #160606;
     scrollbar-color: #2f0f0f;
@@ -260,12 +267,14 @@ VulnerabilityOverlayScreen {
 #vuln_overlay_detail {
     width: 100%;
     background: transparent;
+    color: #f8fafc;
+    padding: 1 1;
 }
 
 #vuln_overlay_buttons {
     width: 100%;
-    border-top: solid #2f0f0f;
-    align: right middle;
+    border-top: solid #3a1414;
+    align: center middle;
     padding-top: 1;
 }
 
@@ -273,11 +282,12 @@ VulnerabilityOverlayScreen {
 #copy_overlay_all,
 #close_vuln_overlay {
     width: auto;
-    min-width: 12;
-    height: auto;
-    background: transparent;
-    color: #e8d5d5;
-    border: none;
+    min-width: 18;
+    height: 3;
+    background: #210c0c;
+    color: #f8fafc;
+    border: solid #4a1616;
+    text-style: bold;
     margin: 0 1;
     padding: 0 2;
 }
@@ -285,9 +295,9 @@ VulnerabilityOverlayScreen {
 #copy_overlay_selected:hover, #copy_overlay_selected:focus,
 #copy_overlay_all:hover, #copy_overlay_all:focus,
 #close_vuln_overlay:hover, #close_vuln_overlay:focus {
-    background: transparent;
+    background: #2b1111;
     color: #22d3ee;
-    border: none;
+    border: solid #22d3ee;
 }
 
 AgentHealthPopupScreen {

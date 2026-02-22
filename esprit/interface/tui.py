@@ -888,6 +888,14 @@ class VulnerabilitiesPanel(VerticalScroll):  # type: ignore[misc]
 class VulnerabilityOverlayScreen(ModalScreen):  # type: ignore[misc]
     """Dedicated vulnerability workspace with list, detail, and copy actions."""
 
+    SEVERITY_COLORS: ClassVar[dict[str, str]] = {
+        "critical": "#dc2626",
+        "high": "#ea580c",
+        "medium": "#d97706",
+        "low": "#65a30d",
+        "info": "#0284c7",
+    }
+
     def __init__(self) -> None:
         super().__init__()
         self._selected_index = 0
@@ -969,39 +977,56 @@ class VulnerabilityOverlayScreen(ModalScreen):  # type: ignore[misc]
             text.append("Findings will appear here in realtime.", style="dim italic")
             return text
 
-        severity_order = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
-        vulnerabilities.sort(
-            key=lambda v: (
-                severity_order.get(str(v.get("severity", "")).lower(), 5),
-                str(v.get("timestamp", "")),
-            )
-        )
         if self._selected_index >= len(vulnerabilities):
             self._selected_index = max(0, len(vulnerabilities) - 1)
+
+        text.append(f"Findings ({len(vulnerabilities)})", style="bold #f5f5f5")
+        text.append("  |  ", style="dim")
+        text.append("Navigate with ", style="dim")
+        text.append("Up/Down", style="bold #e5e7eb")
+        text.append(" or ", style="dim")
+        text.append("j/k", style="bold #e5e7eb")
+        text.append("\n\n")
 
         for idx, vuln in enumerate(vulnerabilities):
             severity = str(vuln.get("severity", "info")).lower()
             title = str(vuln.get("title", "Untitled Vulnerability"))
             cvss = vuln.get("cvss")
+            endpoint = str(vuln.get("endpoint", "")).strip()
+            target = str(vuln.get("target", "")).strip()
 
-            severity_color = {
-                "critical": "#dc2626",
-                "high": "#ea580c",
-                "medium": "#d97706",
-                "low": "#65a30d",
-                "info": "#0284c7",
-            }.get(severity, "#6b7280")
+            severity_color = self.SEVERITY_COLORS.get(severity, "#6b7280")
             is_selected = idx == self._selected_index
-            prefix = "▶ " if is_selected else "  "
-            title_style = f"bold {severity_color}" if is_selected else "white"
+            row_background = " on #2a0e0e" if is_selected else ""
 
-            text.append(prefix, style=f"bold {severity_color}")
-            text.append(f"[{severity.upper():8s}] ", style=severity_color)
+            text.append("▌ " if is_selected else "  ", style=f"bold {severity_color}{row_background}")
+            text.append(f"{idx + 1:>2}. ", style=f"bold #9ca3af{row_background}")
+            text.append(
+                f"[{severity.upper():8s}]",
+                style=f"bold {severity_color}{row_background}",
+            )
+
+            cvss_label = None
             if cvss is not None:
-                text.append(f"CVSS {cvss} ", style="dim")
-            text.append(title, style=title_style)
+                try:
+                    cvss_label = f"CVSS {float(cvss):.1f}"
+                except (TypeError, ValueError):
+                    cvss_label = f"CVSS {cvss}"
+            if cvss_label:
+                text.append(f"  {cvss_label}", style=f"bold #f1f5f9{row_background}")
+
+            text.append("\n", style=row_background)
+            text.append("    ", style=row_background)
+            text.append(title, style=f"bold #ffffff{row_background}")
+
+            location = endpoint or target
+            if location:
+                text.append("\n", style=row_background)
+                text.append("    ", style=row_background)
+                text.append(location, style=f"dim #bdbdbd{row_background}")
+
             if idx < len(vulnerabilities) - 1:
-                text.append("\n")
+                text.append("\n\n")
 
         return text
 
@@ -1011,7 +1036,15 @@ class VulnerabilityOverlayScreen(ModalScreen):  # type: ignore[misc]
             text = Text()
             text.append("Select a vulnerability to inspect details.", style="dim")
             return text
-        return format_vulnerability_report(vulnerability)
+        text = format_vulnerability_report(vulnerability)
+        text.append("\n\n")
+        text.append("Shortcuts:", style="bold #9ca3af")
+        text.append(" c copy selected", style="dim #9ca3af")
+        text.append("  ·  ", style="dim")
+        text.append("a copy all", style="dim #9ca3af")
+        text.append("  ·  ", style="dim")
+        text.append("Esc close", style="dim #9ca3af")
+        return text
 
     def _move_selection(self, step: int) -> None:
         vulnerabilities = self._get_vulnerabilities()
