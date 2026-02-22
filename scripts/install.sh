@@ -19,7 +19,7 @@ SKIP_DOWNLOAD=false
 raw_os=$(uname -s)
 os=$(echo "$raw_os" | tr '[:upper:]' '[:lower:]')
 case "$raw_os" in
-  Darwin*) os="darwin" ;;
+  Darwin*) os="macos" ;;
   Linux*) os="linux" ;;
   MINGW*|MSYS*|CYGWIN*) os="windows" ;;
 esac
@@ -32,7 +32,7 @@ if [[ "$arch" == "x86_64" ]]; then
   arch="x86_64"
 fi
 
-if [ "$os" = "darwin" ] && [ "$arch" = "x86_64" ]; then
+if [ "$os" = "macos" ] && [ "$arch" = "x86_64" ]; then
   rosetta_flag=$(sysctl -n sysctl.proc_translated 2>/dev/null || echo 0)
   if [ "$rosetta_flag" = "1" ]; then
     arch="arm64"
@@ -41,7 +41,7 @@ fi
 
 combo="$os-$arch"
 case "$combo" in
-  linux-x86_64|darwin-x86_64|darwin-arm64|windows-x86_64)
+  linux-x86_64|macos-x86_64|macos-arm64|windows-x86_64)
     ;;
   *)
     echo -e "${RED}Unsupported OS/Arch: $os/$arch${NC}"
@@ -83,7 +83,7 @@ else
     specific_version=$requested_version
 fi
 
-filename="$APP-${target}${archive_ext}"
+filename="$APP-${specific_version}-${target}${archive_ext}"
 url="https://github.com/$REPO/releases/download/v${specific_version}/$filename"
 
 print_message() {
