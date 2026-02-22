@@ -5,6 +5,8 @@ Simple API-key-based provider for accessing models via OpenRouter.
 No OAuth — just stores and retrieves the user's API key.
 """
 
+import re
+
 from typing import Any
 
 from esprit.providers.base import (
@@ -36,6 +38,15 @@ class OpenRouterProvider(ProviderAuth):
             return AuthCallbackResult(success=False, error="No API key provided")
 
         api_key = code.strip()
+        if not re.fullmatch(r"sk-or(?:-v1)?-[A-Za-z0-9_-]{20,}", api_key):
+            return AuthCallbackResult(
+                success=False,
+                error=(
+                    "Invalid OpenRouter API key format. Expected key prefix "
+                    "`sk-or-v1-` (or `sk-or-`)."
+                ),
+            )
+
         credentials = OAuthCredentials(
             type="api",
             access_token=api_key,

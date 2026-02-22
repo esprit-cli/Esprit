@@ -98,6 +98,12 @@ Screen.theme-esprit #launchpad_input:focus {
     border: round #22d3ee;
 }
 
+Screen.theme-esprit #launchpad_preview {
+    background: #161616;
+    border: round #2a1515;
+    color: #c0c0c0;
+}
+
 Screen.theme-ember {
     background: #110d09;
     color: #d7c2ad;
@@ -121,6 +127,12 @@ Screen.theme-ember #launchpad_input {
 
 Screen.theme-ember #launchpad_input:focus {
     border: round #f97316;
+}
+
+Screen.theme-ember #launchpad_preview {
+    background: #221913;
+    border: round #4b2a16;
+    color: #d7c2ad;
 }
 
 Screen.theme-matrix {
@@ -148,6 +160,12 @@ Screen.theme-matrix #launchpad_input:focus {
     border: round #22c55e;
 }
 
+Screen.theme-matrix #launchpad_preview {
+    background: #0f1811;
+    border: round #1f3d27;
+    color: #b3d3bc;
+}
+
 Screen.theme-glacier {
     background: #070d12;
     color: #bfd1e2;
@@ -173,6 +191,12 @@ Screen.theme-glacier #launchpad_input:focus {
     border: round #38bdf8;
 }
 
+Screen.theme-glacier #launchpad_preview {
+    background: #121d26;
+    border: round #1a344d;
+    color: #bfd1e2;
+}
+
 Screen.theme-crt {
     background: #000700;
     color: #b7efb7;
@@ -196,4 +220,10 @@ Screen.theme-crt #launchpad_input {
 
 Screen.theme-crt #launchpad_input:focus {
     border: solid #33ff33;
+}
+
+Screen.theme-crt #launchpad_preview {
+    background: #051205;
+    border: solid #1a801a;
+    color: #b7efb7;
 }

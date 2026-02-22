@@ -252,7 +252,7 @@ VulnerabilityDetailScreen {
 }
 
 #agent_status_display {
-    height: 3;
+    height: 2;
     background: #0a1520 55%;
     margin: 0;
     padding: 0 2;
@@ -307,6 +307,31 @@ VulnerabilityDetailScreen {
 #chat_input_container:focus-within #chat_prompt {
     color: #22d3ee;
     text-style: bold;
+}
+
+Screen.theme-esprit #chat_input_container {
+    background: #120505 64%;
+    border-top: solid #2f0f0f;
+}
+
+Screen.theme-ember #chat_input_container {
+    background: #1a0f08 64%;
+    border-top: solid #4a2312;
+}
+
+Screen.theme-matrix #chat_input_container {
+    background: #00170c 64%;
+    border-top: solid #0d3f24;
+}
+
+Screen.theme-glacier #chat_input_container {
+    background: #061322 64%;
+    border-top: solid #123847;
+}
+
+Screen.theme-crt #chat_input_container {
+    background: #10110f 64%;
+    border-top: solid #32352f;
 }
 
 #chat_prompt {
@@ -835,7 +860,7 @@ ExportScreen {
 #video_export_dialog {
     grid-size: 2;
     grid-rows: auto auto auto auto auto auto;
-    grid-columns: 1fr;
+    grid-columns: 1fr 1fr;
     width: 50;
     height: auto;
     background: #110404;

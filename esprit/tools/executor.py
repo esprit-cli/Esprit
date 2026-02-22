@@ -152,7 +152,14 @@ async def _execute_tool_in_sandbox(tool_name: str, agent_state: Any, **kwargs: A
                     timeout=timeout,
                 )
                 response.raise_for_status()
-                response_data = response.json()
+                try:
+                    response_data = response.json()
+                except ValueError as e:
+                    if attempt < max_attempts - 1:
+                        await _retry_delay(attempt)
+                        continue
+                    posthog.error("tool_response_parse_error", f"{tool_name}: invalid json")
+                    raise RuntimeError("Invalid JSON response from tool server") from e
                 if response_data.get("error"):
                     error_msg = str(response_data["error"])
                     if (

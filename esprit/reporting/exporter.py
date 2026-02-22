@@ -1,4 +1,5 @@
 import csv
+import base64
 import json
 import logging
 from datetime import datetime, timezone
@@ -30,7 +31,7 @@ class ReportExporter:
         self.template_dir = Path(__file__).parent / "templates"
         self.env = Environment(
             loader=FileSystemLoader(self.template_dir),
-            autoescape=select_autoescape(["html", "xml"]),
+            autoescape=select_autoescape(["html", "xml", "jinja"]),
         )
 
     def generate_html_report(self, output_path: str | Path) -> Path:
@@ -119,7 +120,9 @@ class ReportExporter:
 
         context = {
             "run_id": self.tracer.run_id,
-            "events_json": json.dumps(events, default=str),
+            "events_b64": base64.b64encode(
+                json.dumps(events, default=str, ensure_ascii=False).encode("utf-8")
+            ).decode("ascii"),
             "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
         }
 

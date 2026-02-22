@@ -332,7 +332,9 @@ class VideoExporter:
             "width": resolution[0],
             "height": resolution[1],
             "severity_counts": severity_counts,
-            "events_json": json.dumps(events, default=str),
+            "events_b64": base64.b64encode(
+                json.dumps(events, default=str, ensure_ascii=False).encode("utf-8")
+            ).decode("ascii"),
             "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
         }
 

@@ -217,7 +217,7 @@
 
             {% if executive_summary %}
             <div class="card">
-                {{ executive_summary | safe }}
+                {{ executive_summary | e | replace('\n', '<br>') | safe }}
             </div>
             {% endif %}
         </section>
@@ -284,7 +284,7 @@
 
                 {% if vuln.technical_analysis %}
                 <h4>Technical Analysis</h4>
-                <div>{{ vuln.technical_analysis | safe }}</div>
+                <div style="white-space: pre-wrap;">{{ vuln.technical_analysis }}</div>
                 {% endif %}
 
                 {% if vuln.poc_script_code %}
@@ -305,7 +305,7 @@
         <section>
             <h2>Methodology</h2>
             <div class="card">
-                {{ methodology | safe }}
+                {{ methodology | e | replace('\n', '<br>') | safe }}
             </div>
         </section>
         {% endif %}
@@ -315,7 +315,7 @@
         <section>
             <h2>Strategic Recommendations</h2>
             <div class="card">
-                {{ recommendations | safe }}
+                {{ recommendations | e | replace('\n', '<br>') | safe }}
             </div>
         </section>
         {% endif %}

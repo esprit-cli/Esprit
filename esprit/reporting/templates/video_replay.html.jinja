@@ -1006,9 +1006,9 @@ try {
   EVENTS = [];
 }
 const SPEED  = {{ speed }};
-const RUN_NAME  = {{ run_name_json | safe }};
-const TARGET    = {{ target_json | safe }};
-const DURATION  = {{ duration_json | safe }};
+const RUN_NAME  = {{ run_name | tojson }};
+const TARGET    = {{ target | tojson }};
+const DURATION  = {{ duration | tojson }};
 const TOOL_COUNT = {{ tool_count }};
 
 /* ── Runtime counters ──────────────────────────────── */

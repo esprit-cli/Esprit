@@ -206,7 +206,7 @@ class TracerBridge:
 
         # Stats
         stats = self._get_stats()
-        stats_hash = json.dumps(stats, sort_keys=True)
+        stats_hash = json.dumps(stats, sort_keys=True, default=str)
         if stats_hash != self._last_stats_hash:
             deltas.append({"type": "stats_update", "stats": stats})
             self._last_stats_hash = stats_hash
@@ -317,9 +317,25 @@ class TracerBridge:
 
         t = self._tracer
 
-        # Compute tokens per second
+        # Compute tokens per second.
         tokens_per_second = 0.0
-        output_tokens = stats.get("total", {}).get("output_tokens", 0)
+        total_stats = stats.get("total", {}) if isinstance(stats, dict) else {}
+        if not isinstance(total_stats, dict):
+            total_stats = {}
+
+        output_tokens_raw = total_stats.get("output_tokens", 0)
+        if isinstance(output_tokens_raw, bool):
+            output_tokens = 0.0
+        elif isinstance(output_tokens_raw, int | float):
+            output_tokens = float(output_tokens_raw)
+        elif isinstance(output_tokens_raw, str):
+            try:
+                output_tokens = float(output_tokens_raw)
+            except ValueError:
+                output_tokens = 0.0
+        else:
+            output_tokens = 0.0
+
         if t.start_time and output_tokens > 0:
             try:
                 start = datetime.fromisoformat(t.start_time)
@@ -340,8 +356,10 @@ class TracerBridge:
         except Exception:  # noqa: BLE001
             pass
 
+        safe_llm_stats = json.loads(json.dumps(stats, default=str))
+
         return {
-            "llm": stats,
+            "llm": safe_llm_stats,
             "agent_count": len(t.agents),
             "tool_count": t.get_real_tool_count(),
             "vuln_count": len(t.vulnerability_reports),

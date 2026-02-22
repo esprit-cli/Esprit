@@ -1365,9 +1365,21 @@ def _cmd_report(args: argparse.Namespace) -> None:
     if getattr(args, "video", False):
         resolution_map = {"1080p": (1920, 1080), "720p": (1280, 720)}
         resolution = resolution_map.get(getattr(args, "resolution", "1080p"), (1920, 1080))
-        speed = getattr(args, "speed", 10.0)
+        speed = float(getattr(args, "speed", 10.0) or 10.0)
+        if speed <= 0:
+            console.print("[red]Invalid --speed:[/] must be greater than 0")
+            sys.exit(1)
         output_arg = getattr(args, "output", None)
-        output = Path(output_arg) if output_arg else run_dir / "replay.mp4"
+        if output_arg:
+            output_path = Path(output_arg).expanduser()
+            if output_path.exists() and output_path.is_dir():
+                output = output_path / "replay.mp4"
+            elif output_path.suffix.lower() != ".mp4":
+                output = output_path / "replay.mp4"
+            else:
+                output = output_path
+        else:
+            output = run_dir / "replay.mp4"
         try:
             from esprit.reporting.video_exporter import MissingDependencyError, VideoExporter
 

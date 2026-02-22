@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from rich.console import Console
+from textual.widgets import Static
 
 from esprit.interface.tool_components.browser_renderer import BrowserRenderer
 from esprit.interface.tool_components.reporting_renderer import CreateVulnerabilityReportRenderer
@@ -15,6 +16,14 @@ def _plain_text(renderable: object) -> str:
     return console.export_text()
 
 
+def _widget_text(widget: Static) -> str:
+    # Textual's Static.render() requires an active App in newer versions.
+    content = getattr(widget, "_Static__content", None)
+    if content is None:
+        content = widget.render()
+    return _plain_text(content)
+
+
 def test_reporting_renderer_uses_bug_tag() -> None:
     widget = CreateVulnerabilityReportRenderer.render(
         {
@@ -22,7 +31,7 @@ def test_reporting_renderer_uses_bug_tag() -> None:
             "result": {"severity": "high", "cvss_score": 8.2},
         }
     )
-    plain = _plain_text(widget.renderable)
+    plain = _widget_text(widget)
     assert "[bug]" in plain
     assert "Vulnerability Report" in plain
 
@@ -36,7 +45,7 @@ def test_todo_renderer_uses_todo_tag() -> None:
             }
         }
     )
-    plain = _plain_text(widget.renderable)
+    plain = _widget_text(widget)
     assert "[todo]" in plain
     assert "Todo" in plain
 
@@ -44,8 +53,8 @@ def test_todo_renderer_uses_todo_tag() -> None:
 def test_web_and_think_renderers_use_ascii_tags() -> None:
     web_widget = WebSearchRenderer.render({"args": {"query": "oauth misconfig"}})
     think_widget = ThinkRenderer.render({"args": {"thought": "Need broader endpoint coverage"}})
-    web_plain = _plain_text(web_widget.renderable)
-    think_plain = _plain_text(think_widget.renderable)
+    web_plain = _widget_text(web_widget)
+    think_plain = _widget_text(think_widget)
     assert "[web]" in web_plain
     assert "[think]" in think_plain
     assert web_plain.strip()
@@ -54,5 +63,5 @@ def test_web_and_think_renderers_use_ascii_tags() -> None:
 
 def test_browser_renderer_uses_web_tag() -> None:
     widget = BrowserRenderer.render({"args": {"action": "goto", "url": "https://example.com"}})
-    plain = _plain_text(widget.renderable)
+    plain = _widget_text(widget)
     assert "[web]" in plain

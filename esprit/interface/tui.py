@@ -92,7 +92,10 @@ class ChatTextArea(TextArea):  # type: ignore[misc]
                     if has_running_tools:
                         # Queue the message to steer the agent after current
                         # tool execution finishes (instead of blocking input)
-                        app._queued_steering_message = message
+                        app._queued_steering_messages[app.selected_agent_id] = message
+                        app._queued_steering_message = app._queued_steering_messages.get(
+                            app.selected_agent_id
+                        )
                         self.text = ""
                         event.prevent_default()
                         return
@@ -1102,6 +1105,9 @@ class EspritTUIApp(App):  # type: ignore[misc]
         self._last_streaming_len: dict[str, int] = {}
         self._last_thinking_len: dict[str, int] = {}
 
+        # Per-agent queued steering messages. Keep the singular field in sync for
+        # backwards compatibility with existing tests and callers.
+        self._queued_steering_messages: dict[str, str] = {}
         self._queued_steering_message: str | None = None
 
         self._scan_thread: threading.Thread | None = None
@@ -1153,12 +1159,17 @@ class EspritTUIApp(App):  # type: ignore[misc]
         model_name = Config.get("esprit_llm") or ""
         target_count = len(getattr(args, "targets_info", []) or [])
         is_whitebox = bool(getattr(args, "local_sources", None))
-        estimate = estimate_scan_profile(
-            model_name=model_name,
-            scan_mode=scan_mode,
-            target_count=max(1, target_count),
-            is_whitebox=is_whitebox,
-        ) if model_name else {}
+        estimate: dict[str, Any] = {}
+        if model_name:
+            try:
+                estimate = estimate_scan_profile(
+                    model_name=model_name,
+                    scan_mode=scan_mode,
+                    target_count=max(1, target_count),
+                    is_whitebox=is_whitebox,
+                )
+            except Exception:  # noqa: BLE001
+                estimate = {}
         return {
             "scan_id": args.run_name,
             "targets": args.targets_info,
@@ -1424,10 +1435,18 @@ class EspritTUIApp(App):  # type: ignore[misc]
 
     def _deliver_queued_steering_message(self) -> None:
         """Deliver a queued steering message once agent tools finish running."""
-        if not self._queued_steering_message or not self.selected_agent_id:
+        if not self.selected_agent_id:
             return
 
         if not self.tracer:
+            return
+
+        queued_messages = getattr(self, "_queued_steering_messages", {})
+        if not isinstance(queued_messages, dict):
+            queued_messages = {}
+
+        message = queued_messages.get(self.selected_agent_id)
+        if not message:
             return
 
         has_running_tools = any(
@@ -1437,9 +1456,11 @@ class EspritTUIApp(App):  # type: ignore[misc]
         )
 
         if not has_running_tools:
-            message = self._queued_steering_message
-            self._queued_steering_message = None
-            self._send_user_message(message)
+            target_agent_id = self.selected_agent_id
+            queued_messages.pop(target_agent_id, None)
+            self._queued_steering_messages = queued_messages
+            self._queued_steering_message = queued_messages.get(target_agent_id)
+            self._send_user_message(message, agent_id=target_agent_id)
 
     def _update_agent_node(self, agent_id: str, agent_data: dict[str, Any]) -> bool:
         if agent_id not in self.agent_nodes:
@@ -2044,7 +2065,6 @@ class EspritTUIApp(App):  # type: ignore[misc]
                 card.append("\n    ", style="dim")
                 # Show more informative initializing state with elapsed time
                 agent_start = child.get("started_at") or child.get("created_at") or child.get("timestamp")
-                elapsed_msg = ""
                 if agent_start:
                     try:
                         from datetime import datetime, timezone
@@ -2300,7 +2320,7 @@ class EspritTUIApp(App):  # type: ignore[misc]
         }
 
         if status in simple_statuses:
-            marker, msg = simple_statuses[status]
+            _, msg = simple_statuses[status]
             text = Text()
             text.append("⬡ ", style="dim")
             text.append(msg, style="dim")
@@ -2352,7 +2372,12 @@ class EspritTUIApp(App):  # type: ignore[misc]
                 self._spinner_frame_index % len(HEX_SPINNER_FRAMES)
             ]
             # Build queued-message indicator for keymap
-            has_queued = getattr(self, "_queued_steering_message", None) is not None
+            queued_messages = getattr(self, "_queued_steering_messages", {})
+            has_queued = bool(
+                agent_id
+                and isinstance(queued_messages, dict)
+                and queued_messages.get(agent_id)
+            )
 
             def _keymap_with_steering(keys: list[tuple[str, str]]) -> Text:
                 km = keymap_styled(keys)
@@ -2530,7 +2555,13 @@ class EspritTUIApp(App):  # type: ignore[misc]
         # Update chat prompt to reflect queued steering state
         try:
             chat_prompt = self.query_one("#chat_prompt", Static)
-            if self._queued_steering_message is not None:
+            queued_messages = getattr(self, "_queued_steering_messages", {})
+            selected_queued = bool(
+                self.selected_agent_id
+                and isinstance(queued_messages, dict)
+                and queued_messages.get(self.selected_agent_id)
+            )
+            if selected_queued:
                 prompt_text = Text()
                 prompt_text.append("↵ ", style="bold #fbbf24")
                 self._safe_widget_operation(chat_prompt.update, prompt_text)
@@ -2815,6 +2846,9 @@ class EspritTUIApp(App):  # type: ignore[misc]
         self._streaming_render_cache.clear()
         self._last_streaming_len.clear()
         self._last_thinking_len.clear()
+        self._queued_steering_message = (
+            self._queued_steering_messages.get(_agent_id) if _agent_id else None
+        )
 
         self.call_later(self._update_chat_view)
         self._update_agent_status_display()
@@ -3216,27 +3250,38 @@ class EspritTUIApp(App):  # type: ignore[misc]
             else:
                 node.expand()
 
-    def _send_user_message(self, message: str) -> None:
-        if not self.selected_agent_id:
+    def _send_user_message(self, message: str, agent_id: str | None = None) -> None:
+        target_agent_id = agent_id or self.selected_agent_id
+        if not target_agent_id:
             return
 
+        queued_messages = getattr(self, "_queued_steering_messages", {})
+        if not isinstance(queued_messages, dict):
+            queued_messages = {}
+        queued_messages.pop(target_agent_id, None)
+        self._queued_steering_messages = queued_messages
+        if self.selected_agent_id:
+            self._queued_steering_message = queued_messages.get(self.selected_agent_id)
+        else:
+            self._queued_steering_message = None
+
         if self.tracer:
-            streaming_content = self.tracer.get_streaming_content(self.selected_agent_id)
+            streaming_content = self.tracer.get_streaming_content(target_agent_id)
             if streaming_content and streaming_content.strip():
-                self.tracer.clear_streaming_content(self.selected_agent_id)
-                self.tracer.interrupted_content[self.selected_agent_id] = streaming_content
+                self.tracer.clear_streaming_content(target_agent_id)
+                self.tracer.interrupted_content[target_agent_id] = streaming_content
                 self.tracer.log_chat_message(
                     content=streaming_content,
                     role="assistant",
-                    agent_id=self.selected_agent_id,
+                    agent_id=target_agent_id,
                     metadata={"interrupted": True},
                 )
 
         try:
             from esprit.tools.agents_graph.agents_graph_actions import _agent_instances
 
-            if self.selected_agent_id in _agent_instances:
-                agent_instance = _agent_instances[self.selected_agent_id]
+            if target_agent_id in _agent_instances:
+                agent_instance = _agent_instances[target_agent_id]
                 if hasattr(agent_instance, "cancel_current_execution"):
                     agent_instance.cancel_current_execution()
         except (ImportError, AttributeError, KeyError):
@@ -3246,16 +3291,16 @@ class EspritTUIApp(App):  # type: ignore[misc]
             self.tracer.log_chat_message(
                 content=message,
                 role="user",
-                agent_id=self.selected_agent_id,
+                agent_id=target_agent_id,
             )
 
         try:
             from esprit.tools.agents_graph.agents_graph_actions import send_user_message_to_agent
 
-            send_user_message_to_agent(self.selected_agent_id, message)
+            send_user_message_to_agent(target_agent_id, message)
 
         except (ImportError, AttributeError) as e:
-            logging.warning(f"Failed to send message to agent {self.selected_agent_id}: {e}")
+            logging.warning(f"Failed to send message to agent {target_agent_id}: {e}")
 
         self._displayed_events.clear()
         self._update_chat_view()
@@ -3478,7 +3523,7 @@ class EspritTUIApp(App):  # type: ignore[misc]
                     timeout=8,
                 )
 
-        threading.Thread(target=_run, daemon=False).start()
+        threading.Thread(target=_run, daemon=True).start()
 
     def _get_latest_browser_screenshot(self, agent_id: str) -> tuple[str | None, str]:
         """Find the latest browser screenshot for an agent."""

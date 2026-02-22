@@ -33,7 +33,7 @@ class VideoExporter:
         self.template_dir = Path(__file__).parent / "templates"
         self.env = Environment(
             loader=FileSystemLoader(str(self.template_dir)),
-            autoescape=select_autoescape(["html"]),
+            autoescape=select_autoescape(["html", "jinja"]),
         )
 
     # ─── Public API ───────────────────────────────────────────────────────────
@@ -284,9 +284,6 @@ class VideoExporter:
             "run_name": t.run_name or t.run_id,
             "target": target_display,
             "duration": f"{minutes}m {seconds}s",
-            "run_name_json": json.dumps(t.run_name or t.run_id, ensure_ascii=False),
-            "target_json": json.dumps(target_display, ensure_ascii=False),
-            "duration_json": json.dumps(f"{minutes}m {seconds}s", ensure_ascii=False),
             "tool_count": len(t.tool_executions),
             "speed": speed,
             "width": resolution[0],

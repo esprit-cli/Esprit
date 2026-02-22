@@ -374,7 +374,7 @@ class BaseAgent(metaclass=AgentMeta):
                 iteration_task = asyncio.create_task(self._process_iteration(tracer))
                 self._current_task = iteration_task
                 try:
-                    should_finish = await asyncio.wait_for(
+                    actions = await asyncio.wait_for(
                         iteration_task, timeout=self.llm_watchdog_timeout_s
                     )
                 except TimeoutError as timeout_error:
@@ -390,14 +390,16 @@ class BaseAgent(metaclass=AgentMeta):
                 self._last_llm_failure_retryable = False
                 self._last_llm_error_status_code = None
 
-                if should_finish:
-                    if self.non_interactive:
-                        self.state.set_completed({"success": True})
-                        if tracer:
-                            tracer.update_agent_status(self.state.agent_id, "completed")
-                        return self.state.final_result or {}
-                    await self._enter_waiting_state(tracer, task_completed=True)
-                    continue
+                if actions:
+                    should_finish = await self._execute_actions(actions, tracer)
+                    if should_finish:
+                        if self.non_interactive:
+                            self.state.set_completed({"success": True})
+                            if tracer:
+                                tracer.update_agent_status(self.state.agent_id, "completed")
+                            return self.state.final_result or {}
+                        await self._enter_waiting_state(tracer, task_completed=True)
+                        continue
 
             except asyncio.CancelledError:
                 self._current_task = None
@@ -595,7 +597,11 @@ class BaseAgent(metaclass=AgentMeta):
                     sandbox_initialized = True
                     logger.info(f"Successfully revived sandbox {self.state.sandbox_id}")
                 except Exception as e:
-                    logger.warning(f"Failed to revive sandbox {self.state.sandbox_id}: {e}")
+                    logger.warning(
+                        "Failed to revive sandbox %s (%s)",
+                        self.state.sandbox_id,
+                        type(e).__name__,
+                    )
                     # If revival fails, we must create a new one.
                     # We clear the ID so the creation logic below triggers.
                     self.state.sandbox_id = None
@@ -611,20 +617,25 @@ class BaseAgent(metaclass=AgentMeta):
 
                     if "agent_id" in sandbox_info:
                         self.state.sandbox_info["agent_id"] = sandbox_info["agent_id"]
+                except SandboxInitializationError:
+                    raise
                 except Exception as e:
                     from esprit.telemetry import posthog
 
                     posthog.error("sandbox_init_error", str(e))
-                    raise
+                    raise SandboxInitializationError(
+                        "Failed to create sandbox",
+                        f"Runtime create_sandbox raised {type(e).__name__}",
+                    ) from e
 
         if not self.state.task:
             self.state.task = task
             self.state.add_message("user", task)
         elif not self.state.messages:
-             # Ensure there's at least one message if task was set but messages empty (rare)
-             self.state.add_message("user", task)
+            # Ensure there's at least one message if task was set but messages empty (rare)
+            self.state.add_message("user", task)
 
-    async def _process_iteration(self, tracer: Optional["Tracer"]) -> bool:
+    async def _process_iteration(self, tracer: Optional["Tracer"]) -> list[Any]:
         final_response = None
         tools = self._get_agent_tools()
         self._touch_heartbeat(tracer, phase="before_llm_processing")
@@ -649,7 +660,7 @@ class BaseAgent(metaclass=AgentMeta):
             self._touch_heartbeat(tracer, phase="after_llm_processing")
 
         if final_response is None:
-            return False
+            return []
 
         content_stripped = (final_response.content or "").strip()
 
@@ -665,7 +676,7 @@ class BaseAgent(metaclass=AgentMeta):
                 "and the scan is complete"
             )
             self.state.add_message("user", corrective_message)
-            return False
+            return []
 
         actions = final_response.tool_invocations or []
         native_tool_calls = self._build_native_tool_calls(actions)
@@ -687,10 +698,7 @@ class BaseAgent(metaclass=AgentMeta):
                 thinking_blocks=thinking_blocks,
             )
 
-        if actions:
-            return await self._execute_actions(actions, tracer)
-
-        return False
+        return actions
 
     @staticmethod
     def _build_native_tool_calls(actions: list[Any]) -> list[dict[str, Any]] | None:
@@ -942,6 +950,11 @@ class BaseAgent(metaclass=AgentMeta):
                 if self.state.stall_count < self.max_stall_recoveries:
                     reason = f"Recoverable LLM error: {error_msg}"
                     self.state.record_recovery(reason)
+                    self.state.add_message(
+                        "user",
+                        "System note: Retry after transient LLM failure. Continue from the latest "
+                        "state and avoid repeating completed steps.",
+                    )
                     if tracer:
                         tracer.update_agent_status(self.state.agent_id, "stalled_recovered")
                         tracer.update_agent_status(self.state.agent_id, "running")

@@ -52,7 +52,13 @@ def _validate_checkpoint(checkpoint: dict) -> tuple[bool, str]:
     return True, "completed"
 
 
-def _run_one_target(target: str, model: str, llm_timeout: int, scan_mode: str) -> tuple[bool, str]:
+def _run_one_target(
+    target: str,
+    model: str,
+    llm_timeout: int,
+    scan_mode: str,
+    process_timeout_s: int,
+) -> tuple[bool, str]:
     runs_root = Path("esprit_runs")
     runs_root.mkdir(exist_ok=True)
     before = {p.name for p in runs_root.iterdir() if p.is_dir()}
@@ -62,7 +68,10 @@ def _run_one_target(target: str, model: str, llm_timeout: int, scan_mode: str) -
     env["LLM_TIMEOUT"] = str(llm_timeout)
 
     cmd = ["poetry", "run", "esprit", "scan", target, "-n", "--scan-mode", scan_mode]
-    proc = subprocess.run(cmd, env=env, check=False)
+    try:
+        proc = subprocess.run(cmd, env=env, check=False, timeout=process_timeout_s)
+    except subprocess.TimeoutExpired:
+        return False, f"scan exceeded subprocess timeout ({process_timeout_s}s)"
     if proc.returncode not in {0, 2}:
         return False, f"scan exit code {proc.returncode}"
 
@@ -104,6 +113,15 @@ def main() -> int:
         help="Scan mode (default: quick)",
     )
     parser.add_argument(
+        "--process-timeout",
+        type=int,
+        default=0,
+        help=(
+            "Hard timeout for each subprocess in seconds "
+            "(default: llm-timeout + 900, minimum 600)"
+        ),
+    )
+    parser.add_argument(
         "targets",
         nargs="*",
         default=["https://example.com", "https://example.net"],
@@ -116,6 +134,7 @@ def main() -> int:
         return 2
 
     failures: list[str] = []
+    process_timeout_s = args.process_timeout or max(600, args.llm_timeout + 900)
     for target in args.targets:
         print(f"\n[smoke] scanning {target}")
         ok, detail = _run_one_target(
@@ -123,6 +142,7 @@ def main() -> int:
             model=args.model,
             llm_timeout=args.llm_timeout,
             scan_mode=args.scan_mode,
+            process_timeout_s=process_timeout_s,
         )
         status = "PASS" if ok else "FAIL"
         print(f"[smoke] {status}: {detail}")

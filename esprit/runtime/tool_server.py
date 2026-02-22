@@ -124,7 +124,7 @@ async def execute_tool(
         return ToolExecutionResponse(result=result)
 
     except asyncio.CancelledError:
-        return ToolExecutionResponse(error="Cancelled by newer request")
+        return ToolExecutionResponse(error="Tool execution cancelled")
 
     except TimeoutError:
         return ToolExecutionResponse(error=f"Tool timed out after {REQUEST_TIMEOUT}s")

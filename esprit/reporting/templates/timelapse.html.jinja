@@ -4,8 +4,17 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Esprit Scan Timelapse - {{ run_id }}</title>
-    <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js"></script>
-    <link href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css" rel="stylesheet" />
+    <script
+        src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js"
+        integrity="sha384-xjfWUeCWdMtvpAb/SmM6lMzS6pQGcQa0loOl1d97j6Odw0vjK9nW3+dTb/bn/mwH"
+        crossorigin="anonymous"
+    ></script>
+    <link
+        href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css"
+        rel="stylesheet"
+        integrity="sha384-LJcOxlx9IMbNXDqJ2axpfEQKkAYbFjJfhXexLfiRJhjDU81mzgkiQq8rkV0j6dVh"
+        crossorigin="anonymous"
+    />
     <style>
         body {
             background-color: #0d1117;
@@ -115,7 +124,13 @@
     </div>
 
     <script>
-        const events = {{ events_json | safe }};
+        let events = [];
+        try {
+            events = JSON.parse(atob("{{ events_b64 }}"));
+        } catch (e) {
+            console.error("Failed to parse timelapse events payload", e);
+            events = [];
+        }
         const term = new Terminal({
             fontFamily: 'Menlo, Monaco, "Courier New", monospace',
             fontSize: 14,

@@ -1411,6 +1411,8 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
         )
         if gh_match:
             owner, repo = gh_match.group(1), gh_match.group(2)
+            if repo.lower().endswith(".git"):
+                repo = repo[:-4]
             cache_key = f"gh:{owner}/{repo}"
             if cache_key in self._preview_cache:
                 self._show_preview(self._preview_cache[cache_key])

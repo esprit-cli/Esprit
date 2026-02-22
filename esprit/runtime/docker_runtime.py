@@ -1,4 +1,5 @@
 import contextlib
+import asyncio
 import os
 import secrets
 import socket
@@ -400,7 +401,7 @@ class DockerRuntime(AbstractRuntime):
 
             if container.status != "running":
                 container.start()
-                time.sleep(2)  # Give it a moment to start
+                await asyncio.sleep(2)
 
             container.reload()
             self._scan_container = container
@@ -413,20 +414,19 @@ class DockerRuntime(AbstractRuntime):
                 )
 
             # Wait for tool server to be ready
-            self._wait_for_tool_server()
+            await asyncio.to_thread(self._wait_for_tool_server)
 
             host = self._resolve_docker_host()
             api_url = f"http://{host}:{self._tool_server_port}"
-
-            # We don't have the agent_id easily here, but that's okay for just reviving connectivity
-            # The agent will re-register if needed or just use the token
+            labels = container.attrs.get("Config", {}).get("Labels", {})
+            revived_agent_id = str(labels.get("esprit-agent-id") or "unknown")
 
             return {
                 "workspace_id": container.id,
                 "api_url": api_url,
                 "auth_token": self._tool_server_token,
                 "tool_server_port": self._tool_server_port,
-                # agent_id is unknown at this point, but will be in the AgentState
+                "agent_id": revived_agent_id,
             }
 
         except NotFound:
