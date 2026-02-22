@@ -37,6 +37,12 @@ class TestDetectProvider:
     def test_explicit_antigravity_prefix(self, client: ProviderAuthClient) -> None:
         assert client.detect_provider("antigravity/claude-opus-4-6-thinking") == "antigravity"
 
+    def test_explicit_opencode_prefix(self, client: ProviderAuthClient) -> None:
+        assert client.detect_provider("opencode/gpt-5.1-codex") == "opencode"
+
+    def test_zen_alias_prefix_maps_to_opencode(self, client: ProviderAuthClient) -> None:
+        assert client.detect_provider("zen/gpt-5.1-codex") == "opencode"
+
     def test_bedrock_returns_none(self, client: ProviderAuthClient) -> None:
         """Bedrock uses AWS credentials, not OAuth — should be skipped."""
         assert client.detect_provider("bedrock/claude-sonnet-4") is None
@@ -89,7 +95,10 @@ class TestGetCredentials:
             result = client.get_credentials("openai")
         assert result is creds
 
-    def test_multi_account_falls_to_token_store_if_no_pool(self, client: ProviderAuthClient) -> None:
+    def test_multi_account_falls_back_to_token_store(
+        self,
+        client: ProviderAuthClient,
+    ) -> None:
         mock_pool = MagicMock()
         mock_pool.get_best_account.return_value = None
 

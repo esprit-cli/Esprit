@@ -512,6 +512,12 @@ class LLM:
         # Translate google/ → gemini/ for litellm compatibility
         if self.config.model_name and self.config.model_name.lower().startswith("google/"):
             args["model"] = "gemini/" + self.config.model_name.split("/", 1)[1]
+        # OpenCode Zen uses an OpenAI-compatible API surface.
+        if self.config.model_name and (
+            self.config.model_name.lower().startswith("opencode/")
+            or self.config.model_name.lower().startswith("zen/")
+        ):
+            args["model"] = "openai/" + self.config.model_name.split("/", 1)[1]
 
         # Esprit subscription provider — route through Esprit LLM proxy to Bedrock
         if self.config.model_name and self.config.model_name.lower().startswith("esprit/"):

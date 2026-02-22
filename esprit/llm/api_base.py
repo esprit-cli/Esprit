@@ -4,10 +4,14 @@ from esprit.config import Config
 
 _PROVIDER_DEFAULT_API_BASE: dict[str, str] = {
     "anthropic": "https://api.anthropic.com",
+    "opencode": "https://opencode.ai/zen/v1",
+    "zen": "https://opencode.ai/zen/v1",
 }
 
 _PROVIDER_ENV_BASE_VARS: dict[str, tuple[str, ...]] = {
     "anthropic": ("ANTHROPIC_BASE_URL", "ANTHROPIC_API_URL"),
+    "opencode": ("OPENCODE_BASE_URL", "OPENCODE_API_BASE"),
+    "zen": ("OPENCODE_BASE_URL", "OPENCODE_API_BASE"),
 }
 
 

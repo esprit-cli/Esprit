@@ -25,7 +25,9 @@ PROVIDER_MAPPING = {
     "openai": "openai",
     "codex": "openai",  # Codex is OpenAI's Codex
     "github-copilot": "github-copilot",
-    "google": "google",  # We'll add Google/Gemini support
+    "google": "google",
+    "opencode": "opencode",  # OpenCode Zen
+    "zen": "opencode",  # Alias used by some tools/configs
 }
 
 
@@ -54,7 +56,7 @@ def load_opencode_credentials() -> dict[str, Any]:
 
 
 def convert_opencode_credential(
-    provider_id: str,
+    _provider_id: str,
     opencode_cred: dict[str, Any]
 ) -> OAuthCredentials | None:
     """Convert OpenCode credential format to Esprit format."""

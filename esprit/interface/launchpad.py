@@ -608,6 +608,7 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
         # Provider badges and display info
         _BADGES: dict[str, str] = {
             "antigravity": "AG",
+            "opencode": "OZ",
             "openai": "OAI",
             "anthropic": "CC",
             "google": "GG",
@@ -615,6 +616,7 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
         }
         _PROVIDER_LABELS: dict[str, str] = {
             "antigravity": "ANTIGRAVITY",
+            "opencode": "OPENCODE ZEN",
             "openai": "OPENAI",
             "anthropic": "ANTHROPIC",
             "google": "GOOGLE",
@@ -675,7 +677,7 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
         return entries
 
     def _build_provider_entries(self) -> list[_MenuEntry]:
-        provider_order = ["antigravity", "anthropic", "openai", "google", "github-copilot"]
+        provider_order = ["antigravity", "opencode", "anthropic", "openai", "google", "github-copilot"]
         entries: list[_MenuEntry] = []
 
         for provider_id in provider_order:
@@ -756,7 +758,7 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
         except Exception:
             pass
 
-        for provider_id in ["openai", "anthropic", "google", "github-copilot", "antigravity"]:
+        for provider_id in ["opencode", "openai", "anthropic", "google", "github-copilot", "antigravity"]:
             provider_name = PROVIDER_NAMES.get(provider_id, provider_id)
 
             if provider_id in _MULTI_ACCOUNT_PROVIDERS:

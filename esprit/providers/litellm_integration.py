@@ -61,6 +61,8 @@ class ProviderAuthClient:
             - "antigravity/claude-opus-4-6-thinking" -> "antigravity"
             - "github-copilot/gpt-5" -> "github-copilot"
             - "google/gemini-2.5-pro" -> "google"
+            - "opencode/gpt-5.1-codex" -> "opencode"
+            - "zen/gpt-5.1-codex" -> "opencode"
             - "esprit/claude-haiku-4-5" -> "esprit"
         """
         model_lower = model_name.lower()
@@ -74,6 +76,9 @@ class ProviderAuthClient:
             # Esprit subscription provider
             if prefix == "esprit":
                 return "esprit"
+            # Alias for OpenCode Zen
+            if prefix == "zen":
+                return "opencode"
             if prefix in PROVIDERS:
                 return prefix
 

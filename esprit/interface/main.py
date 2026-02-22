@@ -4,7 +4,7 @@ Esprit Agent Interface
 
 Commands:
   esprit scan <target>       Run a penetration test scan
-  esprit provider login      Login to an LLM provider (OAuth)
+  esprit provider login      Login/connect an LLM provider
   esprit provider status     Show provider authentication status
   esprit provider logout     Logout from a provider
 """
@@ -323,7 +323,7 @@ def ensure_provider_configured() -> bool:
 
     # Check for OAuth providers (single-credential)
     token_store = TokenStore()
-    for provider_id in ["anthropic", "google", "github-copilot"]:
+    for provider_id in ["anthropic", "google", "github-copilot", "opencode"]:
         if token_store.has_credentials(provider_id):
             return True
 
@@ -362,7 +362,7 @@ def _get_configured_providers() -> list[tuple[str, str]]:
     except ImportError:
         pass
 
-    for provider_id in ["antigravity", "openai", "anthropic", "google", "github-copilot"]:
+    for provider_id in ["antigravity", "opencode", "openai", "anthropic", "google", "github-copilot"]:
         if provider_id in _multi_account:
             if pool.has_accounts(provider_id):
                 count = pool.account_count(provider_id)
@@ -422,7 +422,7 @@ def pre_scan_setup(non_interactive: bool = False) -> bool:
         console.print("[bold red]No LLM provider configured.[/]")
         console.print()
         console.print("Set up a provider first:")
-        console.print("  [cyan]esprit provider login[/]          # OAuth (Codex, Copilot, Antigravity)")
+        console.print("  [cyan]esprit provider login[/]          # Connect provider (OAuth/API)")
         console.print("  [cyan]esprit provider api-key[/]        # Direct API key")
         console.print()
         return False
@@ -439,6 +439,7 @@ def pre_scan_setup(non_interactive: bool = False) -> bool:
         display_name = {
             "esprit": "[bold #6366f1]Esprit[/] [dim](Subscription)[/]",
             "antigravity": "[bold #a78bfa]Antigravity[/] [dim](Free)[/]",
+            "opencode": "[bold #10b981]OpenCode Zen[/]",
             "openai": "OpenAI",
             "anthropic": "Anthropic",
             "google": "Google",
@@ -448,6 +449,7 @@ def pre_scan_setup(non_interactive: bool = False) -> bool:
         auth_type = {
             "esprit": "[green]Platform[/]",
             "antigravity": "[green]OAuth[/]",
+            "opencode": "[yellow]API Key[/]",
             "openai": "[green]OAuth[/]" if "@" in detail else "[yellow]API Key[/]",
             "anthropic": "[yellow]API Key[/]",
             "google": "[green]OAuth[/]",
@@ -472,6 +474,7 @@ def pre_scan_setup(non_interactive: bool = False) -> bool:
             "anthropic": "[bold #d4a27f]CC[/]",
             "google": "[bold #4285f4]GG[/]",
             "github-copilot": "[bold white]CO[/]",
+            "opencode": "[bold #10b981]OZ[/]",
         }.get(provider_prefix, "")
         if provider_badge:
             console.print(f"[bold]Model:[/] {provider_badge} {bare}")
@@ -616,6 +619,12 @@ async def warm_up_llm() -> None:
         # Translate google/ → gemini/ for litellm compatibility
         if model_name and model_name.lower().startswith("google/"):
             completion_kwargs["model"] = "gemini/" + model_name.split("/", 1)[1]
+        # OpenCode Zen is OpenAI-compatible; use openai/ for litellm routing.
+        if model_name and (
+            model_name.lower().startswith("opencode/")
+            or model_name.lower().startswith("zen/")
+        ):
+            completion_kwargs["model"] = "openai/" + model_name.split("/", 1)[1]
         if api_key:
             completion_kwargs["api_key"] = api_key
         if api_base:
@@ -760,7 +769,7 @@ def parse_arguments() -> argparse.Namespace:
         epilog="""
 Commands:
   esprit scan <target>       Run a penetration test
-  esprit provider login      Login to an LLM provider (OAuth)
+  esprit provider login      Login/connect an LLM provider
   esprit provider status     Show provider authentication status
 
 Examples:
@@ -772,6 +781,7 @@ Examples:
   # Provider authentication
   esprit provider login              # Interactive provider selection
   esprit provider login esprit       # Login with Esprit subscription
+  esprit provider login opencode     # Connect OpenCode Zen
   esprit provider login openai       # Login to OpenAI Codex
   esprit provider login github-copilot
   esprit provider login google       # Login to Google Gemini
@@ -792,6 +802,7 @@ Examples:
         epilog="""
 Supported providers:
   esprit          Esprit Subscription (Esprit Default)
+  opencode        OpenCode Zen (API key)
   anthropic       Claude Pro/Max (OAuth) or API key
   openai          ChatGPT Plus/Pro / Codex (OAuth) or API key
   github-copilot  GitHub Copilot (OAuth)
@@ -800,8 +811,12 @@ Supported providers:
     )
     provider_subparsers = provider_parser.add_subparsers(dest="provider_command")
     
-    provider_login = provider_subparsers.add_parser("login", help="Login to a provider via OAuth")
-    provider_login.add_argument("provider_id", nargs="?", help="Provider ID (esprit, anthropic, openai, github-copilot, google)")
+    provider_login = provider_subparsers.add_parser("login", help="Login/connect to a provider")
+    provider_login.add_argument(
+        "provider_id",
+        nargs="?",
+        help="Provider ID (esprit, opencode, anthropic, openai, github-copilot, google)",
+    )
     
     provider_logout = provider_subparsers.add_parser("logout", help="Logout from a provider")
     provider_logout.add_argument("provider_id", nargs="?", help="Provider ID to logout from")

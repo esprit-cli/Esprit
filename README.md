@@ -137,6 +137,7 @@ esprit scan https://example.com --non-interactive
 ```bash
 esprit provider login              # Interactive provider selection
 esprit provider login esprit       # Esprit Cloud subscription
+esprit provider login opencode     # OpenCode Zen (API key)
 esprit provider login openai       # OpenAI Codex (OAuth)
 esprit provider login anthropic    # Anthropic Claude (OAuth)
 esprit provider login google       # Google Gemini (OAuth)
@@ -167,6 +168,7 @@ esprit provider logout <provider>  # Disconnect a provider
 | Provider | Auth | Docker Required | Models |
 |----------|------|----------------|--------|
 | **Esprit** (Cloud) | OAuth | No | Esprit Default, Esprit Pro, Esprit Fast |
+| **OpenCode Zen** | API key | Yes | GPT-5.x Codex, Claude 4.x, Gemini 3.x, and more |
 | **Anthropic** | OAuth / API key | Yes | Claude Sonnet 4.5, Opus 4.5, Haiku 4.5 |
 | **OpenAI** | OAuth / API key | Yes | GPT-5.3 Codex, GPT-5.2, GPT-5.1 |
 | **Google** | OAuth / API key | Yes | Gemini 3 Pro, Gemini 3 Flash |
