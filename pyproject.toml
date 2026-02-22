@@ -60,6 +60,7 @@ requests = "^2.32.0"
 httpx = ">=0.24.0"
 cvss = "^3.2"
 Pillow = ">=10.0.0"
+textual-image = "*"
 
 # Optional LLM provider dependencies
 google-cloud-aiplatform = { version = ">=1.38", optional = true }
@@ -79,14 +80,10 @@ defusedxml = "^0.7.1"
 # GUI dashboard dependencies (host-side, not sandbox)
 websockets = { version = "*", optional = true }
 
-# Enhanced TUI preview dependencies
-textual-image = { version = "*", optional = true }
-
 [tool.poetry.extras]
 vertex = ["google-cloud-aiplatform"]
 sandbox = ["fastapi", "uvicorn", "ipython", "openhands-aci", "playwright", "gql", "pyte", "libtmux", "numpydoc"]
 gui = ["fastapi", "uvicorn", "websockets"]
-enhanced-preview = ["textual-image"]
 
 [tool.poetry.group.dev.dependencies]
 # Type checking and static analysis

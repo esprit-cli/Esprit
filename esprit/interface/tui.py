@@ -31,6 +31,10 @@ from textual.widgets.tree import TreeNode
 
 from esprit.agents.EspritAgent import EspritAgent
 from esprit.config import Config
+# IMPORTANT: import image_protocol BEFORE the Textual app starts so that
+# textual-image can query the terminal for Kitty/Sixel support while stdout
+# is still a real TTY.
+import esprit.interface.image_protocol as _image_proto  # noqa: F401
 from esprit.interface.streaming_parser import parse_streaming_content
 from esprit.interface.tool_components.agent_message_renderer import AgentMessageRenderer
 from esprit.interface.tool_components.registry import get_tool_renderer
