@@ -343,6 +343,23 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
             sparkle_a="#99ff99",
             sparkle_b="#33ff33",
         ),
+        "sakura": _LaunchpadTheme(
+            key="sakura",
+            label="Sakura",
+            hint="Cherry pink + plum",
+            accent="#f472b6",
+            selected_hint="#be185d",
+            menu_label="#f1c6dd",
+            menu_hint="#8f5f78",
+            separator="#f9a8d4",
+            info="#f1c6dd",
+            status="#d5a1bf",
+            brand_dim="#8f5f78",
+            ghost_body="#f472b6",
+            ghost_face="#2a0f1f",
+            sparkle_a="#f9a8d4",
+            sparkle_b="#ec4899",
+        ),
     }
 
     selected_index: reactive[int] = reactive(0)

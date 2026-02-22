@@ -183,3 +183,28 @@ Screen.theme-crt #launchpad_input {
 Screen.theme-crt #launchpad_input:focus {
     border: solid #33ff33;
 }
+
+Screen.theme-sakura {
+    background: #130a12;
+    color: #f5d7e7;
+}
+
+Screen.theme-sakura #launchpad_root {
+    background: #20101d;
+    border: round #5b2a4a;
+}
+
+Screen.theme-sakura #launchpad_menu {
+    background: #281522;
+    border: round #5b2a4a;
+}
+
+Screen.theme-sakura #launchpad_input {
+    background: #281522;
+    border: round #5b2a4a;
+    color: #f5d7e7;
+}
+
+Screen.theme-sakura #launchpad_input:focus {
+    border: round #f472b6;
+}

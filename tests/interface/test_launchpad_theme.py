@@ -71,3 +71,17 @@ def test_crt_theme_is_listed(monkeypatch) -> None:
     crt = next(entry for entry in entries if entry.key == "theme:crt")
 
     assert "CRT" in crt.label
+
+
+def test_sakura_theme_is_listed(monkeypatch) -> None:
+    monkeypatch.setattr(
+        Config,
+        "get_launchpad_theme",
+        classmethod(lambda _cls: "esprit"),
+    )
+
+    app = LaunchpadApp()
+    entries = app._build_theme_entries()
+    sakura = next(entry for entry in entries if entry.key == "theme:sakura")
+
+    assert "Sakura" in sakura.label
