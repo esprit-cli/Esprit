@@ -21,7 +21,13 @@ brew tap improdead/esprit
 brew install esprit
 ```
 
-### Option 3: From Source
+### Option 3: npm
+
+```bash
+npm install -g esprit
+```
+
+### Option 4: From Source
 
 ```bash
 git clone https://github.com/improdead/Esprit.git

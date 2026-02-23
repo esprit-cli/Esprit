@@ -1,0 +1,29 @@
+{
+  "name": "esprit",
+  "version": "0.7.0",
+  "description": "AI-powered penetration testing agent",
+  "license": "Apache-2.0",
+  "homepage": "https://esprit.dev",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/improdead/Esprit.git"
+  },
+  "bugs": {
+    "url": "https://github.com/improdead/Esprit/issues"
+  },
+  "bin": {
+    "esprit": "bin/esprit.js"
+  },
+  "files": [
+    "bin",
+    "npm",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "postinstall": "node npm/postinstall.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
