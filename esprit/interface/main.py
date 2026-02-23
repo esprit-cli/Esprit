@@ -657,11 +657,13 @@ async def warm_up_llm() -> None:
         if api_base:
             completion_kwargs["api_base"] = api_base
 
-        # Add OAuth headers if applicable
-        if should_use_oauth(model_name):
-            extra_headers = get_provider_headers(model_name)
-            if extra_headers:
-                completion_kwargs["extra_headers"] = extra_headers
+        # Add provider-specific headers (OAuth + no-auth OpenCode overrides)
+        extra_headers = get_provider_headers(model_name)
+        if extra_headers:
+            completion_kwargs["extra_headers"] = {
+                **completion_kwargs.get("extra_headers", {}),
+                **extra_headers,
+            }
 
         response = litellm.completion(**completion_kwargs)
 
@@ -690,6 +692,27 @@ async def warm_up_llm() -> None:
                     style="dim white",
                 )
         error_text.append(f"\nError: {e}", style="dim white")
+
+        error_message = str(e)
+        model_lower = model_name.lower() if model_name else ""
+        if (
+            (model_lower.startswith("opencode/") or model_lower.startswith("zen/"))
+            and "prompt_tokens" in error_message
+        ):
+            error_text.append(
+                "\n\nOpenCode returned an upstream model error for this free model.",
+                style="yellow",
+            )
+            error_text.append(
+                "\nTry one of these public models:",
+                style="yellow",
+            )
+            error_text.append(
+                "\n  - opencode/kimi-k2.5-free"
+                "\n  - opencode/minimax-m2.5-free"
+                "\n  - opencode/gpt-5-nano",
+                style="dim white",
+            )
 
         panel = Panel(
             error_text,

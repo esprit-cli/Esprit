@@ -257,7 +257,7 @@ def get_provider_api_key(model_name: str) -> str | None:
         # OpenCode public models can run without user credentials, but LiteLLM's
         # openai adapter requires api_key to be present.
         if provider_id == "opencode" and is_public_opencode_model(model_name):
-            return "opencode-public-noauth"
+            return "sk-opencode-public-noauth"
         return None
     
     if credentials.type == "api":
@@ -284,6 +284,16 @@ def get_provider_headers(model_name: str) -> dict[str, str]:
         return {}
     
     credentials = client.get_credentials(provider_id)
+
+    # OpenCode public models are no-auth. Keep LiteLLM happy with a placeholder
+    # key, but clear Authorization so no bearer token is sent upstream.
+    if (
+        provider_id == "opencode"
+        and not credentials
+        and is_public_opencode_model(model_name)
+    ):
+        return {"Authorization": ""}
+
     if not credentials or credentials.type != "oauth":
         return {}
     

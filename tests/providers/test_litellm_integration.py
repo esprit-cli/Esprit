@@ -5,7 +5,11 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from esprit.providers.base import OAuthCredentials
-from esprit.providers.litellm_integration import ProviderAuthClient, get_provider_api_key
+from esprit.providers.litellm_integration import (
+    ProviderAuthClient,
+    get_provider_api_key,
+    get_provider_headers,
+)
 
 
 @pytest.fixture
@@ -146,7 +150,7 @@ class TestGetProviderApiKey:
             patch("esprit.providers.litellm_integration.get_auth_client", return_value=mock_client),
             patch("esprit.providers.litellm_integration.is_public_opencode_model", return_value=True),
         ):
-            assert get_provider_api_key("opencode/minimax-m2.5-free") == "opencode-public-noauth"
+            assert get_provider_api_key("opencode/minimax-m2.5-free") == "sk-opencode-public-noauth"
 
     def test_non_public_opencode_without_credentials_returns_none(self) -> None:
         mock_client = MagicMock()
@@ -158,3 +162,27 @@ class TestGetProviderApiKey:
             patch("esprit.providers.litellm_integration.is_public_opencode_model", return_value=False),
         ):
             assert get_provider_api_key("opencode/gpt-5.2-codex") is None
+
+
+class TestGetProviderHeaders:
+    def test_public_opencode_without_credentials_clears_authorization(self) -> None:
+        mock_client = MagicMock()
+        mock_client.detect_provider.return_value = "opencode"
+        mock_client.get_credentials.return_value = None
+
+        with (
+            patch("esprit.providers.litellm_integration.get_auth_client", return_value=mock_client),
+            patch("esprit.providers.litellm_integration.is_public_opencode_model", return_value=True),
+        ):
+            assert get_provider_headers("opencode/minimax-m2.5-free") == {"Authorization": ""}
+
+    def test_non_public_opencode_without_credentials_no_headers(self) -> None:
+        mock_client = MagicMock()
+        mock_client.detect_provider.return_value = "opencode"
+        mock_client.get_credentials.return_value = None
+
+        with (
+            patch("esprit.providers.litellm_integration.get_auth_client", return_value=mock_client),
+            patch("esprit.providers.litellm_integration.is_public_opencode_model", return_value=False),
+        ):
+            assert get_provider_headers("opencode/gpt-5.2-codex") == {}

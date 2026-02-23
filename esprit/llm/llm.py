@@ -556,6 +556,13 @@ class LLM:
             if provider_api_key:
                 args["api_key"] = provider_api_key
 
+            provider_headers = get_provider_headers(self.config.model_name)
+            if provider_headers:
+                args["extra_headers"] = {
+                    **args.get("extra_headers", {}),
+                    **provider_headers,
+                }
+
             use_oauth = should_use_oauth(self.config.model_name)
             if use_oauth:
                 model_lower = self.config.model_name.lower()
@@ -569,9 +576,6 @@ class LLM:
                     args["model"] = bare_model
                     args["api_key"] = provider_api_key or "oauth-auth"
                 else:
-                    provider_headers = get_provider_headers(self.config.model_name)
-                    if provider_headers:
-                        args["extra_headers"] = provider_headers
                     args["api_key"] = provider_api_key or "oauth-auth"
 
         # Fall back to configured API key when provider auth is not active.
