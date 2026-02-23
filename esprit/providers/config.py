@@ -264,6 +264,21 @@ def get_available_models() -> dict[str, list[tuple[str, str]]]:
             merged.setdefault("opencode", []).append((model_id, f"{model_id} [OpenCode live]"))
             existing_ids.add(model_id)
 
+    # When OpenCode models are detectable on this machine (local route config
+    # and/or live /models), only show those IDs in model selectors. This keeps
+    # options aligned with what's actually available to the user.
+    detected_opencode_model_ids = {
+        model_id
+        for model_id, _ in route_models.get("opencode", [])
+    }
+    detected_opencode_model_ids.update(live_opencode_model_ids)
+    if detected_opencode_model_ids:
+        merged["opencode"] = [
+            (model_id, model_name)
+            for model_id, model_name in merged.get("opencode", [])
+            if model_id in detected_opencode_model_ids
+        ]
+
     return merged
 
 

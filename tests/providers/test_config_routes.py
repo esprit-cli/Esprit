@@ -101,3 +101,18 @@ def test_get_public_opencode_models_includes_live_free_ids(monkeypatch) -> None:
 
     assert "latest-free" in public_models
     assert "latest-paid" not in public_models
+
+
+def test_get_available_models_filters_opencode_to_detected_ids(monkeypatch) -> None:
+    monkeypatch.setattr(provider_config, "_load_opencode_route_models", dict)
+    monkeypatch.setattr(
+        provider_config,
+        "_get_cached_opencode_live_model_ids",
+        lambda: {"kimi-k2.5-free"},
+    )
+
+    models = provider_config.get_available_models()
+    opencode_ids = {model_id for model_id, _ in models["opencode"]}
+
+    assert "kimi-k2.5-free" in opencode_ids
+    assert "gpt-5.2-codex" not in opencode_ids
