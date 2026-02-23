@@ -32,7 +32,7 @@ security-scan:
     ESPRIT_LLM: $ESPRIT_LLM
     LLM_API_KEY: $LLM_API_KEY
   script:
-    - curl -sSL https://raw.githubusercontent.com/improdead/Esprit/main/scripts/install.sh | bash
+    - curl -sSL https://raw.githubusercontent.com/improdead/Esprit/refs/heads/main/scripts/install.sh | bash
     - esprit -n -t ./ --scan-mode quick
 ```
 
@@ -48,7 +48,7 @@ pipeline {
     stages {
         stage('Security Scan') {
             steps {
-                sh 'curl -sSL https://raw.githubusercontent.com/improdead/Esprit/main/scripts/install.sh | bash'
+                sh 'curl -sSL https://raw.githubusercontent.com/improdead/Esprit/refs/heads/main/scripts/install.sh | bash'
                 sh 'esprit -n -t ./ --scan-mode quick'
             }
         }
@@ -69,7 +69,7 @@ jobs:
       - setup_remote_docker
       - run:
           name: Install Esprit
-          command: curl -sSL https://raw.githubusercontent.com/improdead/Esprit/main/scripts/install.sh | bash
+          command: curl -sSL https://raw.githubusercontent.com/improdead/Esprit/refs/heads/main/scripts/install.sh | bash
       - run:
           name: Run Scan
           command: esprit -n -t ./ --scan-mode quick
