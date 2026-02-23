@@ -403,15 +403,16 @@ def _get_configured_providers() -> list[tuple[str, str]]:
 
 def _get_available_models(configured_providers: list[tuple[str, str]]) -> list[tuple[str, str]]:
     """Return list of (model_id, display_name) available from configured providers."""
-    from esprit.providers.config import AVAILABLE_MODELS, get_public_opencode_models
+    from esprit.providers.config import get_available_models, get_public_opencode_models
     from esprit.providers.token_store import TokenStore
 
+    catalog = get_available_models()
     provider_ids = {p[0] for p in configured_providers}
     models = []
     token_store = TokenStore()
-    public_opencode_models = get_public_opencode_models(AVAILABLE_MODELS)
+    public_opencode_models = get_public_opencode_models(catalog)
 
-    for provider_id, model_list in AVAILABLE_MODELS.items():
+    for provider_id, model_list in catalog.items():
         if provider_id in provider_ids:
             models_to_show = model_list
             if provider_id == "opencode" and not token_store.has_credentials("opencode"):

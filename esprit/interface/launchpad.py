@@ -19,7 +19,7 @@ from esprit.config import Config
 from esprit.llm.config import DEFAULT_MODEL
 from esprit.providers import PROVIDER_NAMES, get_provider_auth
 from esprit.providers.base import AuthMethod, OAuthCredentials
-from esprit.providers.config import AVAILABLE_MODELS, get_public_opencode_models
+from esprit.providers.config import get_available_models, get_public_opencode_models
 from esprit.providers.token_store import TokenStore
 from esprit.providers.account_pool import get_account_pool
 
@@ -621,7 +621,8 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
         current = Config.get("esprit_llm") or DEFAULT_MODEL
         entries: list[_MenuEntry] = []
         query = filter_text.lower().strip()
-        public_opencode_models = get_public_opencode_models(AVAILABLE_MODELS)
+        models_by_provider = get_available_models()
+        public_opencode_models = get_public_opencode_models(models_by_provider)
 
         # Provider badges and display info
         _BADGES: dict[str, str] = {
@@ -643,7 +644,7 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
 
         # Check which providers are connected
         connected: dict[str, bool] = {}
-        for provider_id in AVAILABLE_MODELS:
+        for provider_id in models_by_provider:
             if provider_id in _MULTI_ACCOUNT_PROVIDERS:
                 connected[provider_id] = self._account_pool.has_accounts(provider_id)
             elif provider_id == "esprit":
@@ -659,7 +660,7 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
 
         # Show only connected providers
         providers_sorted = sorted(
-            [provider_id for provider_id in AVAILABLE_MODELS if connected.get(provider_id, False)]
+            [provider_id for provider_id in models_by_provider if connected.get(provider_id, False)]
         )
 
         if not providers_sorted:
@@ -668,7 +669,7 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
             return entries
 
         for provider_id in providers_sorted:
-            models = AVAILABLE_MODELS[provider_id]
+            models = models_by_provider[provider_id]
             if provider_id == "opencode" and not self._token_store.has_credentials("opencode"):
                 models = [
                     (model_id, model_name)
@@ -714,7 +715,7 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
     def _build_provider_entries(self) -> list[_MenuEntry]:
         provider_order = ["esprit", "antigravity", "opencode", "anthropic", "openai", "google", "github-copilot"]
         entries: list[_MenuEntry] = []
-        public_opencode_models = get_public_opencode_models(AVAILABLE_MODELS)
+        public_opencode_models = get_public_opencode_models(get_available_models())
 
         for provider_id in provider_order:
             provider_name = PROVIDER_NAMES.get(provider_id, provider_id)

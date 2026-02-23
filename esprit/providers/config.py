@@ -110,12 +110,101 @@ _OPENCODE_ALWAYS_PUBLIC_MODELS: frozenset[str] = frozenset(
     }
 )
 
+_OPENCODE_PROVIDER_ALIASES: dict[str, str] = {
+    "zen": "opencode",
+    "codex": "openai",
+}
+
+
+def get_opencode_config_path() -> Path:
+    """Resolve opencode.json path following XDG_CONFIG_HOME."""
+    xdg_config = os.environ.get("XDG_CONFIG_HOME")
+    if xdg_config:
+        return Path(xdg_config) / "opencode" / "opencode.json"
+    return Path.home() / ".config" / "opencode" / "opencode.json"
+
+
+def _load_opencode_route_models() -> dict[str, list[tuple[str, str]]]:
+    """Load provider/model routes from OpenCode config for menu parity."""
+    config_path = get_opencode_config_path()
+    if not config_path.exists():
+        return {}
+
+    try:
+        with config_path.open(encoding="utf-8") as f:
+            config = json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+    providers = config.get("provider")
+    if not isinstance(providers, dict):
+        return {}
+
+    routes: dict[str, list[tuple[str, str]]] = {}
+
+    for raw_provider_id, provider_config in providers.items():
+        if not isinstance(raw_provider_id, str) or not isinstance(provider_config, dict):
+            continue
+        raw_models = provider_config.get("models")
+        if not isinstance(raw_models, dict):
+            continue
+
+        provider_id = _OPENCODE_PROVIDER_ALIASES.get(raw_provider_id.strip().lower(), raw_provider_id.strip().lower())
+
+        for raw_model_id, model_config in raw_models.items():
+            if not isinstance(raw_model_id, str):
+                continue
+            model_id = raw_model_id.strip()
+            if not model_id:
+                continue
+
+            display_name = model_id
+            if isinstance(model_config, dict):
+                raw_name = model_config.get("name")
+                if isinstance(raw_name, str) and raw_name.strip():
+                    display_name = raw_name.strip()
+
+            target_provider = provider_id
+            target_model = model_id
+
+            # OpenCode reroutes Antigravity models through a google provider section.
+            # Expose these under Esprit's Antigravity provider IDs for runtime parity.
+            if target_provider == "google" and target_model.startswith("antigravity-"):
+                target_provider = "antigravity"
+                target_model = target_model.removeprefix("antigravity-")
+
+            if target_provider not in AVAILABLE_MODELS:
+                continue
+
+            routes.setdefault(target_provider, []).append((target_model, f"{display_name} [OpenCode route]"))
+
+    return routes
+
+
+def get_available_models() -> dict[str, list[tuple[str, str]]]:
+    """Get model catalog, merged with compatible OpenCode route definitions."""
+    merged: dict[str, list[tuple[str, str]]] = {
+        provider_id: list(models)
+        for provider_id, models in AVAILABLE_MODELS.items()
+    }
+
+    route_models = _load_opencode_route_models()
+    for provider_id, models in route_models.items():
+        existing_ids = {model_id for model_id, _ in merged.get(provider_id, [])}
+        for model_id, model_name in models:
+            if model_id in existing_ids:
+                continue
+            merged.setdefault(provider_id, []).append((model_id, model_name))
+            existing_ids.add(model_id)
+
+    return merged
+
 
 def get_public_opencode_models(
     models_by_provider: dict[str, list[tuple[str, str]]] | None = None,
 ) -> set[str]:
     """Return OpenCode model IDs that can be used without provider login."""
-    catalog = models_by_provider or AVAILABLE_MODELS
+    catalog = models_by_provider or get_available_models()
     public_models = set(_OPENCODE_ALWAYS_PUBLIC_MODELS)
 
     for model_id, model_name in catalog.get("opencode", []):
@@ -212,7 +301,8 @@ def cmd_config_model(model: str | None = None) -> int:
     token_store = TokenStore()
     pool = get_account_pool()
     config = Config()
-    public_opencode_models = get_public_opencode_models(AVAILABLE_MODELS)
+    models_by_provider = get_available_models()
+    public_opencode_models = get_public_opencode_models(models_by_provider)
 
     from esprit.providers.constants import MULTI_ACCOUNT_PROVIDERS as _multi_account
 
@@ -228,7 +318,7 @@ def cmd_config_model(model: str | None = None) -> int:
         connected_providers = []
         disconnected_providers = []
 
-        for provider_id, models in AVAILABLE_MODELS.items():
+        for provider_id, models in models_by_provider.items():
             if provider_id in _multi_account:
                 has_creds = pool.has_accounts(provider_id)
             elif provider_id == "esprit":
@@ -313,7 +403,7 @@ def cmd_config_model(model: str | None = None) -> int:
     # Validate model format
     if "/" not in model:
         # Try to infer provider
-        for provider_id, models in AVAILABLE_MODELS.items():
+        for provider_id, models in models_by_provider.items():
             for model_id, _ in models:
                 if model_id == model:
                     model = f"{provider_id}/{model_id}"
