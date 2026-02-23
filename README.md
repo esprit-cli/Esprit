@@ -24,7 +24,7 @@ brew install esprit
 ### Option 3: npm
 
 ```bash
-npm install -g esprit
+npm install -g @dekai/esprit
 ```
 
 ### Option 4: From Source

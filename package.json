@@ -1,12 +1,12 @@
 {
-  "name": "esprit",
+  "name": "@dekai/esprit",
   "version": "0.7.0",
   "description": "AI-powered penetration testing agent",
   "license": "Apache-2.0",
   "homepage": "https://esprit.dev",
   "repository": {
     "type": "git",
-    "url": "https://github.com/improdead/Esprit.git"
+    "url": "git+https://github.com/improdead/Esprit.git"
   },
   "bugs": {
     "url": "https://github.com/improdead/Esprit/issues"
