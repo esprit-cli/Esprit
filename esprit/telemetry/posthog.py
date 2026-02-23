@@ -1,6 +1,7 @@
 import json
 import platform
 import sys
+import threading
 import urllib.request
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -46,22 +47,26 @@ def _get_version() -> str:
 def _send(event: str, properties: dict[str, Any]) -> None:
     if not _is_enabled():
         return
-    try:
-        payload = {
-            "api_key": _POSTHOG_PUBLIC_API_KEY,
-            "event": event,
-            "distinct_id": _SESSION_ID,
-            "properties": properties,
-        }
-        req = urllib.request.Request(  # noqa: S310
-            f"{_POSTHOG_HOST}/capture/",
-            data=json.dumps(payload).encode(),
-            headers={"Content-Type": "application/json"},
-        )
-        with urllib.request.urlopen(req, timeout=10):  # noqa: S310  # nosec B310
-            pass
-    except Exception:  # noqa: BLE001, S110
-        pass  # nosec B110
+    payload = {
+        "api_key": _POSTHOG_PUBLIC_API_KEY,
+        "event": event,
+        "distinct_id": _SESSION_ID,
+        "properties": properties,
+    }
+
+    def _send_worker() -> None:
+        try:
+            req = urllib.request.Request(  # noqa: S310
+                f"{_POSTHOG_HOST}/capture/",
+                data=json.dumps(payload).encode(),
+                headers={"Content-Type": "application/json"},
+            )
+            with urllib.request.urlopen(req, timeout=5):  # noqa: S310  # nosec B310
+                pass
+        except Exception:  # noqa: BLE001, S110
+            pass  # nosec B110
+
+    threading.Thread(target=_send_worker, daemon=True).start()
 
 
 def _base_props() -> dict[str, Any]:
