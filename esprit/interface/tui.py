@@ -903,13 +903,14 @@ class VulnerabilityOverlayScreen(ModalScreen):  # type: ignore[misc]
 
     def compose(self) -> ComposeResult:
         yield Grid(
-            Static("", id="vuln_overlay_status"),
+            Static("", id="vuln_overlay_header"),
             Horizontal(
                 VerticalScroll(Static("", id="vuln_overlay_list"), id="vuln_overlay_list_scroll"),
                 VerticalScroll(Static("", id="vuln_overlay_detail"), id="vuln_overlay_detail_scroll"),
                 id="vuln_overlay_main",
             ),
             Horizontal(
+                Static("", id="vuln_overlay_keyhints"),
                 Button("Copy Selected", variant="default", id="copy_overlay_selected"),
                 Button("Copy All", variant="default", id="copy_overlay_all"),
                 Button("Close", variant="default", id="close_vuln_overlay"),
@@ -917,6 +918,24 @@ class VulnerabilityOverlayScreen(ModalScreen):  # type: ignore[misc]
             ),
             id="vuln_overlay_dialog",
         )
+
+    _SEVERITY_COLORS: ClassVar[dict[str, str]] = {
+        "critical": "#dc2626",
+        "high": "#ea580c",
+        "medium": "#d97706",
+        "low": "#65a30d",
+        "info": "#0284c7",
+    }
+    _SEVERITY_LABELS: ClassVar[dict[str, str]] = {
+        "critical": "CRIT",
+        "high": "HIGH",
+        "medium": "MED",
+        "low": "LOW",
+        "info": "INFO",
+    }
+    _SEVERITY_ORDER: ClassVar[dict[str, int]] = {
+        "critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4,
+    }
 
     def on_mount(self) -> None:
         close_button = self.query_one("#close_vuln_overlay", Button)
@@ -952,82 +971,140 @@ class VulnerabilityOverlayScreen(ModalScreen):  # type: ignore[misc]
             self._selected_index = 0
         return vulnerabilities[self._selected_index]
 
+    def _build_header(self, vulnerabilities: list[dict[str, Any]]) -> Text:
+        """Build a summary header with severity breakdown."""
+        text = Text()
+        total = len(vulnerabilities)
+        text.append(" VULNERABILITIES ", style="bold reverse #ea580c")
+        if total == 0:
+            text.append("  None found yet", style="dim")
+            return text
+
+        text.append(f"  {total} found", style="bold white")
+        text.append("  ", style="")
+
+        # Severity breakdown counts
+        counts: dict[str, int] = {}
+        for v in vulnerabilities:
+            sev = str(v.get("severity", "info")).lower()
+            counts[sev] = counts.get(sev, 0) + 1
+
+        parts = []
+        for sev_key in ("critical", "high", "medium", "low", "info"):
+            c = counts.get(sev_key, 0)
+            if c > 0:
+                parts.append((c, sev_key))
+
+        for i, (count, sev_key) in enumerate(parts):
+            color = self._SEVERITY_COLORS.get(sev_key, "#6b7280")
+            label = self._SEVERITY_LABELS.get(sev_key, sev_key.upper())
+            if i > 0:
+                text.append("  ", style="")
+            text.append(f" {count} {label} ", style=f"bold {color}")
+
+        return text
+
+    def _build_keyhints(self) -> Text:
+        """Build keyboard shortcut hints for the footer."""
+        text = Text()
+        hints = [
+            ("\u2191\u2193/jk", "navigate"),
+            ("c", "copy"),
+            ("a", "copy all"),
+            ("esc", "close"),
+        ]
+        for i, (key, desc) in enumerate(hints):
+            if i > 0:
+                text.append("  ", style="")
+            text.append(f" {key} ", style="bold #22d3ee")
+            text.append(desc, style="dim")
+        return text
+
     def _refresh_view(self) -> None:
         try:
-            status = self.query_one("#vuln_overlay_status", Static)
+            header = self.query_one("#vuln_overlay_header", Static)
             list_content = self.query_one("#vuln_overlay_list", Static)
             detail_content = self.query_one("#vuln_overlay_detail", Static)
+            keyhints = self.query_one("#vuln_overlay_keyhints", Static)
         except (ValueError, Exception):
             return
 
-        app = self._get_app()
-        if app:
-            status.update(app._build_global_status_snapshot_text())
-        else:
-            status.update(Text("Status unavailable", style="dim"))
-
         vulnerabilities = self._get_vulnerabilities()
+        header.update(self._build_header(vulnerabilities))
+        keyhints.update(self._build_keyhints())
         list_content.update(self._render_list(vulnerabilities))
         detail_content.update(self._render_detail())
 
     def _render_list(self, vulnerabilities: list[dict[str, Any]]) -> Text:
         text = Text()
         if not vulnerabilities:
-            text.append("No vulnerabilities yet.\n", style="dim")
-            text.append("Findings will appear here in realtime.", style="dim italic")
+            text.append("\n")
+            text.append("  Waiting for findings...\n", style="dim italic")
+            text.append("\n")
+            text.append("  Vulnerabilities will appear here\n", style="dim")
+            text.append("  in realtime as agents discover them.", style="dim")
             return text
 
+        vulnerabilities.sort(
+            key=lambda v: (
+                self._SEVERITY_ORDER.get(str(v.get("severity", "")).lower(), 5),
+                str(v.get("timestamp", "")),
+            )
+        )
         if self._selected_index >= len(vulnerabilities):
             self._selected_index = max(0, len(vulnerabilities) - 1)
-
-        text.append(f"Findings ({len(vulnerabilities)})", style="bold #f5f5f5")
-        text.append("  |  ", style="dim")
-        text.append("Navigate with ", style="dim")
-        text.append("Up/Down", style="bold #e5e7eb")
-        text.append(" or ", style="dim")
-        text.append("j/k", style="bold #e5e7eb")
-        text.append("\n\n")
 
         for idx, vuln in enumerate(vulnerabilities):
             severity = str(vuln.get("severity", "info")).lower()
             title = str(vuln.get("title", "Untitled Vulnerability"))
             cvss = vuln.get("cvss")
-            endpoint = str(vuln.get("endpoint", "")).strip()
-            target = str(vuln.get("target", "")).strip()
+            target = vuln.get("target", "")
+            endpoint = vuln.get("endpoint", "")
 
-            severity_color = self.SEVERITY_COLORS.get(severity, "#6b7280")
+            severity_color = self._SEVERITY_COLORS.get(severity, "#6b7280")
             is_selected = idx == self._selected_index
-            row_background = " on #2a0e0e" if is_selected else ""
-            row_style = row_background or None
+            sev_label = self._SEVERITY_LABELS.get(severity, severity.upper())
 
-            text.append("▌ " if is_selected else "  ", style=f"bold {severity_color}{row_background}")
-            text.append(f"{idx + 1:>2}. ", style=f"bold #9ca3af{row_background}")
-            text.append(
-                f"[{severity.upper():8s}]",
-                style=f"bold {severity_color}{row_background}",
-            )
+            # Selection indicator
+            if is_selected:
+                text.append(" \u25b6 ", style=f"bold {severity_color}")
+            else:
+                text.append("   ", style="")
 
-            cvss_label = None
+            # Severity badge
+            text.append(f" {sev_label:4s} ", style=f"bold reverse {severity_color}")
+            text.append(" ", style="")
+
+            # CVSS score
             if cvss is not None:
-                try:
-                    cvss_label = f"CVSS {float(cvss):.1f}"
-                except (TypeError, ValueError):
-                    cvss_label = f"CVSS {cvss}"
-            if cvss_label:
-                text.append(f"  {cvss_label}", style=f"bold #f1f5f9{row_background}")
+                cvss_val = float(cvss)
+                cvss_color = severity_color
+                if cvss_val >= 9.0:
+                    cvss_color = "#dc2626"
+                elif cvss_val >= 7.0:
+                    cvss_color = "#ea580c"
+                text.append(f"{cvss_val:.1f}", style=f"bold {cvss_color}")
+                text.append(" ", style="")
+            else:
+                text.append("     ", style="")
 
-            text.append("\n", style=row_style)
-            text.append("    ", style=row_style)
-            text.append(title, style=f"bold #ffffff{row_background}")
+            # Title
+            title_style = f"bold {severity_color}" if is_selected else "white"
+            text.append(title, style=title_style)
 
-            location = endpoint or target
-            if location:
-                text.append("\n", style=row_style)
-                text.append("    ", style=row_style)
-                text.append(location, style=f"dim #bdbdbd{row_background}")
+            # Target/endpoint on next line
+            if target or endpoint:
+                text.append("\n")
+                text.append("         ", style="")  # indent to align with title
+                location = endpoint or target
+                if len(location) > 50:
+                    location = location[:47] + "..."
+                text.append(location, style="dim #8a8a8a")
 
+            # Separator between items
             if idx < len(vulnerabilities) - 1:
-                text.append("\n\n")
+                text.append("\n")
+                text.append("   \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n", style="dim #2f2f2f")
 
         return text
 
@@ -1035,16 +1112,160 @@ class VulnerabilityOverlayScreen(ModalScreen):  # type: ignore[misc]
         vulnerability = self._selected_vulnerability()
         if not vulnerability:
             text = Text()
-            text.append("Select a vulnerability to inspect details.", style="dim")
+            text.append("\n")
+            text.append("  Select a vulnerability from\n", style="dim")
+            text.append("  the list to inspect details.", style="dim")
             return text
-        text = format_vulnerability_report(vulnerability)
-        text.append("\n\n")
-        text.append("Shortcuts:", style="bold #9ca3af")
-        text.append(" c copy selected", style="dim #9ca3af")
-        text.append("  ·  ", style="dim")
-        text.append("a copy all", style="dim #9ca3af")
-        text.append("  ·  ", style="dim")
-        text.append("Esc close", style="dim #9ca3af")
+        return self._render_detail_panel(vulnerability)
+
+    def _render_detail_panel(self, vuln: dict[str, Any]) -> Text:
+        """Render a rich detail panel for a vulnerability."""
+        text = Text()
+        severity = str(vuln.get("severity", "info")).lower()
+        severity_color = self._SEVERITY_COLORS.get(severity, "#6b7280")
+        sev_label = self._SEVERITY_LABELS.get(severity, severity.upper())
+
+        # Title bar
+        title = vuln.get("title", "Untitled Vulnerability")
+        text.append(f" {sev_label} ", style=f"bold reverse {severity_color}")
+        text.append(f" {title}", style="bold white")
+        text.append("\n")
+
+        # Metadata row
+        cvss = vuln.get("cvss")
+        if cvss is not None:
+            cvss_val = float(cvss)
+            cvss_color = severity_color
+            if cvss_val >= 9.0:
+                cvss_color = "#dc2626"
+            elif cvss_val >= 7.0:
+                cvss_color = "#ea580c"
+            text.append(" CVSS ", style="dim")
+            text.append(f"{cvss_val:.1f}", style=f"bold {cvss_color}")
+
+        cve = vuln.get("cve", "")
+        if cve:
+            text.append("  ", style="")
+            text.append(cve, style="bold #60a5fa")
+
+        agent_name = vuln.get("agent_name", "")
+        if agent_name:
+            text.append("  ", style="")
+            text.append(f"[{agent_name}]", style="dim #8a8a8a")
+
+        text.append("\n")
+
+        # Target info
+        target = vuln.get("target", "")
+        endpoint = vuln.get("endpoint", "")
+        method = vuln.get("method", "")
+        if target or endpoint or method:
+            text.append(" \u2500\u2500 Target ", style="dim #555555")
+            text.append("\u2500" * 30, style="dim #2f2f2f")
+            text.append("\n")
+            if target:
+                text.append("  Target   ", style="#4ade80")
+                text.append(f"{target}\n", style="white")
+            if endpoint:
+                text.append("  Endpoint ", style="#4ade80")
+                text.append(f"{endpoint}\n", style="white")
+            if method:
+                text.append("  Method   ", style="#4ade80")
+                text.append(f"{method}\n", style="white")
+
+        # CVSS breakdown
+        cvss_breakdown = vuln.get("cvss_breakdown", {})
+        if cvss_breakdown:
+            parts = []
+            abbrevs = {
+                "attack_vector": "AV", "attack_complexity": "AC",
+                "privileges_required": "PR", "user_interaction": "UI",
+                "scope": "S", "confidentiality": "C",
+                "integrity": "I", "availability": "A",
+            }
+            for field, abbr in abbrevs.items():
+                val = cvss_breakdown.get(field)
+                if val:
+                    parts.append(f"{abbr}:{val}")
+            if parts:
+                text.append("\n")
+                text.append("  Vector ", style="dim #555555")
+                text.append("/".join(parts), style="dim")
+                text.append("\n")
+
+        # Description
+        description = vuln.get("description", "")
+        if description:
+            text.append("\n")
+            text.append(" \u2500\u2500 Description ", style="dim #555555")
+            text.append("\u2500" * 26, style="dim #2f2f2f")
+            text.append("\n")
+            text.append(f"  {description}\n", style="white")
+
+        # Impact
+        impact = vuln.get("impact", "")
+        if impact:
+            text.append("\n")
+            text.append(" \u2500\u2500 Impact ", style="dim #555555")
+            text.append("\u2500" * 30, style="dim #2f2f2f")
+            text.append("\n")
+            text.append(f"  {impact}\n", style="white")
+
+        # Technical Analysis
+        technical_analysis = vuln.get("technical_analysis", "")
+        if technical_analysis:
+            text.append("\n")
+            text.append(" \u2500\u2500 Technical Analysis ", style="dim #555555")
+            text.append("\u2500" * 19, style="dim #2f2f2f")
+            text.append("\n")
+            text.append(f"  {technical_analysis}\n", style="white")
+
+        # PoC
+        poc_description = vuln.get("poc_description", "")
+        poc_script_code = vuln.get("poc_script_code", "")
+        if poc_description or poc_script_code:
+            text.append("\n")
+            text.append(" \u2500\u2500 Proof of Concept ", style="dim #555555")
+            text.append("\u2500" * 20, style="dim #2f2f2f")
+            text.append("\n")
+            if poc_description:
+                text.append(f"  {poc_description}\n", style="white")
+            if poc_script_code:
+                text.append("\n")
+                text.append("  \u250c\u2500 code \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n", style="dim #444444")
+                for line in poc_script_code.splitlines():
+                    text.append(f"  \u2502 {line}\n", style="#a5d6a7")
+                text.append("  \u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n", style="dim #444444")
+
+        # Code file / diff
+        code_file = vuln.get("code_file", "")
+        code_diff = vuln.get("code_diff", "")
+        if code_file or code_diff:
+            text.append("\n")
+            text.append(" \u2500\u2500 Code Analysis ", style="dim #555555")
+            text.append("\u2500" * 24, style="dim #2f2f2f")
+            text.append("\n")
+            if code_file:
+                text.append(f"  File: {code_file}\n", style="#60a5fa")
+            if code_diff:
+                text.append("\n")
+                for line in code_diff.splitlines():
+                    if line.startswith("+"):
+                        text.append(f"  {line}\n", style="#4ade80")
+                    elif line.startswith("-"):
+                        text.append(f"  {line}\n", style="#f87171")
+                    else:
+                        text.append(f"  {line}\n", style="dim")
+
+        # Remediation
+        remediation_steps = vuln.get("remediation_steps", "")
+        if remediation_steps:
+            text.append("\n")
+            text.append(" \u2500\u2500 Remediation ", style="dim #555555")
+            text.append("\u2500" * 25, style="dim #2f2f2f")
+            text.append("\n")
+            text.append(f"  {remediation_steps}\n", style="#fbbf24")
+
         return text
 
     def _move_selection(self, step: int) -> None:

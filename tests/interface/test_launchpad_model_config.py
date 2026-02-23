@@ -1,4 +1,4 @@
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from esprit.interface.launchpad import LaunchpadApp
 
@@ -12,7 +12,8 @@ def test_model_config_shows_only_connected_providers() -> None:
     app._account_pool.has_accounts.side_effect = lambda provider_id: provider_id == "openai"
     app._token_store.has_credentials.side_effect = lambda provider_id: provider_id == "anthropic"
 
-    entries = app._build_model_entries()
+    with patch("esprit.auth.credentials.is_authenticated", return_value=False):
+        entries = app._build_model_entries()
     keys = [entry.key for entry in entries]
 
     assert "separator:anthropic" in keys
@@ -31,7 +32,8 @@ def test_model_config_shows_empty_state_when_no_provider_connected() -> None:
     app._account_pool.has_accounts.return_value = False
     app._token_store.has_credentials.return_value = False
 
-    entries = app._build_model_entries()
+    with patch("esprit.auth.credentials.is_authenticated", return_value=False):
+        entries = app._build_model_entries()
     keys = [entry.key for entry in entries]
 
     assert "info:no_connected_providers" in keys

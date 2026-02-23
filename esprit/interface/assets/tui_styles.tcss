@@ -227,7 +227,7 @@ VulnerabilityOverlayScreen {
     background: #130404;
 }
 
-#vuln_overlay_status {
+#vuln_overlay_header {
     height: auto;
     border: solid #3a1414;
     color: #f4f4f5;
@@ -276,6 +276,13 @@ VulnerabilityOverlayScreen {
     border-top: solid #3a1414;
     align: center middle;
     padding-top: 1;
+}
+
+#vuln_overlay_keyhints {
+    width: 1fr;
+    height: auto;
+    color: #8a8a8a;
+    padding: 0 1;
 }
 
 #copy_overlay_selected,
