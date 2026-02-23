@@ -32,6 +32,22 @@ def test_provider_actions_hide_api_key_for_esprit() -> None:
     assert "provider_api_key" not in keys
 
 
+def test_provider_config_marks_opencode_public_when_no_api_key(monkeypatch) -> None:
+    monkeypatch.setattr("esprit.auth.credentials.is_authenticated", lambda: False)
+
+    app = LaunchpadApp()
+    app._account_pool = MagicMock()
+    app._token_store = MagicMock()
+    app._account_pool.account_count.return_value = 0
+    app._token_store.has_credentials.return_value = False
+
+    entries = app._build_provider_entries()
+    opencode_entry = next(entry for entry in entries if entry.key == "provider:opencode")
+
+    assert opencode_entry.label.startswith("●")
+    assert opencode_entry.hint == "public models (no auth)"
+
+
 def test_esprit_callback_does_not_persist_provider_token() -> None:
     app = LaunchpadApp()
     app._account_pool = MagicMock()

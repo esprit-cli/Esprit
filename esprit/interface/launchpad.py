@@ -19,7 +19,7 @@ from esprit.config import Config
 from esprit.llm.config import DEFAULT_MODEL
 from esprit.providers import PROVIDER_NAMES, get_provider_auth
 from esprit.providers.base import AuthMethod, OAuthCredentials
-from esprit.providers.config import AVAILABLE_MODELS
+from esprit.providers.config import AVAILABLE_MODELS, get_public_opencode_models
 from esprit.providers.token_store import TokenStore
 from esprit.providers.account_pool import get_account_pool
 
@@ -621,6 +621,7 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
         current = Config.get("esprit_llm") or DEFAULT_MODEL
         entries: list[_MenuEntry] = []
         query = filter_text.lower().strip()
+        public_opencode_models = get_public_opencode_models(AVAILABLE_MODELS)
 
         # Provider badges and display info
         _BADGES: dict[str, str] = {
@@ -651,6 +652,8 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
                     connected[provider_id] = is_authenticated()
                 except Exception:
                     connected[provider_id] = False
+            elif provider_id == "opencode":
+                connected[provider_id] = self._token_store.has_credentials(provider_id) or bool(public_opencode_models)
             else:
                 connected[provider_id] = self._token_store.has_credentials(provider_id)
 
@@ -666,6 +669,12 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
 
         for provider_id in providers_sorted:
             models = AVAILABLE_MODELS[provider_id]
+            if provider_id == "opencode" and not self._token_store.has_credentials("opencode"):
+                models = [
+                    (model_id, model_name)
+                    for model_id, model_name in models
+                    if model_id in public_opencode_models
+                ]
             badge = _BADGES.get(provider_id, provider_id[:3].upper())
             label = _PROVIDER_LABELS.get(provider_id, provider_id.upper())
 
@@ -681,10 +690,13 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
                 continue
 
             # Provider section header
+            status_hint = f"[{badge}] connected"
+            if provider_id == "opencode" and not self._token_store.has_credentials("opencode"):
+                status_hint = f"[{badge}] public"
             entries.append(_MenuEntry(
                 f"separator:{provider_id}",
                 f"  \u2713 {label}",
-                f"[{badge}] connected",
+                status_hint,
             ))
 
             # Model entries
@@ -702,6 +714,7 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
     def _build_provider_entries(self) -> list[_MenuEntry]:
         provider_order = ["esprit", "antigravity", "opencode", "anthropic", "openai", "google", "github-copilot"]
         entries: list[_MenuEntry] = []
+        public_opencode_models = get_public_opencode_models(AVAILABLE_MODELS)
 
         for provider_id in provider_order:
             provider_name = PROVIDER_NAMES.get(provider_id, provider_id)
@@ -719,6 +732,10 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
                 except Exception:
                     connected = False
                 status = "connected" if connected else "not connected"
+            elif provider_id == "opencode":
+                has_api_key = self._token_store.has_credentials(provider_id)
+                connected = has_api_key or bool(public_opencode_models)
+                status = "connected" if has_api_key else ("public models (no auth)" if connected else "not connected")
             else:
                 connected = self._token_store.has_credentials(provider_id)
                 status = "connected" if connected else "not connected"

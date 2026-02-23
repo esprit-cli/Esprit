@@ -308,6 +308,7 @@ def ensure_provider_configured() -> bool:
     """Check if at least one LLM provider is configured. Return True if ready."""
     from esprit.providers.token_store import TokenStore
     from esprit.providers.account_pool import get_account_pool
+    from esprit.providers.config import has_public_opencode_models, is_public_opencode_model
 
     # Check for direct API key
     if Config.get("llm_api_key"):
@@ -320,6 +321,10 @@ def ensure_provider_configured() -> bool:
             return True
     except ImportError:
         pass
+
+    # OpenCode exposes select no-auth models; allow those without login.
+    if is_public_opencode_model(Config.get("esprit_llm")):
+        return True
 
     # Check for OAuth providers (single-credential)
     token_store = TokenStore()
@@ -336,6 +341,9 @@ def ensure_provider_configured() -> bool:
         if token_store.has_credentials(provider_id):
             return True
 
+    if has_public_opencode_models():
+        return True
+
     return False
 
 
@@ -343,6 +351,7 @@ def _get_configured_providers() -> list[tuple[str, str]]:
     """Return list of (provider_id, detail) for all configured providers."""
     from esprit.providers.token_store import TokenStore
     from esprit.providers.account_pool import get_account_pool
+    from esprit.providers.config import has_public_opencode_models
 
     token_store = TokenStore()
     pool = get_account_pool()
@@ -373,7 +382,14 @@ def _get_configured_providers() -> list[tuple[str, str]]:
             elif token_store.has_credentials(provider_id):
                 result.append((provider_id, "API key"))
         else:
-            if token_store.has_credentials(provider_id):
+            if provider_id == "opencode":
+                if token_store.has_credentials(provider_id):
+                    creds = token_store.get(provider_id)
+                    detail = creds.type.upper() if creds else "configured"
+                    result.append((provider_id, detail))
+                elif has_public_opencode_models():
+                    result.append((provider_id, "Public models (no auth)"))
+            elif token_store.has_credentials(provider_id):
                 creds = token_store.get(provider_id)
                 detail = creds.type.upper() if creds else "configured"
                 result.append((provider_id, detail))
@@ -387,14 +403,24 @@ def _get_configured_providers() -> list[tuple[str, str]]:
 
 def _get_available_models(configured_providers: list[tuple[str, str]]) -> list[tuple[str, str]]:
     """Return list of (model_id, display_name) available from configured providers."""
-    from esprit.providers.config import AVAILABLE_MODELS
+    from esprit.providers.config import AVAILABLE_MODELS, get_public_opencode_models
+    from esprit.providers.token_store import TokenStore
 
     provider_ids = {p[0] for p in configured_providers}
     models = []
+    token_store = TokenStore()
+    public_opencode_models = get_public_opencode_models(AVAILABLE_MODELS)
 
     for provider_id, model_list in AVAILABLE_MODELS.items():
         if provider_id in provider_ids:
-            for model_id, display_name in model_list:
+            models_to_show = model_list
+            if provider_id == "opencode" and not token_store.has_credentials("opencode"):
+                models_to_show = [
+                    (model_id, display_name)
+                    for model_id, display_name in model_list
+                    if model_id in public_opencode_models
+                ]
+            for model_id, display_name in models_to_show:
                 full_id = f"{provider_id}/{model_id}"
                 models.append((full_id, f"{display_name} [{provider_id}]"))
 
@@ -449,7 +475,7 @@ def pre_scan_setup(non_interactive: bool = False) -> bool:
         auth_type = {
             "esprit": "[green]Platform[/]",
             "antigravity": "[green]OAuth[/]",
-            "opencode": "[yellow]API Key[/]",
+            "opencode": "[green]Public[/]" if detail.lower().startswith("public") else "[yellow]API Key[/]",
             "openai": "[green]OAuth[/]" if "@" in detail else "[yellow]API Key[/]",
             "anthropic": "[yellow]API Key[/]",
             "google": "[green]OAuth[/]",

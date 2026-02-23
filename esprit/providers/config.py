@@ -100,6 +100,53 @@ AVAILABLE_MODELS = {
     ],
 }
 
+# Public OpenCode models available without explicit OpenCode credentials.
+# Keep this list conservative: models with explicit "free" markers plus
+# known no-auth models observed in OpenCode CLI.
+_OPENCODE_ALWAYS_PUBLIC_MODELS: frozenset[str] = frozenset(
+    {
+        "gpt-5-nano",
+        "big-pickle",
+    }
+)
+
+
+def get_public_opencode_models(
+    models_by_provider: dict[str, list[tuple[str, str]]] | None = None,
+) -> set[str]:
+    """Return OpenCode model IDs that can be used without provider login."""
+    catalog = models_by_provider or AVAILABLE_MODELS
+    public_models = set(_OPENCODE_ALWAYS_PUBLIC_MODELS)
+
+    for model_id, model_name in catalog.get("opencode", []):
+        if model_id.endswith("-free") or "free" in model_name.lower():
+            public_models.add(model_id)
+
+    return public_models
+
+
+def has_public_opencode_models(
+    models_by_provider: dict[str, list[tuple[str, str]]] | None = None,
+) -> bool:
+    """Check whether at least one public OpenCode model is available."""
+    return bool(get_public_opencode_models(models_by_provider))
+
+
+def is_public_opencode_model(
+    model_name: str | None,
+    models_by_provider: dict[str, list[tuple[str, str]]] | None = None,
+) -> bool:
+    """Check if model is an OpenCode model that supports no-auth access."""
+    if not model_name:
+        return False
+    model_lower = model_name.strip().lower()
+    if "/" not in model_lower:
+        return False
+    provider_id, bare_model = model_lower.split("/", 1)
+    if provider_id not in {"opencode", "zen"}:
+        return False
+    return bare_model in get_public_opencode_models(models_by_provider)
+
 
 class Config:
     """Configuration storage for Esprit CLI."""
@@ -165,6 +212,7 @@ def cmd_config_model(model: str | None = None) -> int:
     token_store = TokenStore()
     pool = get_account_pool()
     config = Config()
+    public_opencode_models = get_public_opencode_models(AVAILABLE_MODELS)
 
     from esprit.providers.constants import MULTI_ACCOUNT_PROVIDERS as _multi_account
 
@@ -187,6 +235,8 @@ def cmd_config_model(model: str | None = None) -> int:
                 # Esprit subscription uses platform credentials, not token store
                 from esprit.auth.credentials import is_authenticated
                 has_creds = is_authenticated()
+            elif provider_id == "opencode":
+                has_creds = token_store.has_credentials(provider_id) or bool(public_opencode_models)
             else:
                 has_creds = token_store.has_credentials(provider_id)
             if has_creds:
@@ -198,6 +248,9 @@ def cmd_config_model(model: str | None = None) -> int:
         for provider_id, models in connected_providers:
             if provider_id == "esprit":
                 auth_type = "PLATFORM"
+            elif provider_id == "opencode":
+                creds = token_store.get(provider_id)
+                auth_type = creds.type.upper() if creds else "PUBLIC"
             else:
                 creds = token_store.get(provider_id)
                 auth_type = creds.type.upper() if creds else "OAUTH"
@@ -210,13 +263,22 @@ def cmd_config_model(model: str | None = None) -> int:
                 "opencode": "OPENCODE ZEN",
                 "github-copilot": "GITHUB COPILOT",
             }.get(provider_id, provider_id.upper())
-            console.print(f"  [bold green]●[/] [bold cyan]{provider_label}[/] [dim]({auth_type} connected)[/]")
-            for model_id, model_name in models:
+            connection_hint = f"{auth_type} connected" if auth_type != "PUBLIC" else "PUBLIC no-auth"
+            console.print(f"  [bold green]●[/] [bold cyan]{provider_label}[/] [dim]({connection_hint})[/]")
+            models_to_show = models
+            if provider_id == "opencode" and not token_store.has_credentials("opencode"):
+                models_to_show = [
+                    (model_id, model_name)
+                    for model_id, model_name in models
+                    if model_id in public_opencode_models
+                ]
+            for model_id, model_name in models_to_show:
                 full_model = f"{provider_id}/{model_id}"
                 available_options.append(full_model)
                 console.print(f"    [bold]{option_num}.[/] {model_name} [dim]({model_id})[/]")
                 option_num += 1
-            console.print()
+            if models_to_show:
+                console.print()
 
         # Show disconnected providers (greyed out)
         if disconnected_providers:
