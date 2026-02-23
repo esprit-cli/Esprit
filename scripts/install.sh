@@ -184,7 +184,7 @@ check_docker() {
         echo -e "${MUTED}Alternatively, use ${NC}Esprit Cloud${MUTED} — no Docker needed:${NC}"
         echo -e "  ${MUTED}esprit provider login esprit${NC}"
         echo ""
-        return 1
+        return 0
     fi
 
     if ! docker info >/dev/null 2>&1; then
@@ -192,7 +192,7 @@ check_docker() {
         echo -e "${MUTED}Start Docker for local mode, or use Esprit Cloud instead:${NC}"
         echo -e "  ${MUTED}esprit provider login esprit${NC}"
         echo ""
-        return 1
+        return 0
     fi
 
     echo -e "${MUTED}Checking for sandbox image...${NC}"
