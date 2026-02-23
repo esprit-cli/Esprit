@@ -2,6 +2,7 @@ import json
 from importlib import import_module
 from pathlib import Path
 
+
 provider_config = import_module("esprit.providers.config")
 
 
@@ -14,6 +15,7 @@ def test_get_available_models_merges_supported_opencode_routes(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
+    monkeypatch.setattr(provider_config, "_get_cached_opencode_live_model_ids", lambda: set())
     config_path = tmp_path / "opencode.json"
     _write_opencode_config(
         config_path,
@@ -38,6 +40,7 @@ def test_get_available_models_maps_google_antigravity_routes(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
+    monkeypatch.setattr(provider_config, "_get_cached_opencode_live_model_ids", lambda: set())
     config_path = tmp_path / "opencode.json"
     _write_opencode_config(
         config_path,
@@ -63,6 +66,7 @@ def test_get_available_models_ignores_invalid_opencode_config(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
+    monkeypatch.setattr(provider_config, "_get_cached_opencode_live_model_ids", lambda: set())
     config_path = tmp_path / "opencode.json"
     config_path.write_text("{invalid json", encoding="utf-8")
 
@@ -70,3 +74,30 @@ def test_get_available_models_ignores_invalid_opencode_config(
     models = provider_config.get_available_models()
 
     assert models["opencode"] == provider_config.AVAILABLE_MODELS["opencode"]
+
+
+def test_get_available_models_merges_live_opencode_models(monkeypatch) -> None:
+    monkeypatch.setattr(provider_config, "_load_opencode_route_models", dict)
+    monkeypatch.setattr(
+        provider_config,
+        "_get_cached_opencode_live_model_ids",
+        lambda: {"fresh-free-model", "gpt-5.2"},
+    )
+
+    models = provider_config.get_available_models()
+    opencode_models = models["opencode"]
+
+    assert ("fresh-free-model", "fresh-free-model [OpenCode live]") in opencode_models
+    assert sum(1 for model_id, _ in opencode_models if model_id == "gpt-5.2") == 1
+
+
+def test_get_public_opencode_models_includes_live_free_ids(monkeypatch) -> None:
+    monkeypatch.setattr(
+        provider_config,
+        "_get_cached_opencode_live_model_ids",
+        lambda: {"latest-free", "latest-paid"},
+    )
+    public_models = provider_config.get_public_opencode_models({"opencode": []})
+
+    assert "latest-free" in public_models
+    assert "latest-paid" not in public_models

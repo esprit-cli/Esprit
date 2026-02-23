@@ -6,9 +6,11 @@ Stores user preferences like default model, etc.
 
 import json
 import os
+import time
 from pathlib import Path
 from typing import Any
 
+import httpx
 from rich.console import Console
 from rich.prompt import Prompt
 from rich.table import Table
@@ -115,6 +117,61 @@ _OPENCODE_PROVIDER_ALIASES: dict[str, str] = {
     "codex": "openai",
 }
 
+_OPENCODE_MODELS_CACHE_TTL_SECONDS = 300.0
+_opencode_models_cache: dict[str, Any] = {
+    "expires_at": 0.0,
+    "model_ids": frozenset(),
+}
+
+
+def _opencode_models_endpoint() -> str:
+    base = (
+        os.environ.get("OPENCODE_BASE_URL")
+        or os.environ.get("OPENCODE_API_BASE")
+        or "https://opencode.ai/zen/v1"
+    )
+    return f"{base.rstrip('/')}/models"
+
+
+def _fetch_opencode_live_model_ids(timeout_seconds: float = 2.0) -> set[str]:
+    """Fetch live OpenCode model IDs from the OpenAI-compatible /models endpoint."""
+    # Avoid network during unit tests unless explicitly requested.
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return set()
+
+    try:
+        response = httpx.get(_opencode_models_endpoint(), timeout=timeout_seconds)
+        response.raise_for_status()
+        payload = response.json()
+    except (httpx.HTTPError, ValueError, TypeError):
+        return set()
+
+    data = payload.get("data")
+    if not isinstance(data, list):
+        return set()
+
+    model_ids: set[str] = set()
+    for item in data:
+        if not isinstance(item, dict):
+            continue
+        raw_model_id = item.get("id")
+        if isinstance(raw_model_id, str) and raw_model_id.strip():
+            model_ids.add(raw_model_id.strip().lower())
+
+    return model_ids
+
+
+def _get_cached_opencode_live_model_ids() -> set[str]:
+    """Return cached live OpenCode model IDs, refreshing periodically."""
+    now = time.monotonic()
+    if _opencode_models_cache["expires_at"] > now:
+        return set(_opencode_models_cache["model_ids"])
+
+    model_ids = _fetch_opencode_live_model_ids()
+    _opencode_models_cache["expires_at"] = now + _OPENCODE_MODELS_CACHE_TTL_SECONDS
+    _opencode_models_cache["model_ids"] = frozenset(model_ids)
+    return model_ids
+
 
 def get_opencode_config_path() -> Path:
     """Resolve opencode.json path following XDG_CONFIG_HOME."""
@@ -197,6 +254,16 @@ def get_available_models() -> dict[str, list[tuple[str, str]]]:
             merged.setdefault(provider_id, []).append((model_id, model_name))
             existing_ids.add(model_id)
 
+    # Keep OpenCode catalog fresh with live IDs exposed by /models.
+    live_opencode_model_ids = _get_cached_opencode_live_model_ids()
+    if live_opencode_model_ids:
+        existing_ids = {model_id for model_id, _ in merged.get("opencode", [])}
+        for model_id in sorted(live_opencode_model_ids):
+            if model_id in existing_ids:
+                continue
+            merged.setdefault("opencode", []).append((model_id, f"{model_id} [OpenCode live]"))
+            existing_ids.add(model_id)
+
     return merged
 
 
@@ -209,6 +276,10 @@ def get_public_opencode_models(
 
     for model_id, model_name in catalog.get("opencode", []):
         if model_id.endswith("-free") or "free" in model_name.lower():
+            public_models.add(model_id)
+
+    for model_id in _get_cached_opencode_live_model_ids():
+        if model_id.endswith("-free"):
             public_models.add(model_id)
 
     return public_models
