@@ -700,7 +700,7 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
         return entries
 
     def _build_provider_entries(self) -> list[_MenuEntry]:
-        provider_order = ["antigravity", "opencode", "anthropic", "openai", "google", "github-copilot"]
+        provider_order = ["esprit", "antigravity", "opencode", "anthropic", "openai", "google", "github-copilot"]
         entries: list[_MenuEntry] = []
 
         for provider_id in provider_order:
@@ -712,6 +712,13 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
                     status = f"{count} account{'s' if count != 1 else ''}"
                 else:
                     status = "not connected"
+            elif provider_id == "esprit":
+                try:
+                    from esprit.auth.credentials import is_authenticated as is_esprit_authenticated
+                    connected = is_esprit_authenticated()
+                except Exception:
+                    connected = False
+                status = "connected" if connected else "not connected"
             else:
                 connected = self._token_store.has_credentials(provider_id)
                 status = "connected" if connected else "not connected"
@@ -726,7 +733,7 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
     def _build_provider_action_entries(self) -> list[_MenuEntry]:
         provider_id = self._selected_provider_id or ""
         entries = [_MenuEntry("provider_oauth", "Connect via OAuth")]
-        if provider_id != "github-copilot":
+        if provider_id not in {"github-copilot", "esprit"}:
             entries.append(_MenuEntry("provider_api_key", "Set API Key"))
         entries.append(_MenuEntry("provider_logout", "Logout"))
         entries.append(_MenuEntry("back", "\u2190 Back"))
@@ -1131,6 +1138,21 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
                     self._set_status(f"Removed {len(accounts)} account(s) from {PROVIDER_NAMES.get(provider_id, provider_id)}")
                 else:
                     self._set_status("No credentials to remove")
+            elif provider_id == "esprit":
+                try:
+                    from esprit.auth.credentials import (
+                        clear_credentials,
+                        is_authenticated as is_esprit_authenticated,
+                    )
+
+                    if is_esprit_authenticated():
+                        clear_credentials()
+                        self._token_store.delete("esprit")
+                        self._set_status(f"Logged out from {PROVIDER_NAMES.get(provider_id, provider_id)}")
+                    else:
+                        self._set_status("No credentials to remove")
+                except Exception:
+                    self._set_status("Failed to clear Esprit credentials")
             elif self._token_store.delete(provider_id):
                 self._set_status(f"Logged out from {PROVIDER_NAMES.get(provider_id, provider_id)}")
             else:
@@ -1199,7 +1221,9 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
                 callback_result.credentials.extra["email"] = email
                 self._account_pool.add_account(provider_id, callback_result.credentials, email)
             else:
-                self._token_store.set(provider_id, callback_result.credentials)
+                # Esprit stores platform credentials outside provider token store.
+                if provider_id != "esprit":
+                    self._token_store.set(provider_id, callback_result.credentials)
         self._set_status(f"Connected {PROVIDER_NAMES.get(provider_id, provider_id)}")
         self._set_view("provider", push=False)
 
