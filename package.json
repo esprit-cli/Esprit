@@ -1,5 +1,5 @@
 {
-  "name": "@dekai/esprit",
+  "name": "esprit-cli",
   "version": "0.7.0",
   "description": "AI-powered penetration testing agent",
   "license": "Apache-2.0",
