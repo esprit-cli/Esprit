@@ -115,7 +115,7 @@ class AgentState(BaseModel):
     def is_approaching_max_iterations(self, threshold: float = 0.85) -> bool:
         return self.iteration >= int(self.max_iterations * threshold)
 
-    def has_waiting_timeout(self, timeout_seconds: float = 600.0) -> bool:
+    def has_waiting_timeout(self) -> bool:
         if not self.waiting_for_input or not self.waiting_start_time:
             return False
 
@@ -128,7 +128,7 @@ class AgentState(BaseModel):
             return False
 
         elapsed = (datetime.now(UTC) - self.waiting_start_time).total_seconds()
-        return elapsed > timeout_seconds
+        return elapsed > 600
 
     def has_empty_last_messages(self, count: int = 3) -> bool:
         if len(self.messages) < count:
