@@ -84,6 +84,14 @@ class TestWaitingResumePolicy:
 
         assert state.has_waiting_timeout() is False
 
+    def test_waiting_timeout_uses_custom_seconds(self) -> None:
+        state = AgentState(parent_id="agent_parent")
+        state.enter_waiting_state(llm_failed=False)
+        state.waiting_start_time = datetime.now(UTC) - timedelta(seconds=90)
+
+        assert state.has_waiting_timeout(timeout_seconds=60.0) is True
+        assert state.has_waiting_timeout(timeout_seconds=120.0) is False
+
 
 class TestLLMAutoResumePolicy:
     @staticmethod
@@ -127,6 +135,15 @@ class TestLLMAutoResumePolicy:
         agent = self._make_agent_for_waiting_checks(state)
 
         assert agent._should_auto_resume_llm_failure() is False
+
+    def test_root_agent_can_auto_resume_when_enabled(self) -> None:
+        state = AgentState(parent_id=None)
+        state.enter_waiting_state(llm_failed=True)
+        state.waiting_start_time = datetime.now(UTC) - timedelta(seconds=20)
+        agent = self._make_agent_for_waiting_checks(state)
+        agent._allow_root_llm_auto_resume = True
+
+        assert agent._should_auto_resume_llm_failure() is True
 
     def test_auto_resume_respects_attempt_cap(self) -> None:
         state = AgentState(parent_id="agent_parent")

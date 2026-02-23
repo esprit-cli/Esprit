@@ -55,6 +55,8 @@ class BaseAgent(metaclass=AgentMeta):
     agent_name: str = ""
     jinja_env: Environment
     default_llm_config: LLMConfig | None = None
+    _DEFAULT_WAITING_TIMEOUT_SECONDS = 600.0
+    _DEFAULT_QUICK_WAITING_TIMEOUT_SECONDS = 120.0
     _DEFAULT_LLM_AUTO_RESUME_ATTEMPTS = 2
     _DEFAULT_LLM_AUTO_RESUME_COOLDOWN_SECONDS = 12.0
     _RETRYABLE_LLM_STATUS_CODES = {408, 409, 425, 429, 500, 502, 503, 504}
@@ -107,6 +109,35 @@ class BaseAgent(metaclass=AgentMeta):
             )
         except (TypeError, ValueError):
             self._llm_auto_resume_cooldown = self._DEFAULT_LLM_AUTO_RESUME_COOLDOWN_SECONDS
+
+        waiting_timeout = config.get("waiting_timeout_seconds")
+        if waiting_timeout is None:
+            waiting_timeout = Config.get("esprit_waiting_timeout_seconds")
+
+        default_waiting_timeout = (
+            self._DEFAULT_QUICK_WAITING_TIMEOUT_SECONDS
+            if getattr(self.llm_config, "scan_mode", "") == "quick"
+            else self._DEFAULT_WAITING_TIMEOUT_SECONDS
+        )
+        try:
+            self._waiting_timeout_seconds = max(
+                5.0,
+                float(waiting_timeout or default_waiting_timeout),
+            )
+        except (TypeError, ValueError):
+            self._waiting_timeout_seconds = default_waiting_timeout
+
+        allow_root_auto_resume = config.get("allow_root_llm_auto_resume")
+        if allow_root_auto_resume is None:
+            allow_root_auto_resume = Config.get("esprit_allow_root_llm_auto_resume")
+        if allow_root_auto_resume is None:
+            self._allow_root_llm_auto_resume = getattr(self.llm_config, "scan_mode", "") == "quick"
+        elif isinstance(allow_root_auto_resume, bool):
+            self._allow_root_llm_auto_resume = allow_root_auto_resume
+        else:
+            normalized = str(allow_root_auto_resume).strip().lower()
+            self._allow_root_llm_auto_resume = normalized in {"1", "true", "yes", "on"}
+
         self._llm_auto_resume_attempts = 0
         self._last_llm_failure_retryable = False
         self._last_llm_error_status_code: int | None = None
@@ -309,7 +340,7 @@ class BaseAgent(metaclass=AgentMeta):
             self._mark_agent_running()
             return
 
-        if self.state.has_waiting_timeout():
+        if self.state.has_waiting_timeout(self._waiting_timeout_seconds):
             self.state.resume_from_waiting()
             self.state.add_message("user", "Waiting timeout reached. Resuming execution.")
             self._mark_agent_running()
@@ -372,7 +403,7 @@ class BaseAgent(metaclass=AgentMeta):
     def _should_auto_resume_llm_failure(self) -> bool:
         if not self.state.is_waiting_for_input() or not self.state.llm_failed:
             return False
-        if not self.state.parent_id:
+        if not self.state.parent_id and not getattr(self, "_allow_root_llm_auto_resume", False):
             return False
         if not self._last_llm_failure_retryable:
             return False
