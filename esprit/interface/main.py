@@ -595,8 +595,6 @@ async def warm_up_llm() -> None:
 
     try:
         model_name = Config.get("esprit_llm") or DEFAULT_MODEL
-        api_key = Config.get("llm_api_key")
-        api_base = resolve_api_base(model_name)
 
         # Codex OAuth models use a non-standard API — skip warm-up test
         model_lower = model_name.lower() if model_name else ""
@@ -624,50 +622,98 @@ async def warm_up_llm() -> None:
             console.print("[dim]Antigravity configured — skipping warm-up test[/]")
             return
 
-        # If no direct API key, check OAuth providers
-        if not api_key:
-            oauth_key = get_provider_api_key(model_name)
-            if oauth_key:
-                api_key = oauth_key
-
         test_messages = [
             {"role": "system", "content": "You are a helpful assistant."},
             {"role": "user", "content": "Reply with just 'OK'."},
         ]
-
         llm_timeout = int(Config.get("llm_timeout") or "300")
 
-        completion_kwargs: dict[str, Any] = {
-            "model": model_name,
-            "messages": test_messages,
-            "timeout": llm_timeout,
-        }
+        def _build_completion_kwargs(candidate_model: str) -> dict[str, Any]:
+            api_key = Config.get("llm_api_key")
+            if not api_key:
+                oauth_key = get_provider_api_key(candidate_model)
+                if oauth_key:
+                    api_key = oauth_key
 
-        # Translate google/ → gemini/ for litellm compatibility
-        if model_name and model_name.lower().startswith("google/"):
-            completion_kwargs["model"] = "gemini/" + model_name.split("/", 1)[1]
-        # OpenCode Zen is OpenAI-compatible; use openai/ for litellm routing.
-        if model_name and (
-            model_name.lower().startswith("opencode/")
-            or model_name.lower().startswith("zen/")
-        ):
-            completion_kwargs["model"] = "openai/" + model_name.split("/", 1)[1]
-        if api_key:
-            completion_kwargs["api_key"] = api_key
-        if api_base:
-            completion_kwargs["api_base"] = api_base
-
-        # Add provider-specific headers (OAuth + no-auth OpenCode overrides)
-        extra_headers = get_provider_headers(model_name)
-        if extra_headers:
-            completion_kwargs["extra_headers"] = {
-                **completion_kwargs.get("extra_headers", {}),
-                **extra_headers,
+            completion_kwargs: dict[str, Any] = {
+                "model": candidate_model,
+                "messages": test_messages,
+                "timeout": llm_timeout,
             }
 
-        response = litellm.completion(**completion_kwargs)
+            # Translate google/ → gemini/ for litellm compatibility
+            if candidate_model.lower().startswith("google/"):
+                completion_kwargs["model"] = "gemini/" + candidate_model.split("/", 1)[1]
+            # OpenCode Zen is OpenAI-compatible; use openai/ for litellm routing.
+            if candidate_model.lower().startswith(("opencode/", "zen/")):
+                completion_kwargs["model"] = "openai/" + candidate_model.split("/", 1)[1]
 
-        validate_llm_response(response)
+            if api_key:
+                completion_kwargs["api_key"] = api_key
+
+            api_base = resolve_api_base(candidate_model)
+            if api_base:
+                completion_kwargs["api_base"] = api_base
+
+            extra_headers = get_provider_headers(candidate_model)
+            if extra_headers:
+                completion_kwargs["extra_headers"] = {
+                    **completion_kwargs.get("extra_headers", {}),
+                    **extra_headers,
+                }
+
+            return completion_kwargs
+
+        def _warm_up_once(candidate_model: str) -> None:
+            response = litellm.completion(**_build_completion_kwargs(candidate_model))
+            validate_llm_response(response)
+
+        try:
+            _warm_up_once(model_name)
+            return
+        except Exception as primary_error:
+            primary_error_text = str(primary_error)
+            if model_lower.startswith(("opencode/", "zen/")):
+                from esprit.providers.config import get_available_models, get_public_opencode_models
+
+                preferred_free_models = [
+                    "minimax-m2.5-free",
+                    "kimi-k2.5-free",
+                    "gpt-5-nano",
+                    "minimax-m2.1-free",
+                    "trinity-large-preview-free",
+                ]
+                catalog = get_available_models()
+                public_models = get_public_opencode_models(catalog)
+                bare_model = model_name.split("/", 1)[1] if "/" in model_name else model_name
+
+                fallback_bare_models = [
+                    model_id for model_id in preferred_free_models
+                    if model_id in public_models and model_id != bare_model
+                ]
+                fallback_bare_models.extend(
+                    sorted(
+                        model_id
+                        for model_id in public_models
+                        if model_id not in fallback_bare_models and model_id != bare_model
+                    )
+                )
+
+                for fallback_bare in fallback_bare_models:
+                    fallback_model = f"opencode/{fallback_bare}"
+                    try:
+                        _warm_up_once(fallback_model)
+                    except Exception:
+                        continue
+
+                    os.environ["ESPRIT_LLM"] = fallback_model
+                    console.print(
+                        f"[yellow]OpenCode model unavailable:[/] [dim]{model_name}[/] "
+                        f"[yellow]→ switched to[/] [bold]{fallback_model}[/]"
+                    )
+                    return
+
+            raise Exception(primary_error_text) from primary_error
 
     except Exception as e:  # noqa: BLE001
         error_text = Text()
