@@ -11,7 +11,7 @@ Esprit is an autonomous security assessment tool that uses AI agents to perform 
 ### Option 1: Install with curl
 
 ```bash
-curl -fsSL https://esprit.dev/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/improdead/Esprit/main/scripts/install.sh | bash
 ```
 
 ### Option 2: Homebrew
