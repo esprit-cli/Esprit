@@ -15,6 +15,7 @@ import httpx
 
 from esprit.providers import get_provider_auth, PROVIDERS
 from esprit.providers.base import OAuthCredentials
+from esprit.providers.config import is_public_opencode_model
 from esprit.providers.token_store import TokenStore
 from esprit.providers.account_pool import AccountPool, get_account_pool
 from esprit.providers.constants import MULTI_ACCOUNT_PROVIDERS
@@ -253,6 +254,10 @@ def get_provider_api_key(model_name: str) -> str | None:
     
     credentials = client.get_credentials(provider_id)
     if not credentials:
+        # OpenCode public models can run without user credentials, but LiteLLM's
+        # openai adapter requires api_key to be present.
+        if provider_id == "opencode" and is_public_opencode_model(model_name):
+            return "opencode-public-noauth"
         return None
     
     if credentials.type == "api":

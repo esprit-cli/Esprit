@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from esprit.providers.base import OAuthCredentials
-from esprit.providers.litellm_integration import ProviderAuthClient
+from esprit.providers.litellm_integration import ProviderAuthClient, get_provider_api_key
 
 
 @pytest.fixture
@@ -134,3 +134,27 @@ class TestHasOAuthCredentials:
         client.token_store = MagicMock()
         client.token_store.get.return_value = None
         assert client.has_oauth_credentials("anthropic") is False
+
+
+class TestGetProviderApiKey:
+    def test_public_opencode_without_credentials_returns_placeholder(self) -> None:
+        mock_client = MagicMock()
+        mock_client.detect_provider.return_value = "opencode"
+        mock_client.get_credentials.return_value = None
+
+        with (
+            patch("esprit.providers.litellm_integration.get_auth_client", return_value=mock_client),
+            patch("esprit.providers.litellm_integration.is_public_opencode_model", return_value=True),
+        ):
+            assert get_provider_api_key("opencode/minimax-m2.5-free") == "opencode-public-noauth"
+
+    def test_non_public_opencode_without_credentials_returns_none(self) -> None:
+        mock_client = MagicMock()
+        mock_client.detect_provider.return_value = "opencode"
+        mock_client.get_credentials.return_value = None
+
+        with (
+            patch("esprit.providers.litellm_integration.get_auth_client", return_value=mock_client),
+            patch("esprit.providers.litellm_integration.is_public_opencode_model", return_value=False),
+        ):
+            assert get_provider_api_key("opencode/gpt-5.2-codex") is None
