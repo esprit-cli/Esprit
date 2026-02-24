@@ -91,7 +91,7 @@ def test_pull_docker_image_retries_with_amd64_on_arm_manifest_mismatch() -> None
 def test_pull_docker_image_exits_without_fallback_on_non_arm_host() -> None:
     client = MagicMock()
     client.api.pull.side_effect = interface_main.DockerException(
-        "no matching manifest for linux/arm64/v8 in the manifest list entries"
+        "no matching manifest for linux/amd64 in the manifest list entries"
     )
 
     console = MagicMock()
@@ -112,7 +112,6 @@ def test_pull_docker_image_exits_without_fallback_on_non_arm_host() -> None:
         patch("esprit.interface.main.Console", return_value=console),
         patch("esprit.interface.main.check_docker_connection", return_value=client),
         patch("esprit.interface.main.image_exists", return_value=False),
-        patch("esprit.interface.main.platform.machine", return_value="x86_64"),
         patch("esprit.interface.main.Config.get", side_effect=config_get),
         patch("esprit.interface.main.sys.exit", side_effect=SystemExit(1)),
     ):

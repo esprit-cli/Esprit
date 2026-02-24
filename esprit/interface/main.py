@@ -1154,9 +1154,11 @@ def pull_docker_image() -> None:
         except DockerException as e:
             pull_error = e
             error_text = str(e).lower()
-            is_arm_host = platform.machine().lower() in {"arm64", "aarch64"}
-            missing_arm_manifest = "manifest" in error_text and "arm64" in error_text
-            can_fallback = preferred_platform is None and is_arm_host and missing_arm_manifest
+            manifest_mismatch = "no matching manifest" in error_text or (
+                "manifest list entries" in error_text and "no match for platform" in error_text
+            )
+            missing_arm_manifest = manifest_mismatch and "arm64" in error_text
+            can_fallback = preferred_platform is None and missing_arm_manifest
 
             if can_fallback:
                 fallback_platform = "linux/amd64"
