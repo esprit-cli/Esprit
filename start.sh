@@ -32,7 +32,7 @@ for local_python in "$SCRIPT_DIR"/.venv*/bin/python "$SCRIPT_DIR"/.venv/bin/pyth
   if [ -x "$local_python" ]; then
     if PYTHONPATH="$SCRIPT_DIR" "$local_python" -c "import esprit.interface.main" >/dev/null 2>&1; then
       _debug_start "using local venv python: $local_python"
-      exec env PYTHONPATH="$SCRIPT_DIR" "$local_python" -m esprit.interface.main "$@"
+      exec env PYTHONPATH="$SCRIPT_DIR" "$local_python" -c "from esprit.interface.main import main; raise SystemExit(main())" "$@"
     fi
   fi
 done
@@ -44,7 +44,7 @@ if [ -f pyproject.toml ]; then
     if command -v "$py" >/dev/null 2>&1; then
       if PYTHONPATH="$SCRIPT_DIR" "$py" -c "import esprit.interface.main" >/dev/null 2>&1; then
         _debug_start "using local source python: $py"
-        exec env PYTHONPATH="$SCRIPT_DIR" "$py" -m esprit.interface.main "$@"
+        exec env PYTHONPATH="$SCRIPT_DIR" "$py" -c "from esprit.interface.main import main; raise SystemExit(main())" "$@"
       fi
     fi
   done
