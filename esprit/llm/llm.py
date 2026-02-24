@@ -608,7 +608,7 @@ class LLM:
                 # provider which has auth-file bugs with external tokens.
                 if "codex" in model_lower:
                     bare_model = self.config.model_name.split("/", 1)[-1]
-                    args["model"] = bare_model
+                    args["model"] = f"openai/{bare_model}"
                     args["api_key"] = provider_api_key or "oauth-auth"
                 else:
                     args["api_key"] = provider_api_key or "oauth-auth"

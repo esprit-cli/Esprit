@@ -344,3 +344,25 @@ class TestOpenCodePublicFallback:
 
         assert llm._try_opencode_model_fallback(err) is False
         assert llm.config.model_name == "opencode/gpt-5.2-codex"
+
+
+class TestBuildCompletionArgs:
+    @pytest.mark.parametrize("configured_model", ["openai/codex-5.3", "codex-5.3"])
+    def test_codex_oauth_forces_openai_prefix(
+        self, monkeypatch: pytest.MonkeyPatch, configured_model: str
+    ) -> None:
+        llm = LLM.__new__(LLM)
+        llm.config = SimpleNamespace(model_name=configured_model, timeout=120)
+
+        monkeypatch.setattr(LLM, "_supports_vision", lambda self: True)
+        monkeypatch.setattr(LLM, "_supports_reasoning", lambda self: False)
+        monkeypatch.setattr("esprit.llm.llm.PROVIDERS_AVAILABLE", True, raising=False)
+        monkeypatch.setattr("esprit.llm.llm.get_provider_api_key", lambda _model: "oauth-token")
+        monkeypatch.setattr("esprit.llm.llm.get_provider_headers", lambda _model: {})
+        monkeypatch.setattr("esprit.llm.llm.should_use_oauth", lambda _model: True)
+        monkeypatch.setattr("esprit.llm.llm.resolve_api_base", lambda _model: None)
+
+        args = llm._build_completion_args([{"role": "user", "content": "hi"}])
+
+        assert args["model"] == "openai/codex-5.3"
+        assert args["api_key"] == "oauth-token"
