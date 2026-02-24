@@ -50,6 +50,8 @@ class LLMGenerateRequest(BaseModel):
     temperature: float = 0.7
     max_tokens: int = 4096
     scan_id: str | None = None  # For usage tracking
+    tools: list[dict] | None = None
+    reasoning_effort: str | None = None
 
 
 class LLMGenerateResponse(BaseModel):
@@ -59,6 +61,8 @@ class LLMGenerateResponse(BaseModel):
     model: str
     tokens_used: int
     finish_reason: str | None = None
+    tool_calls: list[dict] | None = None
+    thinking_blocks: list[dict] | None = None
 
 
 # Usage Schemas

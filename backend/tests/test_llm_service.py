@@ -19,7 +19,24 @@ async def test_generate_routes_default_alias_to_bedrock(monkeypatch: pytest.Monk
     async def fake_acompletion(**kwargs: object) -> SimpleNamespace:
         captured.update(kwargs)
         return SimpleNamespace(
-            choices=[SimpleNamespace(message=SimpleNamespace(content="ok"), finish_reason="stop")],
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        content="ok",
+                        tool_calls=[
+                            SimpleNamespace(
+                                id="call_1",
+                                type="function",
+                                function=SimpleNamespace(
+                                    name="terminal_execute",
+                                    arguments='{"command":"ls"}',
+                                ),
+                            )
+                        ],
+                    ),
+                    finish_reason="stop",
+                )
+            ],
             usage=SimpleNamespace(total_tokens=10),
         )
 
@@ -32,6 +49,39 @@ async def test_generate_routes_default_alias_to_bedrock(monkeypatch: pytest.Monk
     assert response.model == "us.anthropic.claude-haiku-4-5-20251001-v1:0"
     assert captured["model"] == "bedrock/us.anthropic.claude-haiku-4-5-20251001-v1:0"
     assert response.tokens_used == 10
+    assert response.tool_calls == [
+        {
+            "id": "call_1",
+            "type": "function",
+            "function": {"name": "terminal_execute", "arguments": '{"command":"ls"}'},
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_generate_forwards_tools_and_reasoning(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, object] = {}
+
+    async def fake_acompletion(**kwargs: object) -> SimpleNamespace:
+        captured.update(kwargs)
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="ok"), finish_reason="stop")],
+            usage=SimpleNamespace(total_tokens=2),
+        )
+
+    monkeypatch.setattr(llm_service_module, "acompletion", fake_acompletion)
+
+    service = LLMService()
+    request = LLMGenerateRequest(
+        messages=[{"role": "user", "content": "hello"}],
+        model="default",
+        tools=[{"type": "function", "function": {"name": "terminal_execute", "parameters": {"type": "object"}}}],
+        reasoning_effort="high",
+    )
+    await service.generate(request, user_id="u1", provider_hint="bedrock")
+
+    assert "tools" in captured
+    assert captured["reasoning_effort"] == "high"
 
 
 @pytest.mark.asyncio

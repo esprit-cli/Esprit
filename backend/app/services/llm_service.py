@@ -106,6 +106,66 @@ class LLMService:
             return "".join(chunks)
         return str(content or "")
 
+    def _extract_tool_calls(self, response: Any) -> list[dict[str, Any]] | None:
+        message = response.choices[0].message
+        tool_calls = getattr(message, "tool_calls", None)
+        if not tool_calls:
+            return None
+
+        normalized: list[dict[str, Any]] = []
+        for call in tool_calls:
+            if isinstance(call, dict):
+                normalized.append(call)
+                continue
+
+            entry: dict[str, Any] = {}
+            call_id = getattr(call, "id", None)
+            if isinstance(call_id, str) and call_id:
+                entry["id"] = call_id
+
+            call_type = getattr(call, "type", None)
+            if isinstance(call_type, str) and call_type:
+                entry["type"] = call_type
+
+            function_payload = getattr(call, "function", None)
+            if function_payload is not None:
+                if isinstance(function_payload, dict):
+                    entry["function"] = function_payload
+                else:
+                    fn_name = getattr(function_payload, "name", None)
+                    fn_args = getattr(function_payload, "arguments", None)
+                    fn_data: dict[str, Any] = {}
+                    if isinstance(fn_name, str) and fn_name:
+                        fn_data["name"] = fn_name
+                    if fn_args is not None:
+                        fn_data["arguments"] = fn_args
+                    if fn_data:
+                        entry["function"] = fn_data
+
+            if entry:
+                normalized.append(entry)
+
+        return normalized or None
+
+    def _extract_thinking_blocks(self, response: Any) -> list[dict[str, Any]] | None:
+        message = response.choices[0].message
+        thinking_blocks = getattr(message, "thinking_blocks", None)
+        if isinstance(thinking_blocks, list):
+            normalized = [item for item in thinking_blocks if isinstance(item, dict)]
+            if normalized:
+                return normalized
+
+        content = getattr(message, "content", None)
+        if isinstance(content, list):
+            normalized = [
+                item for item in content
+                if isinstance(item, dict) and item.get("type") in {"thinking", "reasoning", "redacted_thinking"}
+            ]
+            if normalized:
+                return normalized
+
+        return None
+
     def _map_llm_exception(
         self,
         exc: Exception,
@@ -191,6 +251,10 @@ class LLMService:
             "max_tokens": request.max_tokens,
             "aws_region_name": settings.aws_region,
         }
+        if request.tools:
+            completion_args["tools"] = request.tools
+        if request.reasoning_effort:
+            completion_args["reasoning_effort"] = request.reasoning_effort
         if settings.aws_access_key_id and settings.aws_secret_access_key:
             completion_args["aws_access_key_id"] = settings.aws_access_key_id
             completion_args["aws_secret_access_key"] = settings.aws_secret_access_key
@@ -209,6 +273,8 @@ class LLMService:
             raise mapped_error from exc
 
         content = self._extract_content(response)
+        tool_calls = self._extract_tool_calls(response)
+        thinking_blocks = self._extract_thinking_blocks(response)
         tokens_used = response.usage.total_tokens if response.usage else 0
 
         logger.info(
@@ -225,6 +291,8 @@ class LLMService:
             model=bedrock_model,
             tokens_used=tokens_used,
             finish_reason=response.choices[0].finish_reason,
+            tool_calls=tool_calls,
+            thinking_blocks=thinking_blocks,
         )
 
 
