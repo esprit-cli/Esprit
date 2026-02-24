@@ -623,6 +623,13 @@ class LLM:
                 # Codex backend rejects persisted response storage for OAuth calls.
                 if provider_id == "openai":
                     args["store"] = False
+                    extra_body = args.get("extra_body")
+                    if not isinstance(extra_body, dict):
+                        extra_body = {}
+                    # Some LiteLLM paths may only forward custom body fields via
+                    # extra_body; duplicate the flag there for reliability.
+                    extra_body["store"] = False
+                    args["extra_body"] = extra_body
 
         # Fall back to configured API key when provider auth is not active.
         if not use_oauth:

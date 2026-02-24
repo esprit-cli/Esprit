@@ -449,3 +449,4 @@ class TestBuildCompletionArgs:
         args = llm._build_completion_args([{"role": "user", "content": "hi"}])
 
         assert args["store"] is False
+        assert args["extra_body"]["store"] is False

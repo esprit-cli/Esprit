@@ -9,9 +9,11 @@ from esprit.llm.model_routing import to_litellm_model_name
 
 try:
     from esprit.providers.litellm_integration import (
+        get_auth_client,
         get_provider_api_base,
         get_provider_api_key,
         get_provider_headers,
+        should_use_oauth,
     )
 
     PROVIDERS_AVAILABLE = True
@@ -169,6 +171,16 @@ def summarize_messages(
             completion_args["api_base"] = api_base
         if extra_headers:
             completion_args["extra_headers"] = extra_headers
+
+        if PROVIDERS_AVAILABLE:
+            provider_id = get_auth_client().detect_provider(model)
+            if provider_id == "openai" and should_use_oauth(model):
+                completion_args["store"] = False
+                extra_body = completion_args.get("extra_body")
+                if not isinstance(extra_body, dict):
+                    extra_body = {}
+                extra_body["store"] = False
+                completion_args["extra_body"] = extra_body
 
         response = litellm.completion(**completion_args)
         summary = response.choices[0].message.content or ""
