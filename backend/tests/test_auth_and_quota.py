@@ -2,39 +2,93 @@
 
 from __future__ import annotations
 
-from types import SimpleNamespace
+import time
 
 import pytest
 from fastapi import HTTPException
 from fastapi.security import HTTPAuthorizationCredentials
+from jose import jwt
 
 import app.core.auth as auth_module
 from app.services.usage_service import UsageService
 
 
 @pytest.mark.asyncio
-async def test_get_current_user_validates_with_supabase(monkeypatch: pytest.MonkeyPatch) -> None:
-    class FakeAuth:
-        def get_user(self, jwt: str | None = None) -> SimpleNamespace:
-            return SimpleNamespace(user=SimpleNamespace(id="user-1", email="demo@esprit.dev"))
-
-    monkeypatch.setattr(auth_module, "supabase", SimpleNamespace(auth=FakeAuth()))
-
-    creds = HTTPAuthorizationCredentials(scheme="Bearer", credentials="valid.jwt.token")
+async def test_get_current_user_accepts_esprit_cli_token_with_legacy_secret_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(auth_module.settings, "auth_jwt_secret", "")
+    monkeypatch.setattr(auth_module.settings, "supabase_jwt_secret", "")
+    monkeypatch.setattr(
+        auth_module.settings,
+        "supabase_service_key",
+        "legacy-signing-secret-1234567890abcdef.extra",
+    )
+    signing_secret = auth_module.settings.supabase_service_key[:32]
+    token = jwt.encode(
+        {
+            "sub": "user-1",
+            "email": "demo@esprit.dev",
+            "role": "authenticated",
+            "iss": "esprit-cli",
+            "aud": "authenticated",
+            "exp": int(time.time()) + 3600,
+        },
+        key=signing_secret,
+        algorithm="HS256",
+    )
+    creds = HTTPAuthorizationCredentials(scheme="Bearer", credentials=token)
     user = await auth_module.get_current_user(creds)
     assert user.sub == "user-1"
     assert user.email == "demo@esprit.dev"
 
 
 @pytest.mark.asyncio
-async def test_get_current_user_rejects_invalid_token(monkeypatch: pytest.MonkeyPatch) -> None:
-    class FailingAuth:
-        def get_user(self, jwt: str | None = None) -> SimpleNamespace:
-            raise RuntimeError("invalid token")
+async def test_get_current_user_rejects_invalid_signature(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(auth_module.settings, "auth_jwt_secret", "")
+    monkeypatch.setattr(auth_module.settings, "supabase_jwt_secret", "")
+    monkeypatch.setattr(
+        auth_module.settings,
+        "supabase_service_key",
+        "legacy-signing-secret-1234567890abcdef.extra",
+    )
+    token = jwt.encode(
+        {
+            "sub": "user-1",
+            "iss": "esprit-cli",
+            "aud": "authenticated",
+            "exp": int(time.time()) + 3600,
+        },
+        key="wrong-signing-secret",
+        algorithm="HS256",
+    )
+    creds = HTTPAuthorizationCredentials(scheme="Bearer", credentials=token)
+    with pytest.raises(HTTPException) as excinfo:
+        await auth_module.get_current_user(creds)
+    assert excinfo.value.status_code == 401
 
-    monkeypatch.setattr(auth_module, "supabase", SimpleNamespace(auth=FailingAuth()))
 
-    creds = HTTPAuthorizationCredentials(scheme="Bearer", credentials="invalid.jwt.token")
+@pytest.mark.asyncio
+async def test_get_current_user_rejects_expired_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(auth_module.settings, "auth_jwt_secret", "")
+    monkeypatch.setattr(auth_module.settings, "supabase_jwt_secret", "")
+    monkeypatch.setattr(
+        auth_module.settings,
+        "supabase_service_key",
+        "legacy-signing-secret-1234567890abcdef.extra",
+    )
+    signing_secret = auth_module.settings.supabase_service_key[:32]
+    token = jwt.encode(
+        {
+            "sub": "user-1",
+            "iss": "esprit-cli",
+            "aud": "authenticated",
+            "exp": int(time.time()) - 10,
+        },
+        key=signing_secret,
+        algorithm="HS256",
+    )
+    creds = HTTPAuthorizationCredentials(scheme="Bearer", credentials=token)
     with pytest.raises(HTTPException) as excinfo:
         await auth_module.get_current_user(creds)
     assert excinfo.value.status_code == 401

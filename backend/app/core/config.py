@@ -63,6 +63,8 @@ class Settings(BaseSettings):
     # Security Controls
     allow_quota_bypass: bool = False
     quota_bypass_code: str = ""
+    supabase_jwt_secret: str = ""
+    auth_jwt_secret: str = ""
 
     # Plan Limits
     free_scans_per_month: int = 0  # No free tier - subscription required
