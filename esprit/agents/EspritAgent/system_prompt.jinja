@@ -100,6 +100,19 @@ WHITE-BOX TESTING (code provided):
 - Do not stop until all reported vulnerabilities are fixed.
 - Include code diff in final report.
 
+VULNERABILITY REMEDIATION (how to fix code):
+- Use the `str_replace_editor` tool to patch vulnerable code directly in the source files.
+- Use `list_files` to navigate the project structure and locate relevant source files.
+- Use `search_files` to find all occurrences of a vulnerable pattern across the codebase.
+- Remediation workflow for each vulnerability:
+  1. Report the vulnerability first via `create_vulnerability_report` (reporting agent)
+  2. Spawn a Fixing Agent with skills: [remediation, <vuln_type>]
+  3. Fixing Agent reads the vulnerable file with `str_replace_editor` (command="view")
+  4. Fixing Agent applies the fix with `str_replace_editor` (command="str_replace", old_str="vulnerable code", new_str="fixed code")
+  5. Fixing Agent re-runs the exploit — it should no longer succeed
+  6. Fixing Agent calls `agent_finish` with a diff summary
+- NEVER leave a discovered vulnerability unpatched in white-box mode
+
 COMBINED MODE (code + deployed target present):
 - Treat this as static analysis plus dynamic testing simultaneously
 - Use repository/local code at /workspace/<subdir> to accelerate and inform live testing against the URLs/domains
@@ -266,7 +279,10 @@ Spawns "Auth Validation Agent" (proves it's exploitable)
     ↓
 If valid → Spawns "Auth Reporting Agent" (creates vulnerability report)
     ↓
-Spawns "Auth Fixing Agent" (implements secure code fix)
+MANDATORY → Spawns "Auth Fixing Agent" with skills: [remediation, authentication_jwt]
+  - Uses str_replace_editor to patch the vulnerable code
+  - Re-runs the original exploit to confirm it no longer works
+  - Calls agent_finish with the diff summary
 ```
 
 CRITICAL RULES:
@@ -279,6 +295,7 @@ CRITICAL RULES:
 - **ONLY REPORTING AGENTS** can use create_vulnerability_report tool
 - **AGENT SPECIALIZATION MANDATORY** - Each agent must be highly specialized; prefer 1–3 skills, up to 5 for complex contexts
 - **NO GENERIC AGENTS** - Avoid creating broad, multi-purpose agents that dilute focus
+- **WHITE-BOX FIXING IS MANDATORY** - After a Reporting Agent completes in white-box mode, spawn a Fixing Agent with skills [remediation, <vuln_type>] that uses `str_replace_editor` to patch the code and verifies the fix. Do NOT call finish_scan until all fixable vulnerabilities are patched
 
 AGENT SPECIALIZATION EXAMPLES:
 

@@ -15,6 +15,14 @@ NC='\033[0m'
 
 requested_version=${VERSION:-}
 SKIP_DOWNLOAD=false
+FORCE=false
+
+# Parse flags
+for arg in "$@"; do
+  case "$arg" in
+    --force|-f) FORCE=true ;;
+  esac
+done
 
 raw_os=$(uname -s)
 os=$(echo "$raw_os" | tr '[:upper:]' '[:lower:]')
@@ -72,6 +80,10 @@ fi
 
 INSTALL_DIR=$HOME/.esprit/bin
 mkdir -p "$INSTALL_DIR"
+
+# Ensure temp files are cleaned up on interrupt/error
+_cleanup_tmp() { [ -n "${_tmp_dir:-}" ] && rm -rf "$_tmp_dir"; }
+trap _cleanup_tmp EXIT INT TERM HUP
 
 if [ -z "$requested_version" ]; then
     specific_version=$(curl -s "https://api.github.com/repos/$REPO/releases/latest" | sed -n 's/.*"tag_name": *"v\([^"]*\)".*/\1/p')
@@ -135,8 +147,12 @@ check_version() {
     if [[ -x "$INSTALL_DIR/esprit" ]]; then
         installed_version=$("$INSTALL_DIR/esprit" --version 2>/dev/null | awk '{print $2}' || echo "")
         if [[ "$installed_version" == "$specific_version" ]]; then
-            print_message info "${GREEN}✓ Esprit ${NC}$specific_version${GREEN} already installed${NC}"
-            SKIP_DOWNLOAD=true
+            if [ "$FORCE" = true ]; then
+                print_message info "${MUTED}Reinstalling ${NC}$specific_version ${MUTED}(--force)${NC}"
+            else
+                print_message info "${GREEN}✓ Esprit ${NC}$specific_version${GREEN} already installed${NC}"
+                SKIP_DOWNLOAD=true
+            fi
         elif [[ -n "$installed_version" ]]; then
             print_message info "${MUTED}Installed: ${NC}$installed_version ${MUTED}→ Upgrading to ${NC}$specific_version"
         fi
@@ -147,7 +163,8 @@ download_and_install() {
     print_message info "\n${CYAN}Installing Esprit${NC} ${MUTED}version: ${NC}$specific_version"
     print_message info "${MUTED}Platform: ${NC}$target\n"
 
-    local tmp_dir=$(mktemp -d)
+    _tmp_dir=$(mktemp -d)
+    local tmp_dir="$_tmp_dir"
     cd "$tmp_dir"
 
     echo -e "${MUTED}Downloading...${NC}"
@@ -170,6 +187,7 @@ download_and_install() {
 
     cd - > /dev/null
     rm -rf "$tmp_dir"
+    _tmp_dir=""  # prevent double-cleanup from trap
 
     echo -e "${GREEN}✓ Esprit installed to $INSTALL_DIR${NC}"
 }
@@ -195,13 +213,13 @@ check_docker() {
         return 0
     fi
 
-    echo -e "${MUTED}Checking for sandbox image...${NC}"
-    if docker image inspect "$ESPRIT_IMAGE" >/dev/null 2>&1; then
-        echo -e "${GREEN}✓ Sandbox image already available${NC}"
+    echo -e "${MUTED}Checking for sandbox image updates...${NC}"
+    # Always attempt to pull the latest image — even if an older copy exists
+    if docker pull "$ESPRIT_IMAGE" 2>/dev/null; then
+        echo -e "${GREEN}✓ Sandbox image up to date${NC}"
     else
-        echo -e "${MUTED}Pulling sandbox image (this may take a few minutes)...${NC}"
-        if docker pull "$ESPRIT_IMAGE"; then
-            echo -e "${GREEN}✓ Sandbox image pulled successfully${NC}"
+        if docker image inspect "$ESPRIT_IMAGE" >/dev/null 2>&1; then
+            echo -e "${YELLOW}⚠ Could not check for image updates (using cached image)${NC}"
         else
             echo -e "${YELLOW}⚠ Failed to pull sandbox image${NC}"
             echo -e "${MUTED}You can pull it manually later: ${NC}docker pull $ESPRIT_IMAGE"

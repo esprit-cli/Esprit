@@ -389,9 +389,20 @@ def create_agent(
         from esprit.agents.state import AgentState
         from esprit.llm.config import LLMConfig
 
-        state = AgentState(task=task, agent_name=name, parent_id=parent_id, max_iterations=300)
-
         parent_agent = _agent_instances.get(parent_id)
+
+        # Inherit white-box flag from parent agent
+        parent_is_whitebox = False
+        if parent_agent and hasattr(parent_agent, "state"):
+            parent_is_whitebox = getattr(parent_agent.state, "is_whitebox", False)
+
+        state = AgentState(
+            task=task,
+            agent_name=name,
+            parent_id=parent_id,
+            max_iterations=300,
+            is_whitebox=parent_is_whitebox,
+        )
 
         timeout = None
         scan_mode = "deep"

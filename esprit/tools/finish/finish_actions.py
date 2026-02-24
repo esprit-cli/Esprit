@@ -1,6 +1,14 @@
+import logging
 from typing import Any
 
 from esprit.tools.registry import register_tool
+
+logger = logging.getLogger(__name__)
+
+# Track how many times finish_scan has been bounced for remediation.
+# After this many bounces, allow finish_scan through with a warning.
+_MAX_REMEDIATION_BOUNCES = 2
+_remediation_bounce_count: int = 0
 
 
 def _validate_root_agent(agent_state: Any) -> dict[str, Any] | None:
@@ -76,11 +84,72 @@ def _check_active_agents(agent_state: Any = None) -> dict[str, Any] | None:
     except ImportError:
         pass
     except Exception:
-        import logging
-
-        logging.exception("Error checking active agents")
+        logger.exception("Error checking active agents")
 
     return None
+
+
+def _check_remediation_completeness(agent_state: Any) -> dict[str, Any] | None:
+    """In white-box mode, check that reported vulnerabilities have fixing agents."""
+    global _remediation_bounce_count  # noqa: PLW0603
+
+    if not agent_state or not getattr(agent_state, "is_whitebox", False):
+        return None
+
+    try:
+        from esprit.telemetry.tracer import get_global_tracer
+        from esprit.tools.agents_graph.agents_graph_actions import _agent_graph
+
+        tracer = get_global_tracer()
+        if not tracer:
+            return None
+
+        vuln_count = len(tracer.vulnerability_reports)
+        if vuln_count == 0:
+            return None
+
+        # Count completed fixing agents in the agent graph
+        fixing_agents = []
+        for node in _agent_graph["nodes"].values():
+            name = (node.get("name") or "").lower()
+            status = node.get("status", "")
+            if "fix" in name and status == "finished":
+                fixing_agents.append(node)
+
+        if fixing_agents:
+            # At least some fixing agents ran — allow finish
+            return None
+
+        # No fixing agents found — bounce unless we've hit the limit
+        _remediation_bounce_count += 1
+        if _remediation_bounce_count > _MAX_REMEDIATION_BOUNCES:
+            logger.info(
+                "Remediation bounce limit reached (%d), allowing finish_scan",
+                _remediation_bounce_count,
+            )
+            return None
+
+        return {
+            "success": False,
+            "error": "remediation_incomplete",
+            "message": (
+                f"White-box scan has {vuln_count} reported vulnerabilities but no "
+                f"Fixing Agents have been spawned. In white-box mode, you MUST spawn "
+                f"Fixing Agents (with skills: [remediation, <vuln_type>]) to patch the "
+                f"vulnerable code before finishing the scan."
+            ),
+            "suggestions": [
+                'Spawn a Fixing Agent: create_agent(name="<Vuln> Fixing Agent", '
+                'task="Fix <vuln> in <file>", skills="remediation,<vuln_type>")',
+                "Each Fixing Agent should use str_replace_editor to patch the code",
+                "After all Fixing Agents complete, call finish_scan again",
+            ],
+            "vulnerabilities_without_fixes": vuln_count,
+        }
+
+    except (ImportError, AttributeError):
+        logger.debug("Could not check remediation completeness", exc_info=True)
+        return None
 
 
 @register_tool(sandbox_execution=False)
@@ -98,6 +167,10 @@ def finish_scan(
     active_agents_error = _check_active_agents(agent_state)
     if active_agents_error:
         return active_agents_error
+
+    remediation_error = _check_remediation_completeness(agent_state)
+    if remediation_error:
+        return remediation_error
 
     validation_errors = []
 
@@ -134,9 +207,7 @@ def finish_scan(
                 "vulnerabilities_found": vulnerability_count,
             }
 
-        import logging
-
-        logging.warning("Current tracer not available - scan results not stored")
+        logger.warning("Current tracer not available - scan results not stored")
 
     except (ImportError, AttributeError) as e:
         return {"success": False, "message": f"Failed to complete scan: {e!s}"}
