@@ -10,6 +10,12 @@ YELLOW='\033[1;33m'
 CYAN='\033[0;36m'
 NC='\033[0m'
 
+_debug_start() {
+  if [ "${ESPRIT_DEBUG_START:-0}" = "1" ]; then
+    echo -e "${MUTED}[launcher] $*${NC}"
+  fi
+}
+
 # ── Poetry (development / from-source) path ──────────────────────────
 if command -v poetry >/dev/null 2>&1 && [ -f pyproject.toml ]; then
   # Sync dependencies — catches missing/outdated packages (fast no-op when clean)
@@ -22,9 +28,12 @@ if command -v poetry >/dev/null 2>&1 && [ -f pyproject.toml ]; then
 fi
 
 # ── Local venv path ──────────────────────────────────────────────────
-for local_esprit in "$SCRIPT_DIR"/.venv*/bin/esprit "$SCRIPT_DIR"/.venv/bin/esprit; do
-  if [ -x "$local_esprit" ]; then
-    exec "$local_esprit" "$@"
+for local_python in "$SCRIPT_DIR"/.venv*/bin/python "$SCRIPT_DIR"/.venv/bin/python; do
+  if [ -x "$local_python" ]; then
+    if PYTHONPATH="$SCRIPT_DIR" "$local_python" -c "import esprit.interface.main" >/dev/null 2>&1; then
+      _debug_start "using local venv python: $local_python"
+      exec env PYTHONPATH="$SCRIPT_DIR" "$local_python" -m esprit.interface.main "$@"
+    fi
   fi
 done
 
@@ -34,6 +43,7 @@ if [ -f pyproject.toml ]; then
   for py in python3.12 python3.11; do
     if command -v "$py" >/dev/null 2>&1; then
       if PYTHONPATH="$SCRIPT_DIR" "$py" -c "import esprit.interface.main" >/dev/null 2>&1; then
+        _debug_start "using local source python: $py"
         exec env PYTHONPATH="$SCRIPT_DIR" "$py" -m esprit.interface.main "$@"
       fi
     fi
@@ -42,6 +52,10 @@ fi
 
 # ── Node.js (npm install) path ───────────────────────────────────────
 if command -v node >/dev/null 2>&1 && [ -f "$SCRIPT_DIR/bin/esprit.js" ]; then
+  if [ -f "$SCRIPT_DIR/pyproject.toml" ]; then
+    echo -e "${YELLOW}Using npm binary fallback (local Python environment unavailable).${NC}"
+  fi
+  _debug_start "using npm bootstrap binary"
   exec node "$SCRIPT_DIR/bin/esprit.js" "$@"
 fi
 
