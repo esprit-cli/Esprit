@@ -14,6 +14,10 @@ for local_esprit in "$SCRIPT_DIR"/.venv*/bin/esprit "$SCRIPT_DIR"/.venv/bin/espr
   fi
 done
 
+if command -v node >/dev/null 2>&1 && [ -f "$SCRIPT_DIR/bin/esprit.js" ]; then
+  exec node "$SCRIPT_DIR/bin/esprit.js" "$@"
+fi
+
 if command -v esprit >/dev/null 2>&1; then
   exec esprit "$@"
 fi
