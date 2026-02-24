@@ -8,6 +8,12 @@ if command -v poetry >/dev/null 2>&1; then
   exec poetry run esprit "$@"
 fi
 
+for local_esprit in "$SCRIPT_DIR"/.venv*/bin/esprit "$SCRIPT_DIR"/.venv/bin/esprit; do
+  if [ -x "$local_esprit" ]; then
+    exec "$local_esprit" "$@"
+  fi
+done
+
 if command -v esprit >/dev/null 2>&1; then
   exec esprit "$@"
 fi
