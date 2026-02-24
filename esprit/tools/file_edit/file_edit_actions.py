@@ -5,6 +5,11 @@ from typing import Any, cast
 
 from esprit.tools.registry import register_tool
 
+# ── Diff tracking (sandbox-side only) ────────────────────────────
+# Every successful str_replace/create/insert is logged here so the
+# host can retrieve patches before the ephemeral container is torn down.
+_edit_log: list[dict[str, Any]] = []
+
 
 def _parse_file_editor_output(output: str) -> dict[str, Any]:
     try:
@@ -51,6 +56,17 @@ def str_replace_editor(
 
         if parsed.get("error"):
             return {"error": parsed["error"]}
+
+        # Track mutating operations for diff extraction
+        if command in ("str_replace", "create", "insert"):
+            _edit_log.append({
+                "command": command,
+                "path": path,
+                "old_str": old_str,
+                "new_str": new_str,
+                "insert_line": insert_line,
+                "file_text": file_text if command == "create" else None,
+            })
 
         return {"content": parsed.get("output", result)}
 

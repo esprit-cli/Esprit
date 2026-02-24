@@ -28,5 +28,14 @@ class AbstractRuntime(ABC):
     async def destroy_sandbox(self, container_id: str) -> None:
         raise NotImplementedError
 
+    async def get_workspace_diffs(self, container_id: str) -> list[dict[str, object]]:
+        """Retrieve file edits from the sandbox before it is destroyed.
+
+        Returns a list of edit records (command, path, old_str, new_str, etc.).
+        Default implementation returns an empty list for runtimes that don't
+        support diff extraction.
+        """
+        return []
+
     def cleanup(self) -> None:
         raise NotImplementedError

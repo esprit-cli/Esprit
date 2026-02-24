@@ -106,7 +106,11 @@ async def run_cli(args: Any) -> None:  # noqa: PLR0915
     tracer.vulnerability_found_callback = display_vulnerability
 
     def cleanup_on_exit() -> None:
-        from esprit.runtime import cleanup_runtime
+        from esprit.runtime import cleanup_runtime, extract_and_save_diffs
+
+        # Extract file edits from sandbox BEFORE destroying it
+        if hasattr(agent, "state") and agent.state.sandbox_id:
+            extract_and_save_diffs(agent.state.sandbox_id)
 
         tracer.cleanup()
         cleanup_runtime()

@@ -114,6 +114,28 @@ class CloudRuntime(AbstractRuntime):
             return str(sandbox["api_url"])
         return f"{self.api_base}/sandbox/{container_id}"
 
+    async def get_workspace_diffs(self, container_id: str) -> list[dict[str, object]]:
+        """Retrieve file edit log from the cloud sandbox tool server."""
+        sandbox = self._sandboxes.get(container_id, {})
+        api_url = sandbox.get("api_url")
+        auth_token = sandbox.get("auth_token")
+        if not api_url or not auth_token:
+            return []
+        try:
+            async with httpx.AsyncClient(
+                timeout=_DEFAULT_TIMEOUT_SECONDS, trust_env=False
+            ) as client:
+                resp = await client.get(
+                    f"{api_url}/diffs",
+                    headers={"Authorization": f"Bearer {auth_token}"},
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    return list(data.get("edits", []))
+        except (httpx.RequestError, Exception):  # noqa: BLE001
+            pass
+        return []
+
     async def destroy_sandbox(self, container_id: str) -> None:
         try:
             async with httpx.AsyncClient(timeout=_DEFAULT_TIMEOUT_SECONDS, trust_env=False) as client:
