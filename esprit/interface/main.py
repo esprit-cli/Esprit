@@ -13,6 +13,7 @@ import argparse
 import asyncio
 import logging
 import os
+import platform
 import shutil
 import sys
 from pathlib import Path
@@ -1124,44 +1125,80 @@ def display_completion_message(args: argparse.Namespace, results_path: Path) -> 
 def pull_docker_image() -> None:
     console = Console()
     client = check_docker_connection()
+    image_name = Config.get("esprit_image")
+    preferred_platform = (Config.get("esprit_docker_platform") or "").strip() or None
 
-    if image_exists(client, Config.get("esprit_image")):  # type: ignore[arg-type]
+    if image_exists(client, image_name):  # type: ignore[arg-type]
         return
 
     console.print()
-    console.print(f"[dim]Pulling image[/] {Config.get('esprit_image')}")
+    console.print(f"[dim]Pulling image[/] {image_name}")
     console.print("[dim yellow]This only happens on first run and may take a few minutes...[/]")
     console.print()
 
+    def _pull_with_progress(platform_override: str | None = None) -> None:
+        layers_info: dict[str, str] = {}
+        last_update = ""
+        pull_kwargs: dict[str, Any] = {"stream": True, "decode": True}
+        if platform_override:
+            pull_kwargs["platform"] = platform_override
+        for line in client.api.pull(image_name, **pull_kwargs):
+            last_update = process_pull_line(line, layers_info, status, last_update)
+
+    pull_error: DockerException | None = None
+    fallback_platform: str | None = None
+
     with console.status("[bold cyan]Downloading image layers...", spinner="dots") as status:
         try:
-            layers_info: dict[str, str] = {}
-            last_update = ""
-
-            for line in client.api.pull(Config.get("esprit_image"), stream=True, decode=True):
-                last_update = process_pull_line(line, layers_info, status, last_update)
-
+            _pull_with_progress(preferred_platform)
         except DockerException as e:
-            console.print()
-            error_text = Text()
-            error_text.append("FAILED TO PULL IMAGE", style="bold red")
-            error_text.append("\n\n", style="white")
-            error_text.append(f"Could not download: {Config.get('esprit_image')}\n", style="white")
-            error_text.append(str(e), style="dim red")
+            pull_error = e
+            error_text = str(e).lower()
+            is_arm_host = platform.machine().lower() in {"arm64", "aarch64"}
+            missing_arm_manifest = "manifest" in error_text and "arm64" in error_text
+            can_fallback = preferred_platform is None and is_arm_host and missing_arm_manifest
 
-            panel = Panel(
-                error_text,
-                title="[bold white]ESPRIT",
-                title_align="left",
-                border_style="red",
-                padding=(1, 2),
+            if can_fallback:
+                fallback_platform = "linux/amd64"
+                status.update(
+                    "[bold yellow]No arm64 manifest found; retrying with linux/amd64 emulation...[/]"
+                )
+                try:
+                    _pull_with_progress(fallback_platform)
+                except DockerException as fallback_error:
+                    pull_error = fallback_error
+                else:
+                    os.environ["ESPRIT_DOCKER_PLATFORM"] = fallback_platform
+                    pull_error = None
+
+    if pull_error is not None:
+        console.print()
+        error_text = Text()
+        error_text.append("FAILED TO PULL IMAGE", style="bold red")
+        error_text.append("\n\n", style="white")
+        error_text.append(f"Could not download: {image_name}\n", style="white")
+        if fallback_platform:
+            error_text.append(
+                f"Fallback pull with platform={fallback_platform} also failed.\n\n",
+                style="white",
             )
-            console.print(panel, "\n")
-            sys.exit(1)
+        error_text.append(str(pull_error), style="dim red")
+
+        panel = Panel(
+            error_text,
+            title="[bold white]ESPRIT",
+            title_align="left",
+            border_style="red",
+            padding=(1, 2),
+        )
+        console.print(panel, "\n")
+        sys.exit(1)
 
     success_text = Text()
     success_text.append("Docker image ready", style="#22c55e")
     console.print(success_text)
+    if fallback_platform:
+        console.print("[yellow]Using linux/amd64 sandbox image via Docker emulation.[/]")
     console.print()
 
 
