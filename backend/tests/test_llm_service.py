@@ -82,6 +82,7 @@ async def test_generate_forwards_tools_and_reasoning(monkeypatch: pytest.MonkeyP
 
     assert "tools" in captured
     assert captured["reasoning_effort"] == "high"
+    assert captured["temperature"] == 1
 
 
 @pytest.mark.asyncio
