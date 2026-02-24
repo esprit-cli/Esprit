@@ -82,7 +82,11 @@ INSTALL_DIR=$HOME/.esprit/bin
 mkdir -p "$INSTALL_DIR"
 
 # Ensure temp files are cleaned up on interrupt/error
-_cleanup_tmp() { [ -n "${_tmp_dir:-}" ] && rm -rf "$_tmp_dir"; }
+_cleanup_tmp() {
+  if [ -n "${_tmp_dir:-}" ]; then
+    rm -rf "$_tmp_dir"
+  fi
+}
 trap _cleanup_tmp EXIT INT TERM HUP
 
 if [ -z "$requested_version" ]; then
