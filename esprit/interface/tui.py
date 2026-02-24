@@ -975,9 +975,9 @@ class VulnerabilityOverlayScreen(ModalScreen):  # type: ignore[misc]
         """Build a summary header with severity breakdown."""
         text = Text()
         total = len(vulnerabilities)
-        text.append(" VULNERABILITIES ", style="bold reverse #ea580c")
+        text.append(" VULNERABILITIES ", style="bold reverse #f97316")
         if total == 0:
-            text.append("  None found yet", style="dim")
+            text.append("  None found yet", style="#d4d4d4")
             return text
 
         text.append(f"  {total} found", style="bold white")
@@ -1017,7 +1017,7 @@ class VulnerabilityOverlayScreen(ModalScreen):  # type: ignore[misc]
             if i > 0:
                 text.append("  ", style="")
             text.append(f" {key} ", style="bold #22d3ee")
-            text.append(desc, style="dim")
+            text.append(desc, style="#b8b8b8")
         return text
 
     def _refresh_view(self) -> None:
@@ -1099,12 +1099,13 @@ class VulnerabilityOverlayScreen(ModalScreen):  # type: ignore[misc]
                 location = endpoint or target
                 if len(location) > 50:
                     location = location[:47] + "..."
-                text.append(location, style="dim #8a8a8a")
+                text.append(location, style="#c2b0b0")
 
             # Separator between items
             if idx < len(vulnerabilities) - 1:
                 text.append("\n")
-                text.append("   \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n", style="dim #2f2f2f")
+                text.append("   \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n", style="#5b2222")
+                text.append("\n")
 
         return text
 
@@ -1160,17 +1161,17 @@ class VulnerabilityOverlayScreen(ModalScreen):  # type: ignore[misc]
         endpoint = vuln.get("endpoint", "")
         method = vuln.get("method", "")
         if target or endpoint or method:
-            text.append(" \u2500\u2500 Target ", style="dim #555555")
-            text.append("\u2500" * 30, style="dim #2f2f2f")
+            text.append(" \u2500\u2500 Target ", style="#9b6b6b")
+            text.append("\u2500" * 30, style="#5b2222")
             text.append("\n")
             if target:
-                text.append("  Target   ", style="#4ade80")
+                text.append("  Target   ", style="bold #4ade80")
                 text.append(f"{target}\n", style="white")
             if endpoint:
-                text.append("  Endpoint ", style="#4ade80")
+                text.append("  Endpoint ", style="bold #4ade80")
                 text.append(f"{endpoint}\n", style="white")
             if method:
-                text.append("  Method   ", style="#4ade80")
+                text.append("  Method   ", style="bold #4ade80")
                 text.append(f"{method}\n", style="white")
 
         # CVSS breakdown
@@ -1189,16 +1190,16 @@ class VulnerabilityOverlayScreen(ModalScreen):  # type: ignore[misc]
                     parts.append(f"{abbr}:{val}")
             if parts:
                 text.append("\n")
-                text.append("  Vector ", style="dim #555555")
-                text.append("/".join(parts), style="dim")
+                text.append("  Vector ", style="#9b6b6b")
+                text.append("/".join(parts), style="#d4d4d4")
                 text.append("\n")
 
         # Description
         description = vuln.get("description", "")
         if description:
             text.append("\n")
-            text.append(" \u2500\u2500 Description ", style="dim #555555")
-            text.append("\u2500" * 26, style="dim #2f2f2f")
+            text.append(" \u2500\u2500 Description ", style="#9b6b6b")
+            text.append("\u2500" * 26, style="#5b2222")
             text.append("\n")
             text.append(f"  {description}\n", style="white")
 
@@ -1206,8 +1207,8 @@ class VulnerabilityOverlayScreen(ModalScreen):  # type: ignore[misc]
         impact = vuln.get("impact", "")
         if impact:
             text.append("\n")
-            text.append(" \u2500\u2500 Impact ", style="dim #555555")
-            text.append("\u2500" * 30, style="dim #2f2f2f")
+            text.append(" \u2500\u2500 Impact ", style="#9b6b6b")
+            text.append("\u2500" * 30, style="#5b2222")
             text.append("\n")
             text.append(f"  {impact}\n", style="white")
 
@@ -1215,8 +1216,8 @@ class VulnerabilityOverlayScreen(ModalScreen):  # type: ignore[misc]
         technical_analysis = vuln.get("technical_analysis", "")
         if technical_analysis:
             text.append("\n")
-            text.append(" \u2500\u2500 Technical Analysis ", style="dim #555555")
-            text.append("\u2500" * 19, style="dim #2f2f2f")
+            text.append(" \u2500\u2500 Technical Analysis ", style="#9b6b6b")
+            text.append("\u2500" * 19, style="#5b2222")
             text.append("\n")
             text.append(f"  {technical_analysis}\n", style="white")
 
@@ -1225,25 +1226,25 @@ class VulnerabilityOverlayScreen(ModalScreen):  # type: ignore[misc]
         poc_script_code = vuln.get("poc_script_code", "")
         if poc_description or poc_script_code:
             text.append("\n")
-            text.append(" \u2500\u2500 Proof of Concept ", style="dim #555555")
-            text.append("\u2500" * 20, style="dim #2f2f2f")
+            text.append(" \u2500\u2500 Proof of Concept ", style="#9b6b6b")
+            text.append("\u2500" * 20, style="#5b2222")
             text.append("\n")
             if poc_description:
                 text.append(f"  {poc_description}\n", style="white")
             if poc_script_code:
                 text.append("\n")
-                text.append("  \u250c\u2500 code \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n", style="dim #444444")
+                text.append("  \u250c\u2500 code \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n", style="#7a4d4d")
                 for line in poc_script_code.splitlines():
                     text.append(f"  \u2502 {line}\n", style="#a5d6a7")
-                text.append("  \u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n", style="dim #444444")
+                text.append("  \u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n", style="#7a4d4d")
 
         # Code file / diff
         code_file = vuln.get("code_file", "")
         code_diff = vuln.get("code_diff", "")
         if code_file or code_diff:
             text.append("\n")
-            text.append(" \u2500\u2500 Code Analysis ", style="dim #555555")
-            text.append("\u2500" * 24, style="dim #2f2f2f")
+            text.append(" \u2500\u2500 Code Analysis ", style="#9b6b6b")
+            text.append("\u2500" * 24, style="#5b2222")
             text.append("\n")
             if code_file:
                 text.append(f"  File: {code_file}\n", style="#60a5fa")
@@ -1261,8 +1262,8 @@ class VulnerabilityOverlayScreen(ModalScreen):  # type: ignore[misc]
         remediation_steps = vuln.get("remediation_steps", "")
         if remediation_steps:
             text.append("\n")
-            text.append(" \u2500\u2500 Remediation ", style="dim #555555")
-            text.append("\u2500" * 25, style="dim #2f2f2f")
+            text.append(" \u2500\u2500 Remediation ", style="#9b6b6b")
+            text.append("\u2500" * 25, style="#5b2222")
             text.append("\n")
             text.append(f"  {remediation_steps}\n", style="#fbbf24")
 
