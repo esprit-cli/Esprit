@@ -220,21 +220,20 @@ check_docker() {
     if [ "$pull_status" -eq 0 ]; then
         echo -e "${GREEN}✓ Sandbox image up to date${NC}"
     else
-            echo -e "$pull_output"
+        echo -e "$pull_output"
 
-            # Apple Silicon hosts can run amd64 images through Docker emulation
-            # when arm64 manifests are not published yet.
-            if [[ "$arch" == "arm64" ]] && echo "$pull_output" | grep -qi "no matching manifest" && echo "$pull_output" | grep -qi "arm64"; then
-                echo -e "${YELLOW}⚠ Native arm64 image not available, retrying with linux/amd64 emulation...${NC}"
-                if docker pull --platform linux/amd64 "$ESPRIT_IMAGE"; then
-                    echo -e "${GREEN}✓ Sandbox image pulled successfully (linux/amd64 emulation)${NC}"
-                    return 0
-                fi
+        # Apple Silicon hosts can run amd64 images through Docker emulation
+        # when arm64 manifests are not published yet.
+        if [[ "$arch" == "arm64" ]] && echo "$pull_output" | grep -qi "no matching manifest" && echo "$pull_output" | grep -qi "arm64"; then
+            echo -e "${YELLOW}⚠ Native arm64 image not available, retrying with linux/amd64 emulation...${NC}"
+            if docker pull --platform linux/amd64 "$ESPRIT_IMAGE"; then
+                echo -e "${GREEN}✓ Sandbox image pulled successfully (linux/amd64 emulation)${NC}"
+                return 0
             fi
-
-            echo -e "${YELLOW}⚠ Failed to pull sandbox image${NC}"
-            echo -e "${MUTED}You can pull it manually later: ${NC}docker pull --platform linux/amd64 $ESPRIT_IMAGE"
         fi
+
+        echo -e "${YELLOW}⚠ Failed to pull sandbox image${NC}"
+        echo -e "${MUTED}You can pull it manually later: ${NC}docker pull --platform linux/amd64 $ESPRIT_IMAGE"
     fi
     return 0
 }
