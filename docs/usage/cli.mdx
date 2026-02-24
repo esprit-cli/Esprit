@@ -6,8 +6,21 @@ description: "Command-line options for Esprit"
 ## Basic Usage
 
 ```bash
-esprit --target <target> [options]
+esprit scan <target> [options]
 ```
+
+```bash
+# Open interactive launchpad onboarding
+esprit
+```
+
+## Interactive Launchpad
+
+Running `esprit` with no arguments opens the onboarding launchpad.
+
+- Select provider, model, target, and scan mode interactively
+- Local-path target input supports directory autocomplete
+- Selected theme is reused in the scanning TUI
 
 ## Options
 
@@ -39,19 +52,27 @@ esprit --target <target> [options]
 
 ```bash
 # Basic scan
-esprit --target https://example.com
+esprit scan https://example.com
 
 # Authenticated testing
-esprit --target https://app.com --instruction "Use credentials: user:pass"
+esprit scan https://app.com --instruction "Use credentials: user:pass"
 
 # Focused testing
-esprit --target api.example.com --instruction "Focus on IDOR and auth bypass"
+esprit scan api.example.com --instruction "Focus on IDOR and auth bypass"
 
 # CI/CD mode
-esprit -n --target ./ --scan-mode quick
+esprit scan ./ -n --scan-mode quick
 
 # Multi-target white-box testing
-esprit -t https://github.com/org/app -t https://staging.example.com
+esprit scan https://github.com/org/app https://staging.example.com
+```
+
+## Provider Commands
+
+```bash
+esprit provider login
+esprit provider status
+esprit provider logout <provider>
 ```
 
 ## Exit Codes

@@ -38,6 +38,20 @@ poetry install
 
 ---
 
+## Interactive Onboarding
+
+Run `esprit` with no arguments to open the launchpad onboarding UI.
+
+- Guided setup for provider, model, target, and scan mode
+- Unified theme across onboarding and scanning TUI
+- Local directory scan input with tab autocomplete
+
+```bash
+esprit
+```
+
+---
+
 ## Choose Your Setup
 
 Esprit supports two runtime modes depending on how you want to run scans.
@@ -152,6 +166,12 @@ esprit provider login github-copilot
 esprit provider status             # Check all connected providers
 esprit provider logout <provider>  # Disconnect a provider
 ```
+
+OpenCode notes:
+
+- Public OpenCode models can be used without credentials when available on your machine.
+- If a public OpenCode model hits rate limits or upstream instability, Esprit auto-falls back to another healthy public model.
+- Recommended public models: `opencode/minimax-m2.5-free`, `opencode/kimi-k2.5-free`, `opencode/gpt-5-nano`.
 
 ---
 

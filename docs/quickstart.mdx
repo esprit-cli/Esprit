@@ -5,8 +5,11 @@ description: "Install Esprit and run your first security scan"
 
 ## Prerequisites
 
-- Docker (running)
-- An LLM provider API key (OpenAI, Anthropic, or local model)
+- Docker (required for local runtime only)
+- One model path:
+  - Esprit Cloud login (`esprit provider login esprit`), or
+  - Local provider credentials (OAuth/API key), or
+  - Public OpenCode free model (no auth when available)
 
 ## Installation
 
@@ -30,21 +33,28 @@ description: "Install Esprit and run your first security scan"
 
 ## Configuration
 
-Set your LLM provider:
+Connect a provider (or use Esprit Cloud):
 
 ```bash
-export ESPRIT_LLM="openai/gpt-5"
-export LLM_API_KEY="your-api-key"
+esprit provider login esprit
+# or
+esprit provider login openai
+# or
+esprit provider login opencode
 ```
 
 <Tip>
-For best results, use `openai/gpt-5`, `anthropic/claude-sonnet-4-5`, or `vertex_ai/gemini-3-pro-preview`.
+You can run `esprit` with no arguments to open the interactive launchpad and configure provider, model, target, and scan mode in one flow.
 </Tip>
 
 ## Run Your First Scan
 
 ```bash
-esprit --target ./your-app
+# Interactive onboarding + launchpad
+esprit
+
+# Direct scan command
+esprit scan ./your-app
 ```
 
 <Note>
@@ -57,17 +67,29 @@ Esprit accepts multiple target types:
 
 ```bash
 # Local codebase
-esprit --target ./app-directory
+esprit scan ./app-directory
 
 # GitHub repository
-esprit --target https://github.com/org/repo
+esprit scan https://github.com/org/repo
 
 # Live web application
-esprit --target https://your-app.com
+esprit scan https://your-app.com
 
 # Multiple targets (white-box testing)
-esprit -t https://github.com/org/repo -t https://your-app.com
+esprit scan https://github.com/org/repo https://your-app.com
 ```
+
+## OpenCode Public Models
+
+When OpenCode public models are available on your machine, you can use them without API-key login.
+
+Recommended public models:
+
+- `opencode/minimax-m2.5-free`
+- `opencode/kimi-k2.5-free`
+- `opencode/gpt-5-nano`
+
+If one public model is rate-limited during runtime, Esprit automatically falls back to another public model.
 
 ## Next Steps
 
