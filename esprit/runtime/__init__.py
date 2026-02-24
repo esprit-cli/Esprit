@@ -120,12 +120,36 @@ def extract_and_save_diffs(sandbox_id: str) -> list[dict[str, object]]:
                         lines.append(f"+{new_line}")
                     lines.append("")
             if lines:
-                (patches_dir / "remediation.patch").write_text("\n".join(lines))
+                patch_content = "\n".join(lines)
+                (patches_dir / "remediation.patch").write_text(patch_content)
                 log.info("Saved patches to %s", patches_dir)
+
+                # Upload to S3 for hosted mode (backend serves via /scans/{id}/patch)
+                _upload_patch_to_s3(patch_content, log)
     except Exception:  # noqa: BLE001
         log.debug("Could not persist diffs to run directory", exc_info=True)
 
     return edits
+
+
+def _upload_patch_to_s3(patch_content: str, log: "logging.Logger") -> None:
+    """Upload patch to S3 if running in hosted mode (S3_BUCKET + SCAN_ID set)."""
+    import os
+
+    bucket = os.getenv("S3_BUCKET")
+    scan_id = os.getenv("SCAN_ID")
+    if not bucket or not scan_id:
+        return
+
+    try:
+        import boto3
+
+        s3 = boto3.client("s3", region_name=os.getenv("AWS_REGION", "us-east-1"))
+        s3_key = f"patches/{scan_id}.patch"
+        s3.put_object(Bucket=bucket, Key=s3_key, Body=patch_content.encode("utf-8"))
+        log.info("Uploaded patch to s3://%s/%s", bucket, s3_key)
+    except Exception:  # noqa: BLE001
+        log.debug("S3 patch upload failed (non-fatal)", exc_info=True)
 
 
 def cleanup_runtime() -> None:
