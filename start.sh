@@ -28,6 +28,18 @@ for local_esprit in "$SCRIPT_DIR"/.venv*/bin/esprit "$SCRIPT_DIR"/.venv/bin/espr
   fi
 done
 
+# ── Local source (installed deps, no Poetry) path ───────────────────
+# Prefer running repo source when Python deps are already present.
+if [ -f pyproject.toml ]; then
+  for py in python3.12 python3.11; do
+    if command -v "$py" >/dev/null 2>&1; then
+      if PYTHONPATH="$SCRIPT_DIR" "$py" -c "import esprit.interface.main" >/dev/null 2>&1; then
+        exec env PYTHONPATH="$SCRIPT_DIR" "$py" -m esprit.interface.main "$@"
+      fi
+    fi
+  done
+fi
+
 # ── Node.js (npm install) path ───────────────────────────────────────
 if command -v node >/dev/null 2>&1 && [ -f "$SCRIPT_DIR/bin/esprit.js" ]; then
   exec node "$SCRIPT_DIR/bin/esprit.js" "$@"
