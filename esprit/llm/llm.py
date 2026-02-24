@@ -371,12 +371,13 @@ class LLM:
                 details=response.text.strip() or "Response body is not valid JSON",
             ) from e
 
-        response_obj = self._to_namespace(payload)
+        normalized_payload = self._normalize_esprit_proxy_payload(payload)
+        response_obj = self._to_namespace(normalized_payload)
         self._update_usage_stats(response_obj)
 
         native_tool_calls = self._extract_native_tool_calls(response_obj)
-        thinking_blocks = self._extract_thinking_from_payload(payload)
-        content = self._extract_content_from_payload(payload)
+        thinking_blocks = self._extract_thinking_from_payload(normalized_payload)
+        content = self._extract_content_from_payload(normalized_payload)
         normalized_content = fix_incomplete_tool_call(_truncate_to_first_function(content))
 
         yield LLMResponse(
@@ -426,6 +427,60 @@ class LLM:
 
         return details
 
+    def _normalize_esprit_proxy_payload(self, payload: Any) -> dict[str, Any]:
+        """Normalize Esprit proxy payloads to a chat-completion-like shape."""
+        if not isinstance(payload, dict):
+            return {}
+
+        choices = payload.get("choices")
+        if isinstance(choices, list) and choices:
+            return payload
+
+        direct_content = payload.get("content", "")
+        if isinstance(direct_content, (str, list)):
+            message_content: Any = direct_content
+        elif direct_content is None:
+            message_content = ""
+        else:
+            message_content = str(direct_content)
+
+        message: dict[str, Any] = {"content": message_content}
+        tool_calls = payload.get("tool_calls")
+        if isinstance(tool_calls, list):
+            message["tool_calls"] = tool_calls
+
+        thinking_blocks = payload.get("thinking_blocks")
+        if isinstance(thinking_blocks, list):
+            message["thinking_blocks"] = thinking_blocks
+
+        finish_reason = payload.get("finish_reason")
+        if not isinstance(finish_reason, str):
+            finish_reason = None
+
+        tokens_used_raw = payload.get("tokens_used", 0)
+        try:
+            tokens_used = max(0, int(tokens_used_raw or 0))
+        except (TypeError, ValueError):
+            tokens_used = 0
+
+        normalized: dict[str, Any] = {
+            "choices": [
+                {
+                    "message": message,
+                    "finish_reason": finish_reason,
+                }
+            ],
+            "usage": {
+                "prompt_tokens": 0,
+                "completion_tokens": tokens_used,
+                "total_tokens": tokens_used,
+            },
+        }
+        model_name = payload.get("model")
+        if isinstance(model_name, str) and model_name:
+            normalized["model"] = model_name
+        return normalized
+
     def _extract_content_from_payload(self, payload: Any) -> str:
         if not isinstance(payload, dict):
             return ""
@@ -459,6 +514,12 @@ class LLM:
     def _extract_thinking_from_payload(self, payload: Any) -> list[dict[str, Any]] | None:
         if not isinstance(payload, dict):
             return None
+
+        direct_thinking = payload.get("thinking_blocks")
+        if isinstance(direct_thinking, list):
+            normalized_direct = [b for b in direct_thinking if isinstance(b, dict)]
+            if normalized_direct:
+                return normalized_direct
 
         choices = payload.get("choices")
         if not isinstance(choices, list) or not choices:
@@ -881,10 +942,20 @@ class LLM:
 
     def _extract_native_tool_calls(self, response: Any) -> list[dict[str, Any]] | None:
         """Extract native tool calls from a litellm assembled response."""
-        if not response or not response.choices:
+        if not response:
             return None
-        msg = response.choices[0].message
+        choices = getattr(response, "choices", None)
+        if not choices:
+            return None
+        first_choice = choices[0]
+        msg = getattr(first_choice, "message", None)
+        if isinstance(first_choice, dict) and msg is None:
+            msg = first_choice.get("message")
+        if msg is None:
+            return None
         tool_calls = getattr(msg, "tool_calls", None)
+        if isinstance(msg, dict):
+            tool_calls = msg.get("tool_calls", tool_calls)
         if not tool_calls:
             return None
         result = []
