@@ -357,13 +357,18 @@ def create_agent(
     skills: str | None = None,
 ) -> dict[str, Any]:
     try:
-        # Guard against runaway agent spawning
-        if len(_agent_graph["nodes"]) >= MAX_AGENTS:
+        # Guard against runaway agent spawning — count only active agents
+        active_count = sum(
+            1
+            for n in _agent_graph["nodes"].values()
+            if n.get("status") in ("running", "waiting", "stopping")
+        )
+        if active_count >= MAX_AGENTS:
             return {
                 "success": False,
                 "error": (
-                    f"Agent limit reached ({MAX_AGENTS}). Wait for existing agents "
-                    f"to finish before spawning more."
+                    f"Active agent limit reached ({active_count}/{MAX_AGENTS}). "
+                    f"Wait for existing agents to finish before spawning more."
                 ),
                 "agent_id": None,
             }
