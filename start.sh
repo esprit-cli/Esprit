@@ -21,6 +21,18 @@ if command -v poetry >/dev/null 2>&1 && [ -f pyproject.toml ]; then
   exec poetry run esprit "$@"
 fi
 
+# ── Local venv path ──────────────────────────────────────────────────
+for local_esprit in "$SCRIPT_DIR"/.venv*/bin/esprit "$SCRIPT_DIR"/.venv/bin/esprit; do
+  if [ -x "$local_esprit" ]; then
+    exec "$local_esprit" "$@"
+  fi
+done
+
+# ── Node.js (npm install) path ───────────────────────────────────────
+if command -v node >/dev/null 2>&1 && [ -f "$SCRIPT_DIR/bin/esprit.js" ]; then
+  exec node "$SCRIPT_DIR/bin/esprit.js" "$@"
+fi
+
 # ── Binary path ──────────────────────────────────────────────────────
 if command -v esprit >/dev/null 2>&1; then
   # Check for updates in the background (non-blocking)

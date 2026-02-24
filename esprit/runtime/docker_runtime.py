@@ -155,6 +155,8 @@ class DockerRuntime(AbstractRuntime):
                 self._tool_server_port = self._find_available_port()
                 self._tool_server_token = secrets.token_urlsafe(32)
                 execution_timeout = Config.get("esprit_sandbox_execution_timeout") or "120"
+                docker_platform = (Config.get("esprit_docker_platform") or "").strip()
+                run_kwargs = {"platform": docker_platform} if docker_platform else {}
 
                 container = self.client.containers.run(
                     image_name,
@@ -174,6 +176,7 @@ class DockerRuntime(AbstractRuntime):
                     },
                     extra_hosts={HOST_GATEWAY_HOSTNAME: "host-gateway"},
                     tty=True,
+                    **run_kwargs,
                 )
 
                 self._scan_container = container

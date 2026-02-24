@@ -1,6 +1,8 @@
 from importlib import import_module
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 interface_main = import_module("esprit.interface.main")
 
 
@@ -36,3 +38,84 @@ def test_get_available_models_limits_opencode_to_public_without_api_key() -> Non
     model_ids = [model_id for model_id, _ in models]
     assert "opencode/minimax-m2.5-free" in model_ids
     assert "opencode/gpt-5.2-codex" not in model_ids
+
+
+def test_pull_docker_image_retries_with_amd64_on_arm_manifest_mismatch() -> None:
+    client = MagicMock()
+    pull_calls: list[dict[str, object]] = []
+
+    def pull_side_effect(_image_name: str, **kwargs: object) -> object:
+        pull_calls.append(kwargs)
+        if kwargs.get("platform") == "linux/amd64":
+            return iter([{"status": "Status: Downloaded newer image"}])
+        raise interface_main.DockerException(
+            "no matching manifest for linux/arm64/v8 in the manifest list entries"
+        )
+
+    client.api.pull.side_effect = pull_side_effect
+
+    console = MagicMock()
+    status_ctx = MagicMock()
+    status_widget = MagicMock()
+    status_ctx.__enter__.return_value = status_widget
+    status_ctx.__exit__.return_value = False
+    console.status.return_value = status_ctx
+
+    def config_get(name: str) -> str | None:
+        if name == "esprit_image":
+            return "improdead/esprit-sandbox:latest"
+        if name == "esprit_docker_platform":
+            return None
+        return None
+
+    with (
+        patch("esprit.interface.main.Console", return_value=console),
+        patch("esprit.interface.main.check_docker_connection", return_value=client),
+        patch("esprit.interface.main.image_exists", return_value=False),
+        patch(
+            "esprit.interface.main.process_pull_line",
+            side_effect=lambda _line, _layers, _status, last_update: last_update,
+        ),
+        patch("esprit.interface.main.platform.machine", return_value="arm64"),
+        patch("esprit.interface.main.Config.get", side_effect=config_get),
+        patch.dict(interface_main.os.environ, {}, clear=True),
+    ):
+        interface_main.pull_docker_image()
+        assert interface_main.os.environ["ESPRIT_DOCKER_PLATFORM"] == "linux/amd64"
+
+    assert len(pull_calls) == 2
+    assert pull_calls[0].get("platform") is None
+    assert pull_calls[1].get("platform") == "linux/amd64"
+
+
+def test_pull_docker_image_exits_without_fallback_on_non_arm_host() -> None:
+    client = MagicMock()
+    client.api.pull.side_effect = interface_main.DockerException(
+        "no matching manifest for linux/amd64 in the manifest list entries"
+    )
+
+    console = MagicMock()
+    status_ctx = MagicMock()
+    status_widget = MagicMock()
+    status_ctx.__enter__.return_value = status_widget
+    status_ctx.__exit__.return_value = False
+    console.status.return_value = status_ctx
+
+    def config_get(name: str) -> str | None:
+        if name == "esprit_image":
+            return "improdead/esprit-sandbox:latest"
+        if name == "esprit_docker_platform":
+            return None
+        return None
+
+    with (
+        patch("esprit.interface.main.Console", return_value=console),
+        patch("esprit.interface.main.check_docker_connection", return_value=client),
+        patch("esprit.interface.main.image_exists", return_value=False),
+        patch("esprit.interface.main.Config.get", side_effect=config_get),
+        patch("esprit.interface.main.sys.exit", side_effect=SystemExit(1)),
+    ):
+        with pytest.raises(SystemExit):
+            interface_main.pull_docker_image()
+
+    client.api.pull.assert_called_once()

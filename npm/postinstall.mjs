@@ -12,6 +12,7 @@ const projectRoot = path.resolve(__dirname, "..");
 const packageJsonPath = path.join(projectRoot, "package.json");
 const installDir = path.join(projectRoot, "npm", ".esprit-bin");
 const repo = "improdead/Esprit";
+const sandboxImage = process.env.ESPRIT_IMAGE || "improdead/esprit-sandbox:latest";
 
 function getTarget() {
   let platform = os.platform();
@@ -67,6 +68,10 @@ function runCommand(command, args) {
   }
 }
 
+function runCommandCapture(command, args) {
+  return spawnSync(command, args, { encoding: "utf8" });
+}
+
 function extractArchive(archivePath, extractDir) {
   if (archivePath.endsWith(".zip")) {
     if (process.platform === "win32") {
@@ -82,6 +87,39 @@ function extractArchive(archivePath, extractDir) {
   }
 
   runCommand("tar", ["-xzf", archivePath, "-C", extractDir]);
+}
+
+function warmSandboxImage() {
+  const dockerInfo = runCommandCapture("docker", ["info"]);
+  if (dockerInfo.error || dockerInfo.status !== 0) {
+    return;
+  }
+
+  const inspect = runCommandCapture("docker", ["image", "inspect", sandboxImage]);
+  if (inspect.status === 0) {
+    process.stdout.write("[esprit] sandbox image already present\n");
+    return;
+  }
+
+  process.stdout.write(`[esprit] pulling sandbox image ${sandboxImage}\n`);
+  let pull = runCommandCapture("docker", ["pull", sandboxImage]);
+  if (pull.status === 0) {
+    process.stdout.write("[esprit] sandbox image ready\n");
+    return;
+  }
+
+  const pullText = `${pull.stdout || ""}\n${pull.stderr || ""}`.toLowerCase();
+  const missingArmManifest = pullText.includes("no matching manifest") && pullText.includes("arm64");
+  if (os.arch() === "arm64" && missingArmManifest) {
+    process.stdout.write("[esprit] retrying sandbox pull with linux/amd64 emulation\n");
+    pull = runCommandCapture("docker", ["pull", "--platform", "linux/amd64", sandboxImage]);
+    if (pull.status === 0) {
+      process.stdout.write("[esprit] sandbox image ready (linux/amd64)\n");
+      return;
+    }
+  }
+
+  process.stdout.write("[esprit] sandbox image pull skipped (will retry at first scan)\n");
 }
 
 async function installBinary() {
@@ -115,6 +153,7 @@ async function installBinary() {
 
     await fs.writeFile(path.join(installDir, "VERSION"), `${version}\n`, "utf8");
     process.stdout.write(`[esprit] installed ${binaryName}\n`);
+    warmSandboxImage();
   } finally {
     await fs.rm(tempRoot, { recursive: true, force: true });
   }
