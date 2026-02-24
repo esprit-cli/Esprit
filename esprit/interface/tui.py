@@ -1797,7 +1797,11 @@ class EspritTUIApp(App):  # type: ignore[misc]
 
     def _setup_cleanup_handlers(self) -> None:
         def cleanup_on_exit() -> None:
-            from esprit.runtime import cleanup_runtime
+            from esprit.runtime import cleanup_runtime, extract_and_save_diffs
+
+            # Extract file edits from sandbox BEFORE destroying it
+            if hasattr(self, "agent") and hasattr(self.agent, "state") and self.agent.state.sandbox_id:
+                extract_and_save_diffs(self.agent.state.sandbox_id)
 
             self.tracer.cleanup()
             cleanup_runtime()

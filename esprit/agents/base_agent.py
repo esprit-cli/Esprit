@@ -79,6 +79,7 @@ class BaseAgent(metaclass=AgentMeta):
             self.state = AgentState(
                 agent_name="Root Agent",
                 max_iterations=self.max_iterations,
+                is_whitebox=bool(self.local_sources),
             )
 
         self.llm = LLM(self.llm_config, agent_name=self.agent_name)

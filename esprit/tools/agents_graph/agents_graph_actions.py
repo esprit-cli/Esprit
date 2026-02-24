@@ -28,6 +28,8 @@ _agent_states: dict[str, Any] = {}
 # When a subagent inherits parent context, long histories are compressed
 # to avoid sending tens of thousands of redundant tokens every turn.
 
+MAX_AGENTS = 10  # Hard cap on total agents to prevent runaway spawning
+
 _INHERIT_SUMMARIZE_THRESHOLD = 15  # Summarize if parent history exceeds this
 _RECENT_MESSAGES_TO_KEEP = 10  # Keep last N messages verbatim after summary
 
@@ -355,6 +357,22 @@ def create_agent(
     skills: str | None = None,
 ) -> dict[str, Any]:
     try:
+        # Guard against runaway agent spawning — count only active agents
+        active_count = sum(
+            1
+            for n in _agent_graph["nodes"].values()
+            if n.get("status") in ("running", "waiting", "stopping")
+        )
+        if active_count >= MAX_AGENTS:
+            return {
+                "success": False,
+                "error": (
+                    f"Active agent limit reached ({active_count}/{MAX_AGENTS}). "
+                    f"Wait for existing agents to finish before spawning more."
+                ),
+                "agent_id": None,
+            }
+
         parent_id = agent_state.agent_id
 
         skill_list = []
@@ -389,9 +407,20 @@ def create_agent(
         from esprit.agents.state import AgentState
         from esprit.llm.config import LLMConfig
 
-        state = AgentState(task=task, agent_name=name, parent_id=parent_id, max_iterations=300)
-
         parent_agent = _agent_instances.get(parent_id)
+
+        # Inherit white-box flag from parent agent
+        parent_is_whitebox = False
+        if parent_agent and hasattr(parent_agent, "state"):
+            parent_is_whitebox = getattr(parent_agent.state, "is_whitebox", False)
+
+        state = AgentState(
+            task=task,
+            agent_name=name,
+            parent_id=parent_id,
+            max_iterations=300,
+            is_whitebox=parent_is_whitebox,
+        )
 
         timeout = None
         scan_mode = "deep"
