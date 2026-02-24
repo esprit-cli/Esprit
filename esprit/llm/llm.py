@@ -94,9 +94,49 @@ _CODEX_BASE_INFO = {
     "supports_reasoning": True,
     "supports_native_streaming": True,
 }
-for _base in ["gpt-5.3-codex", "gpt-5.2-codex"]:
+_CODEX_MODEL_ALIASES: dict[str, str] = {
+    "codex-5.3": "gpt-5.3-codex",
+    "codex-5.2": "gpt-5.2-codex",
+    "codex-5.1": "gpt-5.1-codex",
+    "codex-5": "gpt-5-codex",
+}
+for _base in [
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex",
+    "codex-5.3",
+    "codex-5.2",
+    "codex-5.1",
+    "codex-5",
+]:
     if _base not in litellm.model_cost:
         litellm.model_cost[_base] = {**_CODEX_BASE_INFO, "litellm_provider": "openai"}
+
+
+def _normalize_openai_codex_model_name(model_name: str | None) -> str | None:
+    """Normalize OpenAI Codex aliases to canonical LiteLLM model identifiers."""
+    if not model_name:
+        return model_name
+
+    model = model_name.strip()
+    if not model:
+        return model_name
+
+    raw_prefix = ""
+    bare = model
+    if "/" in model:
+        raw_prefix, bare = model.split("/", 1)
+        if raw_prefix.lower() not in {"openai", "codex"}:
+            return model
+
+    bare_lower = bare.lower()
+    mapped_bare = _CODEX_MODEL_ALIASES.get(bare_lower, bare)
+
+    if bare_lower.startswith("codex-") or raw_prefix.lower() in {"openai", "codex"}:
+        return f"openai/{mapped_bare}"
+
+    return model
 
 
 class LLMRequestFailedError(Exception):
@@ -544,6 +584,11 @@ class LLM:
         if tools:
             args["tools"] = tools
 
+        # Normalize OpenAI Codex aliases to canonical gpt-*-codex routes.
+        normalized_openai_model = _normalize_openai_codex_model_name(self.config.model_name)
+        if normalized_openai_model:
+            args["model"] = normalized_openai_model
+
         # Translate google/ → gemini/ for litellm compatibility
         if self.config.model_name and self.config.model_name.lower().startswith("google/"):
             args["model"] = "gemini/" + self.config.model_name.split("/", 1)[1]
@@ -607,8 +652,7 @@ class LLM:
                 # with Esprit's OAuth token — avoids litellm's chatgpt/
                 # provider which has auth-file bugs with external tokens.
                 if "codex" in model_lower:
-                    bare_model = self.config.model_name.split("/", 1)[-1]
-                    args["model"] = f"openai/{bare_model}"
+                    args["model"] = _normalize_openai_codex_model_name(self.config.model_name) or self.config.model_name
                     args["api_key"] = provider_api_key or "oauth-auth"
                 else:
                     args["api_key"] = provider_api_key or "oauth-auth"
