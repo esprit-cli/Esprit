@@ -216,7 +216,7 @@ class TestPromptCacheControl:
         assert updated[0]["content"][0]["cache_control"] == {"type": "ephemeral"}
 
 
-class TestRaiseError:
+class TestRaiseErrorDetails:
     def test_includes_status_code_from_response(self, monkeypatch: pytest.MonkeyPatch) -> None:
         llm = LLM.__new__(LLM)
         monkeypatch.setattr("esprit.telemetry.posthog.error", lambda *_args, **_kwargs: None)
