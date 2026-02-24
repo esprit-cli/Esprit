@@ -362,7 +362,15 @@ async def generate_llm_chat_completions_compat(
     if not stream_requested:
         return completion
 
-    chunk_payload = {
+    initial_delta: dict[str, Any] = {
+        "role": "assistant",
+        "content": completion["choices"][0]["message"].get("content", ""),
+    }
+    tool_calls = completion["choices"][0]["message"].get("tool_calls")
+    if isinstance(tool_calls, list):
+        initial_delta["tool_calls"] = tool_calls
+
+    first_chunk = {
         "id": completion["id"],
         "object": "chat.completion.chunk",
         "created": completion["created"],
@@ -370,14 +378,28 @@ async def generate_llm_chat_completions_compat(
         "choices": [
             {
                 "index": 0,
-                "delta": completion["choices"][0]["message"],
+                "delta": initial_delta,
+                "finish_reason": None,
+            }
+        ],
+    }
+    final_chunk = {
+        "id": completion["id"],
+        "object": "chat.completion.chunk",
+        "created": completion["created"],
+        "model": completion["model"],
+        "choices": [
+            {
+                "index": 0,
+                "delta": {},
                 "finish_reason": completion["choices"][0]["finish_reason"],
             }
         ],
     }
 
     async def _stream() -> Any:
-        yield f"data: {json.dumps(chunk_payload)}\n\n"
+        yield f"data: {json.dumps(first_chunk)}\n\n"
+        yield f"data: {json.dumps(final_chunk)}\n\n"
         yield "data: [DONE]\n\n"
 
     return StreamingResponse(_stream(), media_type="text/event-stream")
