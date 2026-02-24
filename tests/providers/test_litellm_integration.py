@@ -64,6 +64,12 @@ class TestDetectProvider:
         client.token_store.has_credentials.return_value = True
         assert client.detect_provider("gpt-5") == "github-copilot"
 
+    def test_codex_alias_stays_openai_with_copilot_credentials(self, client: ProviderAuthClient) -> None:
+        """Codex models are OpenAI-specific and should not auto-route to Copilot."""
+        client.token_store = MagicMock()
+        client.token_store.has_credentials.return_value = True
+        assert client.detect_provider("codex-5.3") == "openai"
+
     def test_gpt_without_copilot_falls_to_openai(self, client: ProviderAuthClient) -> None:
         client.token_store = MagicMock()
         client.token_store.has_credentials.return_value = False
@@ -213,3 +219,28 @@ class TestGetProviderApiBase:
 
         with patch("esprit.providers.litellm_integration.get_auth_client", return_value=mock_client):
             assert get_provider_api_base("google/gemini-3-pro") is None
+
+    def test_copilot_oauth_uses_default_copilot_base(self) -> None:
+        mock_client = MagicMock()
+        mock_client.detect_provider.return_value = "github-copilot"
+        mock_client.get_credentials.return_value = OAuthCredentials(
+            type="oauth",
+            access_token="tok",
+            refresh_token="tok",
+        )
+
+        with patch("esprit.providers.litellm_integration.get_auth_client", return_value=mock_client):
+            assert get_provider_api_base("github-copilot/gpt-5") == "https://api.githubcopilot.com"
+
+    def test_copilot_enterprise_oauth_uses_enterprise_base(self) -> None:
+        mock_client = MagicMock()
+        mock_client.detect_provider.return_value = "github-copilot"
+        mock_client.get_credentials.return_value = OAuthCredentials(
+            type="oauth",
+            access_token="tok",
+            refresh_token="tok",
+            enterprise_url="https://github.example.com",
+        )
+
+        with patch("esprit.providers.litellm_integration.get_auth_client", return_value=mock_client):
+            assert get_provider_api_base("github-copilot/gpt-5") == "https://copilot-api.github.example.com"

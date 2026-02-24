@@ -96,7 +96,6 @@ async def _provider_login(provider_id: str | None = None) -> int:
             if Confirm.ask("Are you using GitHub Enterprise?", default=False):
                 enterprise_url = Prompt.ask("Enter your GitHub Enterprise URL")
                 kwargs["enterprise_url"] = enterprise_url
-                provider_id = "github-copilot-enterprise"
 
         # Start authorization
         auth_result = await provider.authorize(**kwargs)

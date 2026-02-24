@@ -10,6 +10,7 @@ import json
 import logging
 import os
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 
@@ -99,6 +100,10 @@ class ProviderAuthClient:
         if "gemini" in model_lower:
             return "google"
         if "gpt" in model_lower or "o1" in model_lower or "o3" in model_lower or "codex" in model_lower:
+            # Codex model IDs are OpenAI-specific and should not be auto-routed
+            # to Copilot even when Copilot credentials are present.
+            if "codex" in model_lower:
+                return "openai"
             # Check if using Copilot
             if self.token_store.has_credentials("github-copilot"):
                 return "github-copilot"
@@ -276,15 +281,32 @@ def get_provider_api_base(model_name: str) -> str | None:
     """Return a provider-specific API base override when required."""
     client = get_auth_client()
     provider_id = client.detect_provider(model_name)
-    if provider_id != "openai":
+    if not provider_id:
         return None
 
     credentials = client.get_credentials(provider_id)
     if not credentials or credentials.type != "oauth":
         return None
 
-    # ChatGPT Plus/Pro OAuth tokens must route through the Codex backend.
-    return CODEX_API_BASE
+    if provider_id == "openai":
+        # ChatGPT Plus/Pro OAuth tokens must route through the Codex backend.
+        return CODEX_API_BASE
+
+    if provider_id == "github-copilot":
+        # Enterprise Copilot tokens require a custom API host
+        # (copilot-api.<enterprise-domain>) from provider credentials.
+        from esprit.providers.copilot import COPILOT_API_URL
+
+        provider = get_provider_auth(provider_id)
+        if not provider:
+            return None
+        probe_url = f"{COPILOT_API_URL}/chat/completions"
+        modified_url, _, _ = provider.modify_request(probe_url, {}, None, credentials)
+        parsed = urlparse(modified_url)
+        if parsed.scheme and parsed.netloc:
+            return f"{parsed.scheme}://{parsed.netloc}"
+
+    return None
 
 
 def get_provider_headers(model_name: str) -> dict[str, str]:
