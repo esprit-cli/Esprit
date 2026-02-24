@@ -59,7 +59,7 @@ async def test_generate_routes_default_alias_to_bedrock(monkeypatch: pytest.Monk
 
 
 @pytest.mark.asyncio
-async def test_generate_forwards_tools_and_reasoning(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_generate_forwards_tools_and_ignores_reasoning(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: dict[str, object] = {}
 
     async def fake_acompletion(**kwargs: object) -> SimpleNamespace:
@@ -81,8 +81,8 @@ async def test_generate_forwards_tools_and_reasoning(monkeypatch: pytest.MonkeyP
     await service.generate(request, user_id="u1", provider_hint="bedrock")
 
     assert "tools" in captured
-    assert captured["reasoning_effort"] == "high"
-    assert captured["temperature"] == 1
+    assert "reasoning_effort" not in captured
+    assert captured["temperature"] == 0.7
 
 
 @pytest.mark.asyncio

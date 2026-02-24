@@ -243,22 +243,18 @@ class LLMService:
 
         bedrock_model = self._resolve_bedrock_model(request.model, model_hint)
         litellm_model = f"{BEDROCK_PROVIDER}/{bedrock_model}"
-        temperature = request.temperature
-        if request.reasoning_effort and "anthropic." in bedrock_model and temperature != 1:
-            # Anthropic thinking mode requires temperature=1.
-            temperature = 1
 
         completion_args: dict[str, Any] = {
             "model": litellm_model,
             "messages": request.messages,
-            "temperature": temperature,
+            "temperature": request.temperature,
             "max_tokens": request.max_tokens,
             "aws_region_name": settings.aws_region,
         }
         if request.tools:
             completion_args["tools"] = request.tools
-        if request.reasoning_effort:
-            completion_args["reasoning_effort"] = request.reasoning_effort
+        # NOTE: we intentionally do not forward reasoning_effort yet.
+        # Bedrock Anthropic thinking mode requires additional budget fields.
         if settings.aws_access_key_id and settings.aws_secret_access_key:
             completion_args["aws_access_key_id"] = settings.aws_access_key_id
             completion_args["aws_secret_access_key"] = settings.aws_secret_access_key
