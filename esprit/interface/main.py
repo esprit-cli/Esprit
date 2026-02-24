@@ -4,7 +4,7 @@ Esprit Agent Interface
 
 Commands:
   esprit scan <target>       Run a penetration test scan
-  esprit provider login      Login to an LLM provider (OAuth)
+  esprit provider login      Login/connect an LLM provider
   esprit provider status     Show provider authentication status
   esprit provider logout     Logout from a provider
 """
@@ -32,9 +32,11 @@ apply_saved_config()
 from esprit.interface.cli import run_cli  # noqa: E402
 from esprit.interface.launchpad import LaunchpadResult, run_launchpad  # noqa: E402
 from esprit.interface.tui import run_tui  # noqa: E402
+from esprit.interface.updater import apply_update, has_pending_update  # noqa: E402
 from esprit.interface.utils import (  # noqa: E402
     assign_workspace_subdirs,
     build_final_stats_text,
+    build_subscription_quota_lines,
     check_docker_connection,
     clone_repository,
     collect_local_sources,
@@ -52,6 +54,44 @@ from esprit.telemetry.tracer import get_global_tracer  # noqa: E402
 
 
 logging.getLogger().setLevel(logging.ERROR)
+
+_PAID_SUBSCRIPTION_PLANS = {"pro", "team", "enterprise"}
+
+
+def _is_paid_subscription_plan(plan: str | None) -> bool:
+    return (plan or "").strip().lower() in _PAID_SUBSCRIPTION_PLANS
+
+
+def _is_cloud_subscription_model(model_name: str | None) -> bool:
+    if not model_name:
+        return True
+    model_lower = model_name.strip().lower()
+    return model_lower.startswith("esprit/") or model_lower.startswith("bedrock/")
+
+
+def _should_use_cloud_runtime() -> bool:
+    """Check if scan runtime should be routed to Esprit Cloud."""
+    from esprit.auth.credentials import get_user_plan, is_authenticated, verify_subscription
+
+    if not is_authenticated():
+        return False
+
+    if not _is_paid_subscription_plan(get_user_plan()):
+        return False
+
+    model_name = Config.get("esprit_llm")
+    if not _is_cloud_subscription_model(model_name):
+        return False
+
+    verification = verify_subscription()
+    if verification.get("valid", False):
+        cloud_enabled = verification.get("cloud_enabled")
+        return bool(cloud_enabled) if cloud_enabled is not None else True
+
+    # If subscription verification endpoint is temporarily unreachable,
+    # trust local credentials and continue with cloud mode.
+    error = str(verification.get("error", ""))
+    return error.startswith("Subscription verification failed:")
 
 
 def validate_environment() -> None:  # noqa: PLR0912, PLR0915
@@ -268,14 +308,27 @@ def ensure_provider_configured() -> bool:
     """Check if at least one LLM provider is configured. Return True if ready."""
     from esprit.providers.token_store import TokenStore
     from esprit.providers.account_pool import get_account_pool
+    from esprit.providers.config import has_public_opencode_models, is_public_opencode_model
 
     # Check for direct API key
     if Config.get("llm_api_key"):
         return True
 
+    # Check for Esprit subscription (platform credentials)
+    try:
+        from esprit.auth.credentials import is_authenticated
+        if is_authenticated():
+            return True
+    except ImportError:
+        pass
+
+    # OpenCode exposes select no-auth models; allow those without login.
+    if is_public_opencode_model(Config.get("esprit_llm")):
+        return True
+
     # Check for OAuth providers (single-credential)
     token_store = TokenStore()
-    for provider_id in ["anthropic", "google", "github-copilot"]:
+    for provider_id in ["anthropic", "google", "github-copilot", "opencode"]:
         if token_store.has_credentials(provider_id):
             return True
 
@@ -288,6 +341,9 @@ def ensure_provider_configured() -> bool:
         if token_store.has_credentials(provider_id):
             return True
 
+    if has_public_opencode_models():
+        return True
+
     return False
 
 
@@ -295,6 +351,7 @@ def _get_configured_providers() -> list[tuple[str, str]]:
     """Return list of (provider_id, detail) for all configured providers."""
     from esprit.providers.token_store import TokenStore
     from esprit.providers.account_pool import get_account_pool
+    from esprit.providers.config import has_public_opencode_models
 
     token_store = TokenStore()
     pool = get_account_pool()
@@ -302,7 +359,19 @@ def _get_configured_providers() -> list[tuple[str, str]]:
 
     from esprit.providers.constants import MULTI_ACCOUNT_PROVIDERS as _multi_account
 
-    for provider_id in ["antigravity", "openai", "anthropic", "google", "github-copilot"]:
+    # Check Esprit subscription (platform credentials)
+    try:
+        from esprit.auth.credentials import is_authenticated as _is_esprit_auth, get_credentials as _get_esprit_creds
+        if _is_esprit_auth():
+            _ecreds = _get_esprit_creds()
+            _plan = _ecreds.get("plan", "free").upper() if _ecreds else "FREE"
+            _email = _ecreds.get("email", "") if _ecreds else ""
+            detail = _email if _email else f"Platform ({_plan})"
+            result.append(("esprit", detail))
+    except ImportError:
+        pass
+
+    for provider_id in ["antigravity", "opencode", "openai", "anthropic", "google", "github-copilot"]:
         if provider_id in _multi_account:
             if pool.has_accounts(provider_id):
                 count = pool.account_count(provider_id)
@@ -313,7 +382,14 @@ def _get_configured_providers() -> list[tuple[str, str]]:
             elif token_store.has_credentials(provider_id):
                 result.append((provider_id, "API key"))
         else:
-            if token_store.has_credentials(provider_id):
+            if provider_id == "opencode":
+                if token_store.has_credentials(provider_id):
+                    creds = token_store.get(provider_id)
+                    detail = creds.type.upper() if creds else "configured"
+                    result.append((provider_id, detail))
+                elif has_public_opencode_models():
+                    result.append((provider_id, "Public models (no auth)"))
+            elif token_store.has_credentials(provider_id):
                 creds = token_store.get(provider_id)
                 detail = creds.type.upper() if creds else "configured"
                 result.append((provider_id, detail))
@@ -327,14 +403,25 @@ def _get_configured_providers() -> list[tuple[str, str]]:
 
 def _get_available_models(configured_providers: list[tuple[str, str]]) -> list[tuple[str, str]]:
     """Return list of (model_id, display_name) available from configured providers."""
-    from esprit.providers.config import AVAILABLE_MODELS
+    from esprit.providers.config import get_available_models, get_public_opencode_models
+    from esprit.providers.token_store import TokenStore
 
+    catalog = get_available_models()
     provider_ids = {p[0] for p in configured_providers}
     models = []
+    token_store = TokenStore()
+    public_opencode_models = get_public_opencode_models(catalog)
 
-    for provider_id, model_list in AVAILABLE_MODELS.items():
+    for provider_id, model_list in catalog.items():
         if provider_id in provider_ids:
-            for model_id, display_name in model_list:
+            models_to_show = model_list
+            if provider_id == "opencode" and not token_store.has_credentials("opencode"):
+                models_to_show = [
+                    (model_id, display_name)
+                    for model_id, display_name in model_list
+                    if model_id in public_opencode_models
+                ]
+            for model_id, display_name in models_to_show:
                 full_id = f"{provider_id}/{model_id}"
                 models.append((full_id, f"{display_name} [{provider_id}]"))
 
@@ -362,7 +449,7 @@ def pre_scan_setup(non_interactive: bool = False) -> bool:
         console.print("[bold red]No LLM provider configured.[/]")
         console.print()
         console.print("Set up a provider first:")
-        console.print("  [cyan]esprit provider login[/]          # OAuth (Codex, Copilot, Antigravity)")
+        console.print("  [cyan]esprit provider login[/]          # Connect provider (OAuth/API)")
         console.print("  [cyan]esprit provider api-key[/]        # Direct API key")
         console.print()
         return False
@@ -377,7 +464,9 @@ def pre_scan_setup(non_interactive: bool = False) -> bool:
     table.add_column("Account", style="white")
     for pid, detail in providers:
         display_name = {
+            "esprit": "[bold #6366f1]Esprit[/] [dim](Subscription)[/]",
             "antigravity": "[bold #a78bfa]Antigravity[/] [dim](Free)[/]",
+            "opencode": "[bold #10b981]OpenCode Zen[/]",
             "openai": "OpenAI",
             "anthropic": "Anthropic",
             "google": "Google",
@@ -385,7 +474,9 @@ def pre_scan_setup(non_interactive: bool = False) -> bool:
             "direct": "Direct",
         }.get(pid, pid)
         auth_type = {
+            "esprit": "[green]Platform[/]",
             "antigravity": "[green]OAuth[/]",
+            "opencode": "[green]Public[/]" if detail.lower().startswith("public") else "[yellow]API Key[/]",
             "openai": "[green]OAuth[/]" if "@" in detail else "[yellow]API Key[/]",
             "anthropic": "[yellow]API Key[/]",
             "google": "[green]OAuth[/]",
@@ -404,11 +495,13 @@ def pre_scan_setup(non_interactive: bool = False) -> bool:
         bare = current_model.split("/", 1)[-1] if "/" in current_model else current_model
         provider_prefix = current_model.split("/", 1)[0] if "/" in current_model else ""
         provider_badge = {
+            "esprit": "[bold #6366f1]ES[/]",
             "antigravity": "[bold #a78bfa]AG[/]",
             "openai": "[bold #74aa9c]OAI[/]",
             "anthropic": "[bold #d4a27f]CC[/]",
             "google": "[bold #4285f4]GG[/]",
             "github-copilot": "[bold white]CO[/]",
+            "opencode": "[bold #10b981]OZ[/]",
         }.get(provider_prefix, "")
         if provider_badge:
             console.print(f"[bold]Model:[/] {provider_badge} {bare}")
@@ -486,30 +579,33 @@ def pre_scan_setup(non_interactive: bool = False) -> bool:
 
 async def warm_up_llm() -> None:
     from esprit.llm.config import DEFAULT_MODEL
+    from esprit.llm.api_base import (
+        configured_api_base,
+        detect_conflicting_provider_base_env,
+        resolve_api_base,
+    )
     from esprit.providers.litellm_integration import (
         get_provider_api_key,
         get_provider_headers,
-        get_modified_url,
         should_use_oauth,
     )
 
     console = Console()
+    model_name = ""
 
     try:
         model_name = Config.get("esprit_llm") or DEFAULT_MODEL
-        api_key = Config.get("llm_api_key")
-        api_base = (
-            Config.get("llm_api_base")
-            or Config.get("openai_api_base")
-            or Config.get("litellm_base_url")
-            or Config.get("ollama_api_base")
-        )
 
         # Codex OAuth models use a non-standard API — skip warm-up test
         model_lower = model_name.lower() if model_name else ""
         is_codex_oauth = "codex" in model_lower
         if is_codex_oauth and should_use_oauth(model_name):
             console.print("[dim]Codex OAuth configured — skipping warm-up test[/]")
+            return
+
+        # Esprit subscription routes through proxy — skip warm-up test
+        if model_lower.startswith("esprit/"):
+            console.print("[dim]Esprit subscription configured — skipping warm-up test[/]")
             return
 
         # Antigravity models bypass litellm entirely — skip warm-up test
@@ -526,42 +622,98 @@ async def warm_up_llm() -> None:
             console.print("[dim]Antigravity configured — skipping warm-up test[/]")
             return
 
-        # If no direct API key, check OAuth providers
-        if not api_key:
-            oauth_key = get_provider_api_key(model_name)
-            if oauth_key:
-                api_key = oauth_key
-
         test_messages = [
             {"role": "system", "content": "You are a helpful assistant."},
             {"role": "user", "content": "Reply with just 'OK'."},
         ]
-
         llm_timeout = int(Config.get("llm_timeout") or "300")
 
-        completion_kwargs: dict[str, Any] = {
-            "model": model_name,
-            "messages": test_messages,
-            "timeout": llm_timeout,
-        }
+        def _build_completion_kwargs(candidate_model: str) -> dict[str, Any]:
+            api_key = Config.get("llm_api_key")
+            if not api_key:
+                oauth_key = get_provider_api_key(candidate_model)
+                if oauth_key:
+                    api_key = oauth_key
 
-        # Translate google/ → gemini/ for litellm compatibility
-        if model_name and model_name.lower().startswith("google/"):
-            completion_kwargs["model"] = "gemini/" + model_name.split("/", 1)[1]
-        if api_key:
-            completion_kwargs["api_key"] = api_key
-        if api_base:
-            completion_kwargs["api_base"] = api_base
+            completion_kwargs: dict[str, Any] = {
+                "model": candidate_model,
+                "messages": test_messages,
+                "timeout": llm_timeout,
+            }
 
-        # Add OAuth headers if applicable
-        if should_use_oauth(model_name):
-            extra_headers = get_provider_headers(model_name)
+            # Translate google/ → gemini/ for litellm compatibility
+            if candidate_model.lower().startswith("google/"):
+                completion_kwargs["model"] = "gemini/" + candidate_model.split("/", 1)[1]
+            # OpenCode Zen is OpenAI-compatible; use openai/ for litellm routing.
+            if candidate_model.lower().startswith(("opencode/", "zen/")):
+                completion_kwargs["model"] = "openai/" + candidate_model.split("/", 1)[1]
+
+            if api_key:
+                completion_kwargs["api_key"] = api_key
+
+            api_base = resolve_api_base(candidate_model)
+            if api_base:
+                completion_kwargs["api_base"] = api_base
+
+            extra_headers = get_provider_headers(candidate_model)
             if extra_headers:
-                completion_kwargs["extra_headers"] = extra_headers
+                completion_kwargs["extra_headers"] = {
+                    **completion_kwargs.get("extra_headers", {}),
+                    **extra_headers,
+                }
 
-        response = litellm.completion(**completion_kwargs)
+            return completion_kwargs
 
-        validate_llm_response(response)
+        def _warm_up_once(candidate_model: str) -> None:
+            response = litellm.completion(**_build_completion_kwargs(candidate_model))
+            validate_llm_response(response)
+
+        try:
+            _warm_up_once(model_name)
+            return
+        except Exception as primary_error:
+            primary_error_text = str(primary_error)
+            if model_lower.startswith(("opencode/", "zen/")):
+                from esprit.providers.config import get_available_models, get_public_opencode_models
+
+                preferred_free_models = [
+                    "minimax-m2.5-free",
+                    "kimi-k2.5-free",
+                    "gpt-5-nano",
+                    "minimax-m2.1-free",
+                    "trinity-large-preview-free",
+                ]
+                catalog = get_available_models()
+                public_models = get_public_opencode_models(catalog)
+                bare_model = model_name.split("/", 1)[1] if "/" in model_name else model_name
+
+                fallback_bare_models = [
+                    model_id for model_id in preferred_free_models
+                    if model_id in public_models and model_id != bare_model
+                ]
+                fallback_bare_models.extend(
+                    sorted(
+                        model_id
+                        for model_id in public_models
+                        if model_id not in fallback_bare_models and model_id != bare_model
+                    )
+                )
+
+                for fallback_bare in fallback_bare_models:
+                    fallback_model = f"opencode/{fallback_bare}"
+                    try:
+                        _warm_up_once(fallback_model)
+                    except Exception:
+                        continue
+
+                    os.environ["ESPRIT_LLM"] = fallback_model
+                    console.print(
+                        f"[yellow]OpenCode model unavailable:[/] [dim]{model_name}[/] "
+                        f"[yellow]→ switched to[/] [bold]{fallback_model}[/]"
+                    )
+                    return
+
+            raise Exception(primary_error_text) from primary_error
 
     except Exception as e:  # noqa: BLE001
         error_text = Text()
@@ -569,7 +721,44 @@ async def warm_up_llm() -> None:
         error_text.append("\n\n", style="white")
         error_text.append("Could not establish connection to the language model.\n", style="white")
         error_text.append("Please check your configuration and try again.\n", style="white")
+        if not configured_api_base():
+            conflict = detect_conflicting_provider_base_env(model_name)
+            if conflict:
+                env_name, env_value = conflict
+                error_text.append(
+                    f"\nDetected {env_name}={env_value}\n",
+                    style="yellow",
+                )
+                error_text.append(
+                    "This environment variable can override provider API routing.\n",
+                    style="yellow",
+                )
+                error_text.append(
+                    f"Unset it in your shell: unset {env_name}\n",
+                    style="dim white",
+                )
         error_text.append(f"\nError: {e}", style="dim white")
+
+        error_message = str(e)
+        model_lower = model_name.lower() if model_name else ""
+        if (
+            (model_lower.startswith("opencode/") or model_lower.startswith("zen/"))
+            and "prompt_tokens" in error_message
+        ):
+            error_text.append(
+                "\n\nOpenCode returned an upstream model error for this free model.",
+                style="yellow",
+            )
+            error_text.append(
+                "\nTry one of these public models:",
+                style="yellow",
+            )
+            error_text.append(
+                "\n  - opencode/kimi-k2.5-free"
+                "\n  - opencode/minimax-m2.5-free"
+                "\n  - opencode/gpt-5-nano",
+                style="dim white",
+            )
 
         panel = Panel(
             error_text,
@@ -676,7 +865,7 @@ def parse_arguments() -> argparse.Namespace:
         epilog="""
 Commands:
   esprit scan <target>       Run a penetration test
-  esprit provider login      Login to an LLM provider (OAuth)
+  esprit provider login      Login/connect an LLM provider
   esprit provider status     Show provider authentication status
 
 Examples:
@@ -687,6 +876,8 @@ Examples:
 
   # Provider authentication
   esprit provider login              # Interactive provider selection
+  esprit provider login esprit       # Login with Esprit subscription
+  esprit provider login opencode     # Connect OpenCode Zen
   esprit provider login openai       # Login to OpenAI Codex
   esprit provider login github-copilot
   esprit provider login google       # Login to Google Gemini
@@ -706,6 +897,8 @@ Examples:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Supported providers:
+  esprit          Esprit Subscription (Esprit Default)
+  opencode        OpenCode Zen (API key)
   anthropic       Claude Pro/Max (OAuth) or API key
   openai          ChatGPT Plus/Pro / Codex (OAuth) or API key
   github-copilot  GitHub Copilot (OAuth)
@@ -714,8 +907,12 @@ Supported providers:
     )
     provider_subparsers = provider_parser.add_subparsers(dest="provider_command")
     
-    provider_login = provider_subparsers.add_parser("login", help="Login to a provider via OAuth")
-    provider_login.add_argument("provider_id", nargs="?", help="Provider ID (anthropic, openai, github-copilot, google)")
+    provider_login = provider_subparsers.add_parser("login", help="Login/connect to a provider")
+    provider_login.add_argument(
+        "provider_id",
+        nargs="?",
+        help="Provider ID (esprit, opencode, anthropic, openai, github-copilot, google)",
+    )
     
     provider_logout = provider_subparsers.add_parser("logout", help="Logout from a provider")
     provider_logout.add_argument("provider_id", nargs="?", help="Provider ID to logout from")
@@ -768,6 +965,7 @@ Supported providers:
     )
 
     args = parser.parse_args()
+    args.skip_pre_scan_checks = False
     
     # Handle provider subcommand
     if args.command == "provider":
@@ -857,6 +1055,7 @@ def _apply_launchpad_result(args: argparse.Namespace, launchpad_result: Launchpa
     args.non_interactive = False
     args.scan_mode = launchpad_result.scan_mode
     args.instruction = None
+    args.skip_pre_scan_checks = launchpad_result.prechecked
     args.targets_info = _build_targets_info([launchpad_result.target])
     return True
 
@@ -1008,6 +1207,7 @@ def main() -> None:
     if sys.platform == "win32":
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
+    console = Console()
     args = parse_arguments()
 
     if args.config:
@@ -1020,13 +1220,33 @@ def main() -> None:
         if not _apply_launchpad_result(args, launchpad_result):
             return
 
-    check_docker_installed()
-    ensure_docker_running()
-    pull_docker_image()
+    # Interactive pre-scan checks: provider, model, account selection.
+    # Launchpad now owns this flow when a scan is started from its UI.
+    if not getattr(args, "skip_pre_scan_checks", False):
+        if not pre_scan_setup(non_interactive=args.non_interactive):
+            sys.exit(1)
 
-    # Interactive pre-scan checks: provider, model, account selection
-    if not pre_scan_setup(non_interactive=args.non_interactive):
-        sys.exit(1)
+    use_cloud_runtime = _should_use_cloud_runtime()
+    if use_cloud_runtime:
+        os.environ["ESPRIT_RUNTIME_BACKEND"] = "cloud"
+        configured_model = (Config.get("esprit_llm") or "").strip()
+        if configured_model.lower().startswith("bedrock/"):
+            os.environ["ESPRIT_LLM"] = "esprit/default"
+            Config.save_current()
+
+        console.print("[green]\u2713[/] Using Esprit Cloud (no Docker required)")
+
+        from esprit.auth.credentials import verify_subscription
+
+        verification = verify_subscription()
+        for line in build_subscription_quota_lines(verification):
+            console.print(line)
+        console.print()
+    else:
+        os.environ["ESPRIT_RUNTIME_BACKEND"] = "docker"
+        check_docker_installed()
+        ensure_docker_running()
+        pull_docker_image()
 
     validate_environment()
     asyncio.run(warm_up_llm())
@@ -1061,7 +1281,18 @@ def main() -> None:
         has_instructions=bool(args.instruction),
     )
 
+    # Apply any update that was scheduled on the previous run.
+    # This runs in the terminal before Textual starts, so the install script
+    # output is visible.  apply_update() re-execs on success, so we never
+    # reach the lines below when an update is pending.
+    if has_pending_update():
+        console = Console()
+        console.print("\n[bold cyan]Applying scheduled update…[/bold cyan]")
+        apply_update(restart=True)
+        # If we reach here the update failed (non-zero exit); continue normally.
+
     exit_reason = "user_exit"
+    tui_result = None
     try:
         # Create GUI server (always available — serves live dashboard on localhost:7860)
         gui_server = None
@@ -1075,7 +1306,7 @@ def main() -> None:
         if args.non_interactive:
             asyncio.run(run_cli(args))
         else:
-            asyncio.run(run_tui(args, gui_server=gui_server))
+            tui_result = asyncio.run(run_tui(args, gui_server=gui_server))
     except KeyboardInterrupt:
         exit_reason = "interrupted"
     except Exception as e:
@@ -1086,6 +1317,14 @@ def main() -> None:
         tracer = get_global_tracer()
         if tracer:
             posthog.end(tracer, exit_reason=exit_reason)
+
+    # "Update Now" was chosen inside the TUI — apply immediately now that
+    # Textual has fully released the terminal.
+    if tui_result == "update_now":
+        console = Console()
+        console.print("\n[bold cyan]Downloading and installing update…[/bold cyan]")
+        apply_update(restart=True)
+        # If we reach here the update failed; fall through to completion message.
 
     results_path = Path("esprit_runs") / args.run_name
     display_completion_message(args, results_path)

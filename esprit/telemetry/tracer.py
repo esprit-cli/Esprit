@@ -75,6 +75,10 @@ class Tracer:
         self.run_name = run_name
         self.run_id = run_name
 
+    def _set_run_status(self, status: str) -> None:
+        self.run_metadata["status"] = status
+        self.run_metadata["end_time"] = self.end_time
+
     def get_run_dir(self) -> Path:
         if self._run_dir is None:
             runs_dir = Path.cwd() / "esprit_runs"
@@ -201,8 +205,10 @@ class Tracer:
 {recommendations.strip()}
 """
 
+        self.end_time = datetime.now(UTC).isoformat()
+        self._set_run_status("completed")
         logger.info("Updated scan final fields")
-        self.save_run_data(mark_complete=True)
+        self.save_run_data(mark_complete=False)
         posthog.end(self, exit_reason="finished_by_tool")
 
     def log_agent_creation(
@@ -279,10 +285,21 @@ class Tracer:
         self, agent_id: str, status: str, error_message: str | None = None
     ) -> None:
         if agent_id in self.agents:
+            agent_data = self.agents[agent_id]
             self.agents[agent_id]["status"] = status
             self.agents[agent_id]["updated_at"] = datetime.now(UTC).isoformat()
             if error_message:
                 self.agents[agent_id]["error_message"] = error_message
+
+            if agent_data.get("parent_id") is None:
+                if status in {"failed", "error", "sandbox_failed", "llm_failed"}:
+                    self._set_run_status("failed")
+                elif status == "completed":
+                    self._set_run_status("completed")
+                elif status == "stopped":
+                    self._set_run_status("stopped")
+                elif status == "running":
+                    self._set_run_status("running")
 
     def set_scan_config(self, config: dict[str, Any]) -> None:
         self.scan_config = config
@@ -559,6 +576,26 @@ class Tracer:
         if getattr(self, "_cleanup_done", False):
             return
         self._cleanup_done = True
+        if self.end_time is None:
+            self.end_time = datetime.now(UTC).isoformat()
+        if self.run_metadata.get("status") == "running":
+            root_statuses = [
+                data.get("status", "")
+                for data in self.agents.values()
+                if data.get("parent_id") is None
+            ]
+            if self.final_scan_result:
+                self._set_run_status("completed")
+            elif any(s in {"failed", "error", "sandbox_failed", "llm_failed"} for s in root_statuses):
+                self._set_run_status("failed")
+            elif any(s == "stopped" for s in root_statuses):
+                self._set_run_status("stopped")
+            elif any(s == "completed" for s in root_statuses):
+                self._set_run_status("completed")
+            else:
+                self._set_run_status("stopped")
+        else:
+            self._set_run_status(str(self.run_metadata.get("status", "stopped")))
         self.save_run_data(mark_complete=True)
         # Persist session cost to lifetime total
         try:

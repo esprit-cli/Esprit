@@ -49,6 +49,9 @@ async def _provider_login(provider_id: str | None = None) -> int:
             if pid in MULTI_ACCOUNT_PROVIDERS:
                 count = pool.account_count(pid)
                 status = f"✓ {count} account{'s' if count != 1 else ''}" if count else " "
+            elif pid == "esprit":
+                from esprit.auth.credentials import is_authenticated
+                status = "✓" if is_authenticated() else " "
             else:
                 status = "✓" if token_store.has_credentials(pid) else " "
             console.print(f"  [{status}] {i}. {name}")
@@ -148,6 +151,13 @@ async def _provider_login(provider_id: str | None = None) -> int:
                 console.print(f"[green]✓ Added {email} to {display_name}[/]")
                 count = pool.account_count(provider_id)
                 console.print(f"[dim]  {count} account{'s' if count != 1 else ''} total[/]")
+            elif provider_id == "esprit":
+                # Esprit subscription saves to platform credentials (already done in callback)
+                email = callback_result.credentials.extra.get("email", "Unknown") if callback_result.credentials.extra else "Unknown"
+                plan = callback_result.credentials.extra.get("plan", "free") if callback_result.credentials.extra else "free"
+                console.print()
+                console.print(f"[green]✓ Successfully logged in to {display_name}[/]")
+                console.print(f"[dim]  Email: {email}  |  Plan: {plan.upper()}[/]")
             else:
                 token_store.set(provider_id, callback_result.credentials)
                 console.print()
@@ -177,6 +187,10 @@ def cmd_provider_logout(provider_id: str | None = None) -> int:
         for p in list_providers():
             if p in MULTI_ACCOUNT_PROVIDERS:
                 if pool.has_accounts(p):
+                    logged_in.append(p)
+            elif p == "esprit":
+                from esprit.auth.credentials import is_authenticated
+                if is_authenticated():
                     logged_in.append(p)
             elif token_store.has_credentials(p):
                 logged_in.append(p)
@@ -238,6 +252,20 @@ def cmd_provider_logout(provider_id: str | None = None) -> int:
         console.print()
         return 0
 
+    # Handle Esprit subscription provider (uses platform credentials)
+    if provider_id == "esprit":
+        from esprit.auth.credentials import is_authenticated as _is_auth, clear_credentials
+        if not _is_auth():
+            console.print()
+            console.print(f"[dim]Not logged in to {display_name}.[/]")
+            console.print()
+            return 0
+        clear_credentials()
+        console.print()
+        console.print(f"[green]✓ Logged out from {display_name}[/]")
+        console.print()
+        return 0
+
     if not token_store.has_credentials(provider_id):
         console.print()
         console.print(f"[dim]Not logged in to {display_name}.[/]")
@@ -278,6 +306,16 @@ def cmd_provider_status() -> int:
             else:
                 status = "[dim]Not configured[/]"
                 auth_type = "-"
+        elif provider_id == "esprit":
+            from esprit.auth.credentials import is_authenticated as _check_auth, get_credentials as _get_creds
+            if _check_auth():
+                _creds = _get_creds()
+                plan = _creds.get("plan", "free").upper() if _creds else "FREE"
+                status = f"[green]✓ Logged in ({plan})[/]"
+                auth_type = "PLATFORM"
+            else:
+                status = "[dim]Not configured[/]"
+                auth_type = "-"
         else:
             creds = token_store.get(provider_id)
             if creds:
@@ -309,7 +347,8 @@ def cmd_provider_set_api_key(provider_id: str | None = None) -> int:
         console.print("[bold]Select a provider:[/]")
         console.print()
         
-        providers = list_providers()
+        # Exclude esprit — it uses platform credentials, not API keys
+        providers = [p for p in list_providers() if p != "esprit"]
         for i, pid in enumerate(providers, 1):
             name = PROVIDER_NAMES.get(pid, pid)
             console.print(f"  {i}. {name}")
@@ -320,6 +359,10 @@ def cmd_provider_set_api_key(provider_id: str | None = None) -> int:
             choices=[str(i) for i in range(1, len(providers) + 1)],
         )
         provider_id = providers[int(choice) - 1]
+
+    if provider_id == "esprit":
+        console.print("[yellow]The Esprit provider uses platform credentials. Use 'esprit provider login esprit' instead.[/]")
+        return 1
 
     display_name = PROVIDER_NAMES.get(provider_id, provider_id)
 

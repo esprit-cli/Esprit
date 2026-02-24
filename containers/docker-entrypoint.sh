@@ -194,5 +194,8 @@ done
 
 echo "✅ Container ready"
 
+# Clean up startup logs — no longer needed once services are healthy
+rm -f "$CAIDO_LOG" "$TOOL_SERVER_LOG"
+
 cd /workspace
 exec "$@"

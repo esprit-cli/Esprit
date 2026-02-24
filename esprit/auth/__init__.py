@@ -14,6 +14,7 @@ from esprit.auth.credentials import (
     get_credentials,
     is_authenticated,
     save_credentials,
+    verify_subscription,
 )
 
 __all__ = [
@@ -22,4 +23,5 @@ __all__ = [
     "get_credentials",
     "save_credentials",
     "clear_credentials",
+    "verify_subscription",
 ]

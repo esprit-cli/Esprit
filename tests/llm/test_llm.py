@@ -1,11 +1,12 @@
 """Tests for LLM module utilities."""
 
+import asyncio
 from types import SimpleNamespace
 
 import pytest
 
 from esprit.llm.config import LLMConfig
-from esprit.llm.llm import LLM, _mask_email
+from esprit.llm.llm import LLM, LLMRequestFailedError, _mask_email
 
 
 class TestMaskEmail:
@@ -213,3 +214,133 @@ class TestPromptCacheControl:
 
         updated = llm._add_cache_control(messages)
         assert updated[0]["content"][0]["cache_control"] == {"type": "ephemeral"}
+
+
+class TestRaiseError:
+    def test_includes_status_code_from_response(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        llm = LLM.__new__(LLM)
+        monkeypatch.setattr("esprit.telemetry.posthog.error", lambda *_args, **_kwargs: None)
+
+        response = SimpleNamespace(status_code=503)
+        error = RuntimeError("service unavailable")
+        error.response = response  # type: ignore[attr-defined]
+
+        with pytest.raises(LLMRequestFailedError) as exc:
+            llm._raise_error(error)
+
+        assert exc.value.status_code == 503
+
+
+class TestStreamIdleTimeout:
+    @pytest.mark.asyncio
+    async def test_iter_with_idle_timeout_raises_on_stalled_stream(self) -> None:
+        llm = LLM.__new__(LLM)
+
+        async def stalled() -> SimpleNamespace:
+            while True:
+                await asyncio.sleep(1)
+                yield SimpleNamespace()
+
+        with pytest.raises(TimeoutError):
+            async for _ in llm._iter_with_idle_timeout(stalled(), timeout_seconds=0.01):
+                pass
+
+    @pytest.mark.asyncio
+    async def test_iter_with_idle_timeout_passes_through_chunks(self) -> None:
+        llm = LLM.__new__(LLM)
+
+        async def ready() -> int:
+            yield 1
+            yield 2
+
+        chunks: list[int] = []
+        async for chunk in llm._iter_with_idle_timeout(ready(), timeout_seconds=0.5):
+            chunks.append(chunk)
+
+        assert chunks == [1, 2]
+
+
+class TestOpenCodePublicFallback:
+    def test_switches_to_preferred_public_model_on_rate_limit(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        llm = LLM.__new__(LLM)
+        llm.config = SimpleNamespace(model_name="opencode/gpt-5-nano")
+
+        public_models = {
+            "gpt-5-nano",
+            "minimax-m2.5-free",
+            "kimi-k2.5-free",
+        }
+
+        monkeypatch.setattr("esprit.llm.llm.PROVIDERS_AVAILABLE", True, raising=False)
+        monkeypatch.setattr(
+            "esprit.llm.llm.get_available_models",
+            lambda: {"opencode": [(model_id, model_id) for model_id in sorted(public_models)]},
+            raising=False,
+        )
+        monkeypatch.setattr(
+            "esprit.llm.llm.get_public_opencode_models",
+            lambda _catalog=None: set(public_models),
+            raising=False,
+        )
+        monkeypatch.setattr(
+            "esprit.llm.llm.is_public_opencode_model",
+            lambda model_name, _catalog=None: (
+                (model_name or "").split("/", 1)[-1] in public_models
+            ),
+            raising=False,
+        )
+
+        err = RuntimeError("Rate limit exceeded")
+        err.status_code = 429  # type: ignore[attr-defined]
+
+        assert llm._try_opencode_model_fallback(err) is True
+        assert llm.config.model_name == "opencode/minimax-m2.5-free"
+
+    def test_no_fallback_when_auto_fallback_disabled(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        llm = LLM.__new__(LLM)
+        llm.config = SimpleNamespace(model_name="opencode/gpt-5-nano")
+
+        monkeypatch.setenv("ESPRIT_AUTO_FALLBACK", "false")
+
+        err = RuntimeError("Rate limit exceeded")
+        err.status_code = 429  # type: ignore[attr-defined]
+
+        assert llm._try_opencode_model_fallback(err) is False
+        assert llm.config.model_name == "opencode/gpt-5-nano"
+
+    def test_no_fallback_for_non_public_opencode_model(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        llm = LLM.__new__(LLM)
+        llm.config = SimpleNamespace(model_name="opencode/gpt-5.2-codex")
+
+        public_models = {"gpt-5-nano", "minimax-m2.5-free"}
+
+        monkeypatch.setattr("esprit.llm.llm.PROVIDERS_AVAILABLE", True, raising=False)
+        monkeypatch.setattr(
+            "esprit.llm.llm.get_available_models",
+            lambda: {"opencode": [(model_id, model_id) for model_id in sorted(public_models)]},
+            raising=False,
+        )
+        monkeypatch.setattr(
+            "esprit.llm.llm.get_public_opencode_models",
+            lambda _catalog=None: set(public_models),
+            raising=False,
+        )
+        monkeypatch.setattr(
+            "esprit.llm.llm.is_public_opencode_model",
+            lambda model_name, _catalog=None: (
+                (model_name or "").split("/", 1)[-1] in public_models
+            ),
+            raising=False,
+        )
+
+        err = RuntimeError("Rate limit exceeded")
+        err.status_code = 429  # type: ignore[attr-defined]
+
+        assert llm._try_opencode_model_fallback(err) is False
+        assert llm.config.model_name == "opencode/gpt-5.2-codex"

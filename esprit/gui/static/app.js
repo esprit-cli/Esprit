@@ -20,9 +20,16 @@ class EspritDashboard {
     this._toolsRenderedCount = 0;
     this._reconnectDelay = 1000;
     this._maxReconnectDelay = 30000;
+    this.theme = { id: 'esprit', tokens: {} };
+    this.themeMode = localStorage.getItem('esprit_dashboard_mode') || 'dark';
+    this._vulnWorkspaceIndex = 0;
+    this._healthIndex = 0;
 
     this._initTabs();
     this._initBrowserZoom();
+    this._initThemeControls();
+    this._initWorkspaceActions();
+    this._applyTheme();
     this._showGhostLoader(true);
     this.connect();
   }
@@ -66,6 +73,8 @@ class EspritDashboard {
         this.screenshotAgents = new Set(msg.screenshot_agents || []);
         this.scanConfig = msg.scan_config || null;
         this.finalReport = msg.final_report || null;
+        this.theme = msg.theme || this.theme;
+        this._applyTheme();
         this._renderAll();
         break;
       case 'delta_batch':
@@ -114,6 +123,12 @@ class EspritDashboard {
       case 'stats_update':
         this.stats = delta.stats || {};
         this._renderStats();
+        this._renderLiveStatusLine();
+        break;
+      case 'theme_update':
+        this.theme = delta.theme || this.theme;
+        this._applyTheme();
+        this._refreshIcons();
         break;
       case 'scan_config_update':
         this.scanConfig = delta.scan_config || null;
@@ -125,6 +140,9 @@ class EspritDashboard {
         this._setStatus('completed', 'completed');
         break;
     }
+    this._renderLiveStatusLine();
+    this._renderVulnWorkspace();
+    this._renderHealthModal();
   }
 
   // ------- DOM helpers (safe, no innerHTML) -------
@@ -213,6 +231,102 @@ class EspritDashboard {
     }
   }
 
+  _initThemeControls() {
+    const toggle = document.getElementById('theme-toggle');
+    if (!toggle) return;
+    toggle.addEventListener('click', () => this._toggleThemeMode());
+    this._updateThemeToggleLabel();
+  }
+
+  _toggleThemeMode() {
+    this.themeMode = this.themeMode === 'dark' ? 'light' : 'dark';
+    localStorage.setItem('esprit_dashboard_mode', this.themeMode);
+    this._applyTheme();
+  }
+
+  _updateThemeToggleLabel() {
+    const label = document.getElementById('theme-toggle-label');
+    if (label) {
+      label.textContent = this.themeMode;
+    }
+  }
+
+  _hexToRgba(hex, alpha) {
+    if (!hex || typeof hex !== 'string') return 'rgba(34, 211, 238, ' + alpha + ')';
+    const value = hex.replace('#', '');
+    const normalized = value.length === 3 ? value.split('').map(ch => ch + ch).join('') : value;
+    if (normalized.length !== 6) return 'rgba(34, 211, 238, ' + alpha + ')';
+    const r = parseInt(normalized.substring(0, 2), 16);
+    const g = parseInt(normalized.substring(2, 4), 16);
+    const b = parseInt(normalized.substring(4, 6), 16);
+    return 'rgba(' + r + ', ' + g + ', ' + b + ', ' + alpha + ')';
+  }
+
+  _themeSurfacePalette(themeId, mode) {
+    const dark = {
+      esprit:  { bg: '#050505', panel: '#160606', header: '#120505', terminal: '#0c0303', elevated: '#1a0808', border: '#2f0f0f', text: '#d4d4d4', textDim: '#947575', textBright: '#f5f5f5', rowHover: 'rgba(47,15,15,0.35)', inset: '#0a0505' },
+      ember:   { bg: '#140d09', panel: '#1f140f', header: '#1a120d', terminal: '#120907', elevated: '#241610', border: '#4b2a16', text: '#f1d6bf', textDim: '#b18a6b', textBright: '#fff2e6', rowHover: 'rgba(75,42,22,0.35)', inset: '#130b08' },
+      matrix:  { bg: '#060b07', panel: '#0f1711', header: '#0b130d', terminal: '#081009', elevated: '#122017', border: '#1f3d27', text: '#cdeecf', textDim: '#7fb48b', textBright: '#e8ffe9', rowHover: 'rgba(31,61,39,0.35)', inset: '#09110a' },
+      glacier: { bg: '#071019', panel: '#0f1b2a', header: '#0b1622', terminal: '#09121d', elevated: '#122236', border: '#1a344d', text: '#d9e7f3', textDim: '#9ab9d3', textBright: '#f0f8ff', rowHover: 'rgba(26,52,77,0.35)', inset: '#0a121d' },
+      crt:     { bg: '#040804', panel: '#0a130a', header: '#081008', terminal: '#060c06', elevated: '#0d190d', border: '#1a801a', text: '#d7ffd7', textDim: '#7fd27f', textBright: '#f1fff1', rowHover: 'rgba(26,128,26,0.2)', inset: '#060d06' },
+    };
+    const light = {
+      esprit:  { bg: '#f7fafc', panel: '#ffffff', header: '#eef3f8', terminal: '#f9fbfd', elevated: '#edf2f7', border: '#d5dde8', text: '#1f2937', textDim: '#64748b', textBright: '#0f172a', rowHover: 'rgba(15,23,42,0.05)', inset: '#f4f7fb' },
+      ember:   { bg: '#fdf8f3', panel: '#fffaf5', header: '#f8efe6', terminal: '#fffaf7', elevated: '#f6ebe2', border: '#e8d3bf', text: '#4a2c1a', textDim: '#8f6d52', textBright: '#311b0f', rowHover: 'rgba(180,100,40,0.08)', inset: '#faefe6' },
+      matrix:  { bg: '#f4fbf5', panel: '#fafffb', header: '#edf8ef', terminal: '#f7fff9', elevated: '#e8f6eb', border: '#cfe6d4', text: '#163122', textDim: '#4b7a59', textBright: '#0b2518', rowHover: 'rgba(34,197,94,0.1)', inset: '#eef9f0' },
+      glacier: { bg: '#f2f8ff', panel: '#fbfdff', header: '#eaf3ff', terminal: '#f8fbff', elevated: '#e7f1ff', border: '#cfe0f3', text: '#16324a', textDim: '#5b7897', textBright: '#0b2338', rowHover: 'rgba(56,189,248,0.12)', inset: '#edf5ff' },
+      crt:     { bg: '#f5fff5', panel: '#fcfffc', header: '#edfaed', terminal: '#f8fff8', elevated: '#eaf9ea', border: '#c9e8c9', text: '#153615', textDim: '#4f8750', textBright: '#0b250b', rowHover: 'rgba(34,197,94,0.12)', inset: '#eefbee' },
+    };
+    const source = mode === 'light' ? light : dark;
+    return source[themeId] || source.esprit;
+  }
+
+  _applyTheme() {
+    const root = document.documentElement;
+    const tokens = (this.theme && this.theme.tokens) ? this.theme.tokens : {};
+    const themeId = (this.theme && this.theme.id) ? this.theme.id : 'esprit';
+    const surface = this._themeSurfacePalette(themeId, this.themeMode);
+
+    const accent = tokens.accent || '#22d3ee';
+    const info = tokens.info || '#38bdf8';
+    const success = tokens.success || '#22c55e';
+    const warning = tokens.warning || '#f59e0b';
+    const error = tokens.error || '#ef4444';
+
+    root.style.setProperty('--bg', surface.bg);
+    root.style.setProperty('--bg-panel', surface.panel);
+    root.style.setProperty('--bg-header', surface.header);
+    root.style.setProperty('--bg-terminal', surface.terminal);
+    root.style.setProperty('--bg-elevated', surface.elevated);
+    root.style.setProperty('--border', tokens.border || surface.border);
+    root.style.setProperty('--text', tokens.text || surface.text);
+    root.style.setProperty('--text-dim', tokens.muted || surface.textDim);
+    root.style.setProperty('--text-bright', surface.textBright);
+    root.style.setProperty('--row-hover', surface.rowHover);
+    root.style.setProperty('--panel-inset', surface.inset);
+    root.style.setProperty('--accent', accent);
+    root.style.setProperty('--accent-dim', this._hexToRgba(accent, this.themeMode === 'light' ? 0.14 : 0.22));
+    root.style.setProperty('--blue', info);
+    root.style.setProperty('--green', success);
+    root.style.setProperty('--amber', warning);
+    root.style.setProperty('--red', error);
+
+    document.body.setAttribute('data-theme-id', themeId);
+    document.body.setAttribute('data-theme-mode', this.themeMode);
+    this._updateThemeToggleLabel();
+  }
+
+  _initWorkspaceActions() {
+    const copySelectedBtn = document.getElementById('copy-vuln-selected-btn');
+    const copyAllBtn = document.getElementById('copy-vuln-all-btn');
+    const stopBtn = document.getElementById('health-stop-btn');
+    const retryBtn = document.getElementById('health-retry-btn');
+    if (copySelectedBtn) copySelectedBtn.addEventListener('click', () => this._copySelectedVulnWorkspace());
+    if (copyAllBtn) copyAllBtn.addEventListener('click', () => this._copyAllVulnWorkspace());
+    if (stopBtn) stopBtn.addEventListener('click', () => this._stopSelectedHealthAgent());
+    if (retryBtn) retryBtn.addEventListener('click', () => this._retrySelectedHealthAgent());
+  }
+
   // ------- Ghost loader -------
 
   _showGhostLoader(show) {
@@ -239,6 +353,7 @@ class EspritDashboard {
     this._renderScanConfig();
     this._renderBrowserTabs();
     this._renderStatusBar();
+    this._renderLiveStatusLine();
 
     if (this.finalReport) {
       this._renderReport();
@@ -254,6 +369,8 @@ class EspritDashboard {
       document.getElementById('browser-viewer').classList.add('visible');
     }
 
+    this._renderVulnWorkspace();
+    this._renderHealthModal();
     this._refreshIcons();
   }
 
@@ -693,6 +810,7 @@ class EspritDashboard {
     this._updateStatCard('stat-tools', s.tool_count || 0);
     this._updateStatCard('stat-tokens', this._fmtNum(s.llm.total_tokens || 0));
     this._updateStatCard('stat-cost', '$' + (llm.cost || 0).toFixed(2));
+    this._updateStatCard('stat-projected', '$' + ((s.projected_cost || llm.cost || 0)).toFixed(2));
     this._updateStatCard('stat-tps', s.tokens_per_second || 0);
 
     if (s.start_time) {
@@ -720,6 +838,7 @@ class EspritDashboard {
 
     // Status bar
     this._renderStatusBar();
+    this._renderLiveStatusLine();
 
     this._setStatus(s.status || 'running', s.status || 'running');
   }
@@ -1106,6 +1225,531 @@ class EspritDashboard {
     this._refreshIcons();
   }
 
+  // ------- Live status line -------
+
+  _getPrimaryAgent() {
+    if (this.selectedAgentId) {
+      const selected = this.agents.find(a => a.id === this.selectedAgentId);
+      if (selected) return selected;
+    }
+    const root = this.agents.find(a => !a.parent_id);
+    if (root) return root;
+    return this.agents.length > 0 ? this.agents[0] : null;
+  }
+
+  _fmtElapsedSeconds(seconds) {
+    const total = Math.max(0, Math.floor(seconds || 0));
+    const h = Math.floor(total / 3600);
+    const m = Math.floor((total % 3600) / 60);
+    const s = total % 60;
+    if (h > 0) return h + 'h ' + m.toString().padStart(2, '0') + 'm';
+    return m + ':' + s.toString().padStart(2, '0');
+  }
+
+  _agentLatestSnippet(agentId, status) {
+    const stream = this.streaming && this.streaming[agentId];
+    if (stream && stream.trim()) {
+      const lines = stream.split('\n').map(x => x.trim()).filter(Boolean);
+      if (lines.length > 0) return lines[lines.length - 1];
+    }
+
+    for (let i = this.chatMessages.length - 1; i >= 0; i -= 1) {
+      const msg = this.chatMessages[i];
+      if (msg.agent_id === agentId && msg.role === 'assistant' && msg.content) {
+        const lines = String(msg.content).split('\n').map(x => x.trim()).filter(Boolean);
+        if (lines.length > 0) return lines[lines.length - 1];
+      }
+    }
+
+    const tools = this.tools.filter(t => t.agent_id === agentId);
+    if (tools.length > 0) {
+      const latest = [...tools].sort((a, b) => (b.completed_at || b.timestamp || '').localeCompare(a.completed_at || a.timestamp || ''))[0];
+      const summary = this._getToolArgsSummary(latest);
+      if (summary) return latest.tool_name + ': ' + summary;
+      if (latest.tool_name) return (latest.status === 'running' ? 'Running ' : 'Used ') + latest.tool_name;
+    }
+
+    if (status === 'waiting') return 'Waiting for user input.';
+    if (status === 'completed') return 'Agent completed.';
+    if (status === 'failed') return 'Agent failed. Review logs.';
+    return 'Initializing scan flow.';
+  }
+
+  _renderLiveStatusLine() {
+    const textEl = document.getElementById('live-status-text');
+    const lineEl = document.getElementById('live-status-line');
+    if (!textEl || !lineEl) return;
+
+    const agent = this._getPrimaryAgent();
+    if (!agent) {
+      textEl.textContent = 'Waiting for active agent status...';
+      return;
+    }
+
+    const status = agent.status || 'running';
+    const llm = this.stats && this.stats.llm ? this.stats.llm : {};
+    const byAgent = llm.by_agent || {};
+    const agentStats = byAgent[String(agent.id)] || {};
+    const tokens = (agentStats.input_tokens || 0) + (agentStats.output_tokens || 0);
+    const cost = agentStats.cost || 0;
+
+    let elapsed = 0;
+    if (this.stats && this.stats.start_time) {
+      const start = new Date(this.stats.start_time);
+      const end = this.stats.end_time ? new Date(this.stats.end_time) : new Date();
+      elapsed = Math.floor((end - start) / 1000);
+    }
+    const snippet = this._agentLatestSnippet(agent.id, status);
+    const projectedLeft = this.stats && this.stats.projected_remaining_seconds
+      ? ' · left ' + this._fmtElapsedSeconds(this.stats.projected_remaining_seconds)
+      : '';
+
+    const line = (agent.name || agent.id) +
+      ' · ' + this._fmtElapsedSeconds(elapsed) +
+      ' · ' + this._fmtNum(tokens) + ' tok' +
+      ' · $' + Number(cost).toFixed(2) +
+      projectedLeft +
+      ' · ' + (snippet.length > 140 ? snippet.substring(0, 137) + '...' : snippet);
+    textEl.textContent = line;
+
+    const existingIcon = document.getElementById('live-status-icon');
+    if (existingIcon) existingIcon.remove();
+    const iconName = (status === 'running' || status === 'waiting')
+      ? 'loader'
+      : status === 'failed'
+        ? 'triangle-alert'
+        : 'check-circle-2';
+    const icon = this._icon(iconName, 'icon-xs' + ((status === 'running' || status === 'waiting') ? ' spin-icon' : ''));
+    icon.id = 'live-status-icon';
+    lineEl.prepend(icon);
+    this._refreshIcons();
+  }
+
+  // ------- Vulnerability workspace -------
+
+  _isModalOpen(id) {
+    const modal = document.getElementById(id);
+    return !!modal && modal.style.display === 'flex';
+  }
+
+  _toggleVulnWorkspace() {
+    if (this._isModalOpen('vuln-workspace-modal')) {
+      this._closeVulnWorkspace();
+    } else {
+      this._openVulnWorkspace();
+    }
+  }
+
+  _openVulnWorkspace() {
+    const modal = document.getElementById('vuln-workspace-modal');
+    if (!modal) return;
+    modal.style.display = 'flex';
+    this._renderVulnWorkspace();
+    this._refreshIcons();
+  }
+
+  _closeVulnWorkspace() {
+    const modal = document.getElementById('vuln-workspace-modal');
+    if (!modal) return;
+    modal.style.display = 'none';
+  }
+
+  _sortedVulnerabilities() {
+    const sevOrder = { critical: 0, high: 1, medium: 2, low: 3, info: 4 };
+    return [...this.vulnerabilities].sort((a, b) => (sevOrder[a.severity] ?? 5) - (sevOrder[b.severity] ?? 5));
+  }
+
+  _renderWorkspaceStatus(targetId) {
+    const statusEl = document.getElementById(targetId);
+    if (!statusEl) return;
+    this._clearEl(statusEl);
+
+    const line = this._el('div', { className: 'workspace-status-line' });
+    const dot = this._createStatusDot((this.stats && this.stats.status) || 'running');
+    line.appendChild(dot);
+    line.appendChild(this._el('span', { textContent: this._getLiveWorkspaceStatusText() }));
+    statusEl.appendChild(line);
+  }
+
+  _getLiveWorkspaceStatusText() {
+    const agent = this._getPrimaryAgent();
+    if (!agent) return 'No active agent selected.';
+    return (agent.name || agent.id) + ' · ' + this._agentLatestSnippet(agent.id, agent.status || 'running');
+  }
+
+  _renderVulnWorkspace() {
+    if (!this._isModalOpen('vuln-workspace-modal')) return;
+    const listEl = document.getElementById('vuln-workspace-list');
+    const detailEl = document.getElementById('vuln-workspace-detail');
+    if (!listEl || !detailEl) return;
+
+    this._renderWorkspaceStatus('vuln-workspace-status');
+    const vulnerabilities = this._sortedVulnerabilities();
+    if (this._vulnWorkspaceIndex >= vulnerabilities.length) this._vulnWorkspaceIndex = Math.max(0, vulnerabilities.length - 1);
+    this._clearEl(listEl);
+    this._clearEl(detailEl);
+
+    if (vulnerabilities.length === 0) {
+      listEl.appendChild(this._el('div', { className: 'empty-state', textContent: 'No vulnerabilities found yet.' }));
+      detailEl.appendChild(this._el('div', { className: 'empty-state', textContent: 'Findings will stream here in realtime.' }));
+      return;
+    }
+
+    vulnerabilities.forEach((v, idx) => {
+      const item = this._el('div', {
+        className: 'workspace-item' + (idx === this._vulnWorkspaceIndex ? ' selected' : ''),
+        onclick: () => {
+          this._vulnWorkspaceIndex = idx;
+          this._renderVulnWorkspace();
+        },
+      });
+      item.appendChild(this._el('div', { className: 'workspace-item-title', textContent: v.title || 'Untitled vulnerability' }));
+      const meta = this._el('div', { className: 'workspace-item-meta' });
+      meta.appendChild(this._el('span', { textContent: (v.severity || 'info').toUpperCase() }));
+      if (v.cvss) meta.appendChild(this._el('span', { textContent: 'CVSS ' + v.cvss }));
+      if (v.agent_name) meta.appendChild(this._el('span', { textContent: v.agent_name }));
+      item.appendChild(meta);
+      listEl.appendChild(item);
+    });
+
+    const selected = vulnerabilities[this._vulnWorkspaceIndex];
+    if (!selected) return;
+    detailEl.appendChild(this._renderVulnWorkspaceDetail(selected));
+    this._refreshIcons();
+  }
+
+  _renderVulnWorkspaceDetail(vuln) {
+    const wrap = this._el('div');
+    wrap.appendChild(this._el('h3', { textContent: vuln.title || 'Vulnerability Detail', style: 'margin-bottom:8px;color:var(--text-bright)' }));
+    wrap.appendChild(this._el('div', {
+      className: 'vuln-detail-severity vuln-' + (vuln.severity || 'info'),
+      textContent: (vuln.severity || 'info').toUpperCase(),
+    }));
+
+    const fields = [
+      ['CVSS', vuln.cvss],
+      ['Target', vuln.target],
+      ['Endpoint', vuln.endpoint],
+      ['Method', vuln.method],
+      ['CVE', vuln.cve],
+      ['Agent', vuln.agent_name],
+    ];
+    fields.forEach(([label, value]) => {
+      if (!value) return;
+      const field = this._el('div', { className: 'vuln-detail-field' });
+      field.appendChild(this._el('strong', { textContent: label + ': ' }));
+      field.appendChild(document.createTextNode(String(value)));
+      wrap.appendChild(field);
+    });
+
+    const sections = [
+      ['Description', vuln.description],
+      ['Impact', vuln.impact],
+      ['Technical Analysis', vuln.technical_analysis],
+      ['Proof of Concept', vuln.poc_description],
+      ['Remediation', vuln.remediation_steps],
+    ];
+    sections.forEach(([title, content]) => {
+      if (!content) return;
+      const sec = this._el('div', { className: 'vuln-detail-section' });
+      sec.appendChild(this._el('h3', { textContent: title }));
+      sec.appendChild(this._renderMarkdown(content));
+      wrap.appendChild(sec);
+    });
+
+    if (vuln.poc_script_code) {
+      const sec = this._el('div', { className: 'vuln-detail-section' });
+      sec.appendChild(this._el('h3', { textContent: 'PoC Code' }));
+      sec.appendChild(this._el('pre', { textContent: vuln.poc_script_code }));
+      wrap.appendChild(sec);
+    }
+
+    if (vuln.code_diff) {
+      const sec = this._el('div', { className: 'vuln-detail-section' });
+      sec.appendChild(this._el('h3', { textContent: 'Code Diff' }));
+      vuln.code_diff.split('\n').forEach(line => {
+        let cls = 'diff-line context';
+        if (line.startsWith('+')) cls = 'diff-line added';
+        else if (line.startsWith('-')) cls = 'diff-line removed';
+        sec.appendChild(this._el('div', { className: cls, textContent: line }));
+      });
+      wrap.appendChild(sec);
+    }
+
+    return wrap;
+  }
+
+  _vulnToMarkdown(vuln) {
+    const lines = [];
+    lines.push('# ' + (vuln.title || 'Untitled Vulnerability'));
+    lines.push('');
+    if (vuln.id) lines.push('**ID:** ' + vuln.id);
+    if (vuln.severity) lines.push('**Severity:** ' + String(vuln.severity).toUpperCase());
+    if (vuln.timestamp) lines.push('**Found:** ' + vuln.timestamp);
+    if (vuln.agent_name) lines.push('**Agent:** ' + vuln.agent_name);
+    if (vuln.target) lines.push('**Target:** ' + vuln.target);
+    if (vuln.endpoint) lines.push('**Endpoint:** ' + vuln.endpoint);
+    if (vuln.method) lines.push('**Method:** ' + vuln.method);
+    if (vuln.cve) lines.push('**CVE:** ' + vuln.cve);
+    if (vuln.cvss !== undefined && vuln.cvss !== null) lines.push('**CVSS:** ' + vuln.cvss);
+    lines.push('');
+    lines.push('## Description');
+    lines.push('');
+    lines.push(vuln.description || 'No description provided.');
+    if (vuln.impact) lines.push('', '## Impact', '', vuln.impact);
+    if (vuln.technical_analysis) lines.push('', '## Technical Analysis', '', vuln.technical_analysis);
+    if (vuln.poc_description || vuln.poc_script_code) {
+      lines.push('', '## Proof of Concept', '');
+      if (vuln.poc_description) lines.push(vuln.poc_description, '');
+      if (vuln.poc_script_code) lines.push('```', vuln.poc_script_code, '```');
+    }
+    if (vuln.code_diff) lines.push('', '## Code Diff', '', '```diff', vuln.code_diff, '```');
+    if (vuln.remediation_steps) lines.push('', '## Remediation', '', vuln.remediation_steps);
+    lines.push('');
+    return lines.join('\n');
+  }
+
+  _setTempButtonLabel(id, label, timeoutMs) {
+    const btn = document.getElementById(id);
+    if (!btn) return;
+    const original = btn.textContent;
+    this._clearEl(btn);
+    btn.appendChild(document.createTextNode(label));
+    setTimeout(() => {
+      this._clearEl(btn);
+      if (id === 'copy-vuln-selected-btn') {
+        btn.appendChild(this._icon('copy', 'icon-xs'));
+        btn.appendChild(document.createTextNode(' Copy Selected'));
+      } else if (id === 'copy-vuln-all-btn') {
+        btn.appendChild(this._icon('files', 'icon-xs'));
+        btn.appendChild(document.createTextNode(' Copy All'));
+      } else if (id === 'health-stop-btn') {
+        btn.appendChild(this._icon('square', 'icon-xs'));
+        btn.appendChild(document.createTextNode(' Stop Selected'));
+      } else if (id === 'health-retry-btn') {
+        btn.appendChild(this._icon('rotate-cw', 'icon-xs'));
+        btn.appendChild(document.createTextNode(' Retry Selected'));
+      } else {
+        btn.textContent = original;
+      }
+      this._refreshIcons();
+    }, timeoutMs || 1500);
+    this._refreshIcons();
+  }
+
+  _copySelectedVulnWorkspace() {
+    const vulnerabilities = this._sortedVulnerabilities();
+    const vuln = vulnerabilities[this._vulnWorkspaceIndex];
+    if (!vuln) return;
+    navigator.clipboard.writeText(this._vulnToMarkdown(vuln)).then(() => {
+      this._setTempButtonLabel('copy-vuln-selected-btn', 'Copied', 1500);
+    });
+  }
+
+  _copyAllVulnWorkspace() {
+    const vulnerabilities = this._sortedVulnerabilities();
+    if (vulnerabilities.length === 0) return;
+    const payload = vulnerabilities.map(v => this._vulnToMarkdown(v)).join('\n\n---\n\n');
+    navigator.clipboard.writeText(payload).then(() => {
+      this._setTempButtonLabel('copy-vuln-all-btn', 'Copied', 1500);
+    });
+  }
+
+  // ------- Agent health workspace -------
+
+  _toggleHealthModal() {
+    if (this._isModalOpen('health-modal')) {
+      this._closeHealthModal();
+    } else {
+      this._openHealthModal();
+    }
+  }
+
+  _openHealthModal() {
+    const modal = document.getElementById('health-modal');
+    if (!modal) return;
+    modal.style.display = 'flex';
+    this._renderHealthModal();
+    this._refreshIcons();
+  }
+
+  _closeHealthModal() {
+    const modal = document.getElementById('health-modal');
+    if (!modal) return;
+    modal.style.display = 'none';
+  }
+
+  _parseDateMaybe(value) {
+    if (!value) return null;
+    const d = new Date(value);
+    return isNaN(d.getTime()) ? null : d;
+  }
+
+  _agentLastActivityAgeSeconds(agentId, agent) {
+    let latest = this._parseDateMaybe(agent && agent.updated_at);
+    this.chatMessages.forEach(msg => {
+      if (msg.agent_id !== agentId) return;
+      const ts = this._parseDateMaybe(msg.timestamp);
+      if (ts && (!latest || ts > latest)) latest = ts;
+    });
+    this.tools.forEach(tool => {
+      if (tool.agent_id !== agentId) return;
+      const started = this._parseDateMaybe(tool.timestamp);
+      const completed = this._parseDateMaybe(tool.completed_at);
+      if (started && (!latest || started > latest)) latest = started;
+      if (completed && (!latest || completed > latest)) latest = completed;
+    });
+    if (this.streaming && this.streaming[agentId]) {
+      latest = new Date();
+    }
+    if (!latest) return 0;
+    return Math.max(0, Math.floor((Date.now() - latest.getTime()) / 1000));
+  }
+
+  _agentErrorStreak(agentId) {
+    const tools = this.tools.filter(t => t.agent_id === agentId)
+      .sort((a, b) => (b.completed_at || b.timestamp || '').localeCompare(a.completed_at || a.timestamp || ''));
+    let streak = 0;
+    for (const tool of tools) {
+      const status = String(tool.status || '').toLowerCase();
+      if (status === 'failed' || status === 'error') streak += 1;
+      else if (status === 'completed' || status === 'running') break;
+    }
+    return streak;
+  }
+
+  _agentRetryCount(agentId, agent) {
+    let retries = 0;
+    this.tools.forEach(tool => {
+      if (tool.agent_id !== agentId) return;
+      const name = String(tool.tool_name || '');
+      const status = String(tool.status || '').toLowerCase();
+      if (name === 'llm_error_details' || name === 'sandbox_error_details' || status === 'failed' || status === 'error') retries += 1;
+    });
+    const agentStatus = String((agent && agent.status) || '').toLowerCase();
+    if (['failed', 'llm_failed', 'error', 'sandbox_failed'].includes(agentStatus)) retries += 1;
+    return retries;
+  }
+
+  _riskTier(status, ageSeconds, errorStreak, retryCount) {
+    let score = 0;
+    if (['failed', 'llm_failed', 'error', 'sandbox_failed'].includes(status)) score += 80;
+    else if (status === 'running' || status === 'waiting') score += 20;
+    if (ageSeconds >= 240) score += 40;
+    else if (ageSeconds >= 120) score += 25;
+    else if (ageSeconds >= 60) score += 10;
+    score += Math.min(errorStreak * 15, 45);
+    score += Math.min(retryCount * 5, 25);
+    if ((status === 'running' || status === 'waiting') && ageSeconds >= 120 && errorStreak >= 2) score += 25;
+    if (score >= 70) return { risk: 'high', score };
+    if (score >= 40) return { risk: 'medium', score };
+    return { risk: 'low', score };
+  }
+
+  _getAgentHealthRows() {
+    const rows = this.agents.map(agent => {
+      const status = String(agent.status || 'running').toLowerCase();
+      const ageSeconds = this._agentLastActivityAgeSeconds(agent.id, agent);
+      const errorStreak = this._agentErrorStreak(agent.id);
+      const retryCount = this._agentRetryCount(agent.id, agent);
+      const risk = this._riskTier(status, ageSeconds, errorStreak, retryCount);
+      return {
+        agent_id: agent.id,
+        name: agent.name || agent.id,
+        status,
+        last_output_age: this._fmtElapsedSeconds(ageSeconds),
+        error_streak: errorStreak,
+        retry_count: retryCount,
+        risk: risk.risk,
+        risk_score: risk.score,
+        snippet: this._agentLatestSnippet(agent.id, status),
+      };
+    });
+    rows.sort((a, b) => (b.risk_score - a.risk_score) || a.name.localeCompare(b.name));
+    return rows;
+  }
+
+  _renderHealthModal() {
+    if (!this._isModalOpen('health-modal')) return;
+    const listEl = document.getElementById('health-list');
+    const detailEl = document.getElementById('health-detail');
+    if (!listEl || !detailEl) return;
+
+    this._renderWorkspaceStatus('health-workspace-status');
+    const rows = this._getAgentHealthRows();
+    if (this._healthIndex >= rows.length) this._healthIndex = Math.max(0, rows.length - 1);
+
+    this._clearEl(listEl);
+    this._clearEl(detailEl);
+    if (rows.length === 0) {
+      listEl.appendChild(this._el('div', { className: 'empty-state', textContent: 'No agents connected yet.' }));
+      detailEl.appendChild(this._el('div', { className: 'empty-state', textContent: 'Health diagnostics appear as agents run.' }));
+      return;
+    }
+
+    rows.forEach((row, idx) => {
+      const item = this._el('div', {
+        className: 'workspace-item' + (idx === this._healthIndex ? ' selected' : ''),
+        onclick: () => {
+          this._healthIndex = idx;
+          this._renderHealthModal();
+        },
+      });
+      item.appendChild(this._el('div', { className: 'workspace-item-title', textContent: row.name }));
+      const meta = this._el('div', { className: 'workspace-item-meta' });
+      meta.appendChild(this._el('span', { textContent: row.risk.toUpperCase() }));
+      meta.appendChild(this._el('span', { textContent: row.status }));
+      meta.appendChild(this._el('span', { textContent: 'age ' + row.last_output_age }));
+      item.appendChild(meta);
+      listEl.appendChild(item);
+    });
+
+    const selected = rows[this._healthIndex];
+    if (!selected) return;
+    const riskColor = selected.risk === 'high' ? 'var(--red)' : selected.risk === 'medium' ? 'var(--amber)' : 'var(--green)';
+    detailEl.appendChild(this._el('h3', { textContent: selected.name, style: 'margin-bottom:8px;color:var(--text-bright)' }));
+    detailEl.appendChild(this._el('div', { textContent: 'Status: ' + selected.status, style: 'margin-bottom:4px;color:var(--text-dim)' }));
+    detailEl.appendChild(this._el('div', { textContent: 'Risk: ' + selected.risk.toUpperCase(), style: 'margin-bottom:4px;color:' + riskColor + ';font-weight:700' }));
+    detailEl.appendChild(this._el('div', { textContent: 'Last output age: ' + selected.last_output_age, style: 'margin-bottom:4px;color:var(--text-dim)' }));
+    detailEl.appendChild(this._el('div', { textContent: 'Error streak: ' + selected.error_streak, style: 'margin-bottom:4px;color:var(--text-dim)' }));
+    detailEl.appendChild(this._el('div', { textContent: 'Retry count: ' + selected.retry_count, style: 'margin-bottom:8px;color:var(--text-dim)' }));
+    detailEl.appendChild(this._el('div', { className: 'vuln-detail-section' }, [
+      this._el('h3', { textContent: 'Latest activity' }),
+      this._el('div', { textContent: selected.snippet || 'No snippet yet.' }),
+    ]));
+  }
+
+  _selectedHealthRow() {
+    const rows = this._getAgentHealthRows();
+    if (rows.length === 0) return null;
+    if (this._healthIndex >= rows.length) this._healthIndex = rows.length - 1;
+    return rows[this._healthIndex];
+  }
+
+  _stopSelectedHealthAgent() {
+    const row = this._selectedHealthRow();
+    if (!row) return;
+    fetch('/api/agent/' + encodeURIComponent(row.agent_id) + '/stop', { method: 'POST' })
+      .then(r => r.json())
+      .then(data => {
+        const ok = !!(data && data.success);
+        this._setTempButtonLabel('health-stop-btn', ok ? 'Stopped' : 'Failed', 1500);
+      })
+      .catch(() => this._setTempButtonLabel('health-stop-btn', 'Failed', 1500));
+  }
+
+  _retrySelectedHealthAgent() {
+    const row = this._selectedHealthRow();
+    if (!row) return;
+    fetch('/api/agent/' + encodeURIComponent(row.agent_id) + '/retry', { method: 'POST' })
+      .then(r => r.json())
+      .then(data => {
+        const ok = !!(data && data.success);
+        this._setTempButtonLabel('health-retry-btn', ok ? 'Retried' : 'Failed', 1500);
+      })
+      .catch(() => this._setTempButtonLabel('health-retry-btn', 'Failed', 1500));
+  }
+
   // ------- Markdown rendering (safe DOM) -------
 
   _renderMarkdown(text) {
@@ -1257,12 +1901,13 @@ class EspritDashboard {
 
   _createStatusDot(status) {
     const colors = {
-      running: '#22d3ee',
-      completed: '#22c55e',
-      failed: '#dc2626',
-      stopped: '#eab308',
+      running: 'var(--accent)',
+      waiting: 'var(--amber)',
+      completed: 'var(--green)',
+      failed: 'var(--red)',
+      stopped: 'var(--amber)',
     };
-    const color = colors[status] || '#6b7280';
+    const color = colors[status] || 'var(--text-dim)';
     const pulse = status === 'running' ? ' pulsing' : '';
     return this._el('span', {
       className: 'status-dot' + pulse,
@@ -1390,10 +2035,46 @@ function closeScreenshotModal() {
   document.getElementById('screenshot-modal').style.display = 'none';
 }
 
+function closeVulnWorkspaceModal() {
+  if (window._dashboard) window._dashboard._closeVulnWorkspace();
+}
+
+function closeHealthModal() {
+  if (window._dashboard) window._dashboard._closeHealthModal();
+}
+
 document.addEventListener('keydown', e => {
+  const target = e.target;
+  const isTyping = target && (
+    target.tagName === 'INPUT' ||
+    target.tagName === 'TEXTAREA' ||
+    target.isContentEditable
+  );
+
   if (e.key === 'Escape') {
     closeVulnModal();
     closeScreenshotModal();
+    closeVulnWorkspaceModal();
+    closeHealthModal();
+    return;
+  }
+
+  if (isTyping) return;
+
+  const key = String(e.key || '').toLowerCase();
+  if (key === 'v') {
+    if (window._dashboard) window._dashboard._toggleVulnWorkspace();
+    e.preventDefault();
+    return;
+  }
+  if (key === 'h') {
+    if (window._dashboard) window._dashboard._toggleHealthModal();
+    e.preventDefault();
+    return;
+  }
+  if (key === 't') {
+    if (window._dashboard) window._dashboard._toggleThemeMode();
+    e.preventDefault();
   }
 });
 
@@ -1401,6 +2082,8 @@ document.addEventListener('click', e => {
   if (e.target.classList.contains('modal-backdrop')) {
     closeVulnModal();
     closeScreenshotModal();
+    closeVulnWorkspaceModal();
+    closeHealthModal();
   }
 });
 

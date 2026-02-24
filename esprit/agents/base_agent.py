@@ -2,6 +2,8 @@ import asyncio
 import contextlib
 import json
 import logging
+import re
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Optional
 
 
@@ -14,6 +16,7 @@ from jinja2 import (
     select_autoescape,
 )
 
+from esprit.config import Config
 from esprit.llm import LLM, LLMConfig, LLMRequestFailedError
 from esprit.llm.utils import clean_content
 from esprit.runtime import SandboxInitializationError
@@ -52,6 +55,9 @@ class BaseAgent(metaclass=AgentMeta):
     agent_name: str = ""
     jinja_env: Environment
     default_llm_config: LLMConfig | None = None
+    _DEFAULT_LLM_AUTO_RESUME_ATTEMPTS = 2
+    _DEFAULT_LLM_AUTO_RESUME_COOLDOWN_SECONDS = 12.0
+    _RETRYABLE_LLM_STATUS_CODES = {408, 409, 425, 429, 500, 502, 503, 504}
 
     def __init__(self, config: dict[str, Any]):
         self.config = config
@@ -73,6 +79,7 @@ class BaseAgent(metaclass=AgentMeta):
             self.state = AgentState(
                 agent_name="Root Agent",
                 max_iterations=self.max_iterations,
+                is_whitebox=bool(self.local_sources),
             )
 
         self.llm = LLM(self.llm_config, agent_name=self.agent_name)
@@ -81,6 +88,29 @@ class BaseAgent(metaclass=AgentMeta):
             self.llm.set_agent_identity(self.state.agent_name, self.state.agent_id)
         self._current_task: asyncio.Task[Any] | None = None
         self._force_stop = False
+        max_auto_resume_attempts = config.get("llm_auto_resume_max_attempts")
+        if max_auto_resume_attempts is None:
+            max_auto_resume_attempts = Config.get("esprit_llm_auto_resume_max_attempts")
+        auto_resume_cooldown = config.get("llm_auto_resume_cooldown_seconds")
+        if auto_resume_cooldown is None:
+            auto_resume_cooldown = Config.get("esprit_llm_auto_resume_cooldown_seconds")
+        try:
+            self._max_llm_auto_resume_attempts = max(
+                0,
+                int(max_auto_resume_attempts or self._DEFAULT_LLM_AUTO_RESUME_ATTEMPTS),
+            )
+        except (TypeError, ValueError):
+            self._max_llm_auto_resume_attempts = self._DEFAULT_LLM_AUTO_RESUME_ATTEMPTS
+        try:
+            self._llm_auto_resume_cooldown = max(
+                0.0,
+                float(auto_resume_cooldown or self._DEFAULT_LLM_AUTO_RESUME_COOLDOWN_SECONDS),
+            )
+        except (TypeError, ValueError):
+            self._llm_auto_resume_cooldown = self._DEFAULT_LLM_AUTO_RESUME_COOLDOWN_SECONDS
+        self._llm_auto_resume_attempts = 0
+        self._last_llm_failure_retryable = False
+        self._last_llm_error_status_code: int | None = None
 
         from esprit.telemetry.tracer import get_global_tracer
 
@@ -213,6 +243,9 @@ class BaseAgent(metaclass=AgentMeta):
                 self._current_task = iteration_task
                 should_finish = await iteration_task
                 self._current_task = None
+                self._llm_auto_resume_attempts = 0
+                self._last_llm_failure_retryable = False
+                self._last_llm_error_status_code = None
 
                 if should_finish:
                     if self.non_interactive:
@@ -256,27 +289,101 @@ class BaseAgent(metaclass=AgentMeta):
         if self._force_stop:
             return
 
+        if self._should_auto_resume_llm_failure():
+            self._llm_auto_resume_attempts += 1
+            attempt = self._llm_auto_resume_attempts
+            status_hint = (
+                f" (status {self._last_llm_error_status_code})"
+                if self._last_llm_error_status_code is not None
+                else ""
+            )
+            self.state.resume_from_waiting()
+            self.state.add_message(
+                "user",
+                (
+                    "System note: Automatically retrying after transient LLM failure"
+                    f"{status_hint}. Retry attempt "
+                    f"{attempt}/{self._max_llm_auto_resume_attempts}. "
+                    "Continue from the latest state without repeating completed steps."
+                ),
+            )
+            self._mark_agent_running()
+            return
+
         if self.state.has_waiting_timeout():
             self.state.resume_from_waiting()
             self.state.add_message("user", "Waiting timeout reached. Resuming execution.")
-
-            from esprit.telemetry.tracer import get_global_tracer
-
-            tracer = get_global_tracer()
-            if tracer:
-                tracer.update_agent_status(self.state.agent_id, "running")
-
-            try:
-                from esprit.tools.agents_graph.agents_graph_actions import _agent_graph
-
-                if self.state.agent_id in _agent_graph["nodes"]:
-                    _agent_graph["nodes"][self.state.agent_id]["status"] = "running"
-            except (ImportError, KeyError):
-                pass
-
+            self._mark_agent_running()
             return
 
         await asyncio.sleep(0.5)
+
+    def _mark_agent_running(self) -> None:
+        from esprit.telemetry.tracer import get_global_tracer
+
+        tracer = get_global_tracer()
+        if tracer:
+            tracer.update_agent_status(self.state.agent_id, "running")
+
+        try:
+            from esprit.tools.agents_graph.agents_graph_actions import _agent_graph
+
+            if self.state.agent_id in _agent_graph["nodes"]:
+                _agent_graph["nodes"][self.state.agent_id]["status"] = "running"
+                _agent_graph["nodes"][self.state.agent_id].pop("waiting_reason", None)
+        except (ImportError, KeyError):
+            pass
+
+    @classmethod
+    def _is_retryable_llm_status_code(cls, status_code: int | None) -> bool:
+        if status_code is None:
+            return True
+        if status_code >= 500:
+            return True
+        return status_code in cls._RETRYABLE_LLM_STATUS_CODES
+
+    @staticmethod
+    def _extract_status_code_from_llm_error(error: LLMRequestFailedError) -> int | None:
+        status_code = getattr(error, "status_code", None)
+        if isinstance(status_code, int):
+            return status_code
+
+        details = str(getattr(error, "details", "") or "")
+        if not details:
+            return None
+
+        patterns = (
+            r"\bstatus(?:_code)?[=: ]+(\d{3})\b",
+            r"\bHTTP[^\d]{0,5}(\d{3})\b",
+            r"\bcode[=: ]+(\d{3})\b",
+        )
+        for pattern in patterns:
+            match = re.search(pattern, details, re.IGNORECASE)
+            if not match:
+                continue
+            try:
+                parsed = int(match.group(1))
+            except (TypeError, ValueError):
+                continue
+            if 100 <= parsed <= 599:
+                return parsed
+
+        return None
+
+    def _should_auto_resume_llm_failure(self) -> bool:
+        if not self.state.is_waiting_for_input() or not self.state.llm_failed:
+            return False
+        if not self.state.parent_id:
+            return False
+        if not self._last_llm_failure_retryable:
+            return False
+        if self._llm_auto_resume_attempts >= self._max_llm_auto_resume_attempts:
+            return False
+        if not self.state.waiting_start_time:
+            return False
+
+        elapsed = (datetime.now(UTC) - self.state.waiting_start_time).total_seconds()
+        return elapsed >= self._llm_auto_resume_cooldown
 
     async def _enter_waiting_state(
         self,
@@ -373,33 +480,8 @@ class BaseAgent(metaclass=AgentMeta):
             self.state.add_message("user", corrective_message)
             return False
 
-        # Build tool_calls for the assistant message (native mode)
-        native_tool_calls = None
         actions = final_response.tool_invocations or []
-        if any(inv.get("tool_call_id") for inv in actions):
-            tool_calls_payload: list[dict[str, Any]] = []
-            for inv in actions:
-                tool_call_id = str(inv.get("tool_call_id") or "")
-                if not tool_call_id:
-                    continue
-
-                try:
-                    arguments_json = json.dumps(inv.get("args", {}), default=str)
-                except (TypeError, ValueError):
-                    arguments_json = "{}"
-
-                tool_calls_payload.append(
-                    {
-                        "id": tool_call_id,
-                        "type": "function",
-                        "function": {
-                            "name": str(inv.get("toolName") or ""),
-                            "arguments": arguments_json,
-                        },
-                    }
-                )
-
-            native_tool_calls = tool_calls_payload or None
+        native_tool_calls = self._build_native_tool_calls(actions)
 
         thinking_blocks = getattr(final_response, "thinking_blocks", None)
         self.state.add_message(
@@ -420,6 +502,39 @@ class BaseAgent(metaclass=AgentMeta):
             return await self._execute_actions(actions, tracer)
 
         return False
+
+    @staticmethod
+    def _build_native_tool_calls(actions: list[Any]) -> list[dict[str, Any]] | None:
+        """Build assistant tool_calls payload only when all invocations carry IDs."""
+        if not actions:
+            return None
+
+        for inv in actions:
+            if not isinstance(inv, dict):
+                return None
+            if not str(inv.get("tool_call_id") or ""):
+                return None
+
+        tool_calls_payload: list[dict[str, Any]] = []
+        for inv in actions:
+            tool_call_id = str(inv.get("tool_call_id") or "")
+            try:
+                arguments_json = json.dumps(inv.get("args", {}), default=str)
+            except (TypeError, ValueError):
+                arguments_json = "{}"
+
+            tool_calls_payload.append(
+                {
+                    "id": tool_call_id,
+                    "type": "function",
+                    "function": {
+                        "name": str(inv.get("toolName") or ""),
+                        "arguments": arguments_json,
+                    },
+                }
+            )
+
+        return tool_calls_payload or None
 
     def _get_agent_tools(self) -> list[dict[str, Any]] | None:
         """Get JSON tool definitions for native tool calling."""
@@ -466,6 +581,27 @@ class BaseAgent(metaclass=AgentMeta):
 
         return False
 
+    @staticmethod
+    def _should_resume_waiting_on_message(state: AgentState, sender_id: str | None) -> bool:
+        """Decide whether an inbound message should resume a waiting agent."""
+        if not state.is_waiting_for_input():
+            return False
+
+        if not state.llm_failed:
+            return True
+
+        if sender_id == "user":
+            return True
+
+        if state.parent_id:
+            # For llm_failed sub-agents, only parent instructions should resume execution.
+            # This avoids unrelated sibling messages causing retry loops.
+            return bool(sender_id and sender_id == state.parent_id)
+
+        # Root agents can receive completion/results only from sub-agents.
+        # Allow those messages to resume from llm_failed wait to prevent deadlocks.
+        return bool(sender_id)
+
     def _check_agent_messages(self, state: AgentState) -> None:  # noqa: PLR0912
         try:
             from esprit.tools.agents_graph.agents_graph_actions import _agent_graph, _agent_messages
@@ -480,27 +616,15 @@ class BaseAgent(metaclass=AgentMeta):
                 for message in messages:
                     if not message.get("read", False):
                         sender_id = message.get("from")
+                        was_llm_failed = state.llm_failed
 
-                        if state.is_waiting_for_input():
-                            if state.llm_failed:
-                                if sender_id == "user":
-                                    state.resume_from_waiting()
-                                    has_new_messages = True
-
-                                    from esprit.telemetry.tracer import get_global_tracer
-
-                                    tracer = get_global_tracer()
-                                    if tracer:
-                                        tracer.update_agent_status(state.agent_id, "running")
-                            else:
-                                state.resume_from_waiting()
-                                has_new_messages = True
-
-                                from esprit.telemetry.tracer import get_global_tracer
-
-                                tracer = get_global_tracer()
-                                if tracer:
-                                    tracer.update_agent_status(state.agent_id, "running")
+                        if self._should_resume_waiting_on_message(state, sender_id):
+                            state.resume_from_waiting()
+                            if was_llm_failed:
+                                self._llm_auto_resume_attempts = 0
+                                self._last_llm_failure_retryable = False
+                                self._last_llm_error_status_code = None
+                            has_new_messages = True
 
                         if sender_id == "user":
                             sender_name = "User"
@@ -593,6 +717,9 @@ class BaseAgent(metaclass=AgentMeta):
     ) -> dict[str, Any] | None:
         error_msg = str(error)
         error_details = getattr(error, "details", None)
+        status_code = self._extract_status_code_from_llm_error(error)
+        self._last_llm_error_status_code = status_code
+        self._last_llm_failure_retryable = self._is_retryable_llm_status_code(status_code)
         self.state.add_error(error_msg)
 
         if self.non_interactive:

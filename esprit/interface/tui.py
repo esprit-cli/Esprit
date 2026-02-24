@@ -5,7 +5,9 @@ import logging
 import signal
 import sys
 import threading
+import time
 from collections.abc import Callable
+from datetime import UTC, datetime
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as pkg_version
 from typing import TYPE_CHECKING, Any, ClassVar
@@ -13,6 +15,8 @@ from typing import TYPE_CHECKING, Any, ClassVar
 
 if TYPE_CHECKING:
     from textual.timer import Timer
+
+    from esprit.interface.updater import UpdateInfo
 
 from rich.align import Align
 from rich.console import Group
@@ -29,11 +33,27 @@ from textual.widgets import Button, Label, Static, TextArea, Tree
 from textual.widgets.tree import TreeNode
 
 from esprit.agents.EspritAgent import EspritAgent
+from esprit.config import Config
+# IMPORTANT: import image_protocol BEFORE the Textual app starts so that
+# textual-image can query the terminal for Kitty/Sixel support while stdout
+# is still a real TTY.
+import esprit.interface.image_protocol as _image_proto  # noqa: F401
 from esprit.interface.streaming_parser import parse_streaming_content
 from esprit.interface.tool_components.agent_message_renderer import AgentMessageRenderer
 from esprit.interface.tool_components.registry import get_tool_renderer
 from esprit.interface.tool_components.user_message_renderer import UserMessageRenderer
-from esprit.interface.utils import build_tui_stats_text, _ACTIVITY_SPINNER
+from esprit.interface.theme_tokens import (
+    DEFAULT_THEME_ID,
+    SUPPORTED_THEME_IDS,
+    get_marker_color,
+    get_theme_tokens,
+    normalize_theme_id,
+)
+from esprit.interface.utils import (
+    build_tui_stats_text,
+    format_token_count,
+    format_vulnerability_report,
+)
 from esprit.llm.config import LLMConfig
 from esprit.telemetry.tracer import Tracer, set_global_tracer
 
@@ -61,6 +81,19 @@ class ChatTextArea(TextArea):  # type: ignore[misc]
         self._update_height()
 
     def _on_key(self, event: events.Key) -> None:
+        if self._app_reference:
+            key = str(event.key or "")
+            if key == "ctrl+v":
+                self._app_reference.action_toggle_vulnerability_overlay()
+                event.prevent_default()
+                event.stop()
+                return
+            if key == "ctrl+h":
+                self._app_reference.action_toggle_agent_health_popup()
+                event.prevent_default()
+                event.stop()
+                return
+
         if event.key == "shift+enter":
             self.insert("\n")
             event.prevent_default()
@@ -85,9 +118,9 @@ class ChatTextArea(TextArea):  # type: ignore[misc]
             return
 
         line_count = self.document.line_count
-        target_lines = min(max(1, line_count), 8)
+        target_lines = min(max(1, line_count), 6)
 
-        new_height = target_lines + 2
+        new_height = max(3, target_lines + 2)
 
         if self.parent.styles.height != new_height:
             self.parent.styles.height = new_height
@@ -95,14 +128,12 @@ class ChatTextArea(TextArea):  # type: ignore[misc]
 
 
 class SplashScreen(Static):  # type: ignore[misc]
-    PRIMARY_GREEN = "#22d3ee"
-    BANNER = (
-        " ███████╗███████╗██████╗ ██████╗ ██╗████████╗\n"
-        " ██╔════╝██╔════╝██╔══██╗██╔══██╗██║╚══██╔══╝\n"
-        " █████╗  ███████╗██████╔╝██████╔╝██║   ██║   \n"
-        " ██╔══╝  ╚════██║██╔═══╝ ██╔══██╗██║   ██║   \n"
-        " ███████╗███████║██║     ██║  ██║██║   ██║   \n"
-        " ╚══════╝╚══════╝╚═╝     ╚═╝  ╚═╝╚═╝   ╚═╝   "
+    WORDMARK = (
+        "███████ ███████ ██████  ██████  ██ ████████",
+        "██      ██      ██   ██ ██   ██ ██    ██",
+        "█████   ███████ ██████  ██████  ██    ██",
+        "██           ██ ██      ██   ██ ██    ██",
+        "███████ ███████ ██      ██   ██ ██    ██",
     )
     GHOST_FRAMES: ClassVar[list[tuple[str, ...]]] = [
         (
@@ -155,6 +186,10 @@ class SplashScreen(Static):  # type: ignore[misc]
         self._animation_timer: Timer | None = None
         self._panel_static: Static | None = None
         self._version = "dev"
+        self._theme_id = normalize_theme_id(Config.get_launchpad_theme())
+
+    def _theme_tokens(self) -> dict[str, Any]:
+        return get_theme_tokens(self._theme_id)
 
     def compose(self) -> ComposeResult:
         self._version = get_package_version()
@@ -184,10 +219,11 @@ class SplashScreen(Static):  # type: ignore[misc]
         self._panel_static.update(panel)
 
     def _build_panel(self, start_line: Text) -> Panel:
+        tokens = self._theme_tokens()
         content = Group(
             Align.center(self._build_ghost_text(self._animation_step)),
             Align.center(Text(" ")),
-            Align.center(self._build_banner_text()),
+            Align.center(self._build_wordmark_text(self._animation_step)),
             Align.center(Text(" ")),
             Align.center(self._build_welcome_text()),
             Align.center(self._build_version_text()),
@@ -196,23 +232,66 @@ class SplashScreen(Static):  # type: ignore[misc]
             Align.center(start_line.copy()),
         )
 
-        return Panel.fit(content, border_style=self.PRIMARY_GREEN, padding=(1, 6))
+        return Panel.fit(content, border_style=str(tokens.get("accent", "#22d3ee")), padding=(1, 4))
 
     def _build_welcome_text(self) -> Text:
-        text = Text("Ghost shell online: ", style=Style(color="white", bold=True))
-        text.append("Esprit", style=Style(color=self.PRIMARY_GREEN, bold=True))
+        tokens = self._theme_tokens()
+        text = Text("Ghost shell online: ", style=Style(color=str(tokens.get("text", "white")), bold=True))
+        text.append("Esprit", style=Style(color=str(tokens.get("accent", "#22d3ee")), bold=True))
         return text
 
     def _build_version_text(self) -> Text:
-        return Text(f"v{self._version}", style=Style(color="white", dim=True))
+        tokens = self._theme_tokens()
+        return Text(f"v{self._version}", style=Style(color=str(tokens.get("muted", "#9ca3af")), dim=True))
 
     def _build_tagline_text(self) -> Text:
-        return Text("Open-source AI hackers for your apps", style=Style(color="#b8a0a0", dim=True))
+        tokens = self._theme_tokens()
+        return Text(
+            "Open-source AI hackers for your apps",
+            style=Style(color=str(tokens.get("muted", "#9ca3af")), dim=True),
+        )
 
-    def _build_banner_text(self) -> Text:
-        return Text(self.BANNER.strip("\n"), style=Style(color="#d7c0c0", bold=True), justify="center")
+    def _build_wordmark_text(self, phase: int) -> Text:
+        tokens = self._theme_tokens()
+        palette = (
+            str(tokens.get("info", "#7dd3fc")),
+            str(tokens.get("accent", "#38bdf8")),
+            str(tokens.get("info", "#22d3ee")),
+            str(tokens.get("accent", "#06b6d4")),
+            str(tokens.get("muted", "#0891b2")),
+        )
+        highlight = str(tokens.get("text", "#ecfeff"))
+        bright = str(tokens.get("info", "#bae6fd"))
+        sweep = (phase * 2) % 56
+        wordmark = Text(justify="center")
+
+        for row_index, row in enumerate(self.WORDMARK):
+            base = palette[(row_index + phase // 4) % len(palette)]
+            row_text = Text()
+            for col_index, char in enumerate(row):
+                if char == " ":
+                    row_text.append(char)
+                    continue
+
+                dist = abs(col_index - sweep)
+                if dist <= 1:
+                    style = Style(color=highlight, bold=True)
+                elif dist <= 3:
+                    style = Style(color=bright, bold=True)
+                else:
+                    style = Style(color=base, bold=True)
+                row_text.append(char, style=style)
+
+            wordmark.append_text(row_text)
+            if row_index < len(self.WORDMARK) - 1:
+                wordmark.append("\n")
+        return wordmark
 
     def _build_ghost_text(self, phase: int) -> Text:
+        tokens = self._theme_tokens()
+        body_color = str(tokens.get("accent", "#22d3ee"))
+        sparkle_a = str(tokens.get("info", "#a5f3fc"))
+        sparkle_b = str(tokens.get("accent", "#38bdf8"))
         frame = self.GHOST_FRAMES[phase % len(self.GHOST_FRAMES)]
         ghost = Text()
 
@@ -222,13 +301,13 @@ class SplashScreen(Static):  # type: ignore[misc]
             while i < len(line):
                 chunk = line[i : i + 2]
                 if chunk == "[]":
-                    line_text.append("[]", style=Style(color=self.PRIMARY_GREEN, bold=True))
+                    line_text.append("██", style=Style(color=body_color, bold=True))
                     i += 2
                     continue
 
                 char = line[i]
                 if char == "*":
-                    sparkle = "#67e8f9" if (phase + line_index + i) % 2 == 0 else "#38bdf8"
+                    sparkle = sparkle_a if (phase + line_index + i) % 2 == 0 else sparkle_b
                     line_text.append(char, style=Style(color=sparkle, bold=True))
                 else:
                     line_text.append(char)
@@ -241,6 +320,10 @@ class SplashScreen(Static):  # type: ignore[misc]
         return ghost
 
     def _build_start_line_text(self, phase: int) -> Text:
+        tokens = self._theme_tokens()
+        text_color = str(tokens.get("text", "#f5f5f5"))
+        info_color = str(tokens.get("info", "#d4d4d8"))
+        muted_color = str(tokens.get("muted", "#a3a3a3"))
         full_text = "Booting ghost runtime"
         text_len = len(full_text)
 
@@ -251,13 +334,13 @@ class SplashScreen(Static):  # type: ignore[misc]
             dist = abs(i - shine_pos)
 
             if dist <= 1:
-                style = Style(color="bright_white", bold=True)
+                style = Style(color=text_color, bold=True)
             elif dist <= 3:
-                style = Style(color="white", bold=True)
+                style = Style(color=info_color, bold=True)
             elif dist <= 5:
-                style = Style(color="#a3a3a3")
+                style = Style(color=muted_color)
             else:
-                style = Style(color="#525252")
+                style = Style(color=muted_color, dim=True)
 
             text.append(char, style=style)
 
@@ -271,7 +354,10 @@ class HelpScreen(ModalScreen):  # type: ignore[misc]
             Label(
                 "F1        Help\nCtrl+Q/C  Quit\nESC       Stop Agent\n"
                 "Enter     Send message to agent\nTab       Switch panels\n↑/↓       Navigate tree\n"
-                "b         Browser preview",
+                "b         Browser preview\n"
+                "Ctrl+V    Vulnerability overlay\n"
+                "Ctrl+H    Agent health popup\n"
+                "Ctrl+U    Check for updates",
                 id="help_content",
             ),
             id="dialog",
@@ -288,8 +374,12 @@ class StopAgentScreen(ModalScreen):  # type: ignore[misc]
         self.agent_id = agent_id
 
     def compose(self) -> ComposeResult:
+        theme_tokens = get_theme_tokens(Config.get_launchpad_theme())
+        title = Text()
+        title.append("[warn] ", style=f"bold {get_marker_color(theme_tokens, 'warn')}")
+        title.append(f"Stop '{self.agent_name}'?")
         yield Grid(
-            Label(f"🛑 Stop '{self.agent_name}'?", id="stop_agent_title"),
+            Label(title, id="stop_agent_title"),
             Grid(
                 Button("Yes", variant="error", id="stop_agent"),
                 Button("No", variant="default", id="cancel_stop"),
@@ -404,9 +494,12 @@ class VulnerabilityDetailScreen(ModalScreen):  # type: ignore[misc]
 
     def _render_vulnerability(self) -> Text:  # noqa: PLR0912, PLR0915
         vuln = self.vulnerability
+        theme_tokens = get_theme_tokens(Config.get_launchpad_theme())
         text = Text()
 
-        text.append("🐞 ")
+        text.append(
+            "[bug] ", style=f"bold {get_marker_color(theme_tokens, 'bug')}"
+        )
         text.append("Vulnerability Report", style="bold #ea580c")
 
         agent_name = vuln.get("agent_name", "")
@@ -792,6 +885,651 @@ class VulnerabilitiesPanel(VerticalScroll):  # type: ignore[misc]
             self.mount(item)
 
 
+class VulnerabilityOverlayScreen(ModalScreen):  # type: ignore[misc]
+    """Dedicated vulnerability workspace with list, detail, and copy actions."""
+
+    SEVERITY_COLORS: ClassVar[dict[str, str]] = {
+        "critical": "#dc2626",
+        "high": "#ea580c",
+        "medium": "#d97706",
+        "low": "#65a30d",
+        "info": "#0284c7",
+    }
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._selected_index = 0
+        self._refresh_timer: Timer | None = None
+
+    def compose(self) -> ComposeResult:
+        yield Grid(
+            Static("", id="vuln_overlay_header"),
+            Horizontal(
+                VerticalScroll(Static("", id="vuln_overlay_list"), id="vuln_overlay_list_scroll"),
+                VerticalScroll(Static("", id="vuln_overlay_detail"), id="vuln_overlay_detail_scroll"),
+                id="vuln_overlay_main",
+            ),
+            Horizontal(
+                Static("", id="vuln_overlay_keyhints"),
+                Button("Copy Selected", variant="default", id="copy_overlay_selected"),
+                Button("Copy All", variant="default", id="copy_overlay_all"),
+                Button("Close", variant="default", id="close_vuln_overlay"),
+                id="vuln_overlay_buttons",
+            ),
+            id="vuln_overlay_dialog",
+        )
+
+    _SEVERITY_COLORS: ClassVar[dict[str, str]] = {
+        "critical": "#dc2626",
+        "high": "#ea580c",
+        "medium": "#d97706",
+        "low": "#65a30d",
+        "info": "#0284c7",
+    }
+    _SEVERITY_LABELS: ClassVar[dict[str, str]] = {
+        "critical": "CRIT",
+        "high": "HIGH",
+        "medium": "MED",
+        "low": "LOW",
+        "info": "INFO",
+    }
+    _SEVERITY_ORDER: ClassVar[dict[str, int]] = {
+        "critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4,
+    }
+
+    def on_mount(self) -> None:
+        close_button = self.query_one("#close_vuln_overlay", Button)
+        close_button.focus()
+        self._refresh_view()
+        self._refresh_timer = self.set_interval(0.5, self._refresh_view)
+
+    def on_unmount(self) -> None:
+        if self._refresh_timer is not None:
+            self._refresh_timer.stop()
+            self._refresh_timer = None
+
+    def _get_app(self) -> "EspritTUIApp | None":
+        app = self.app
+        if isinstance(app, EspritTUIApp):
+            return app
+        return None
+
+    def _get_vulnerabilities(self) -> list[dict[str, Any]]:
+        app = self._get_app()
+        if not app:
+            return []
+        return app._get_enriched_vulnerabilities()
+
+    def _selected_vulnerability(self) -> dict[str, Any] | None:
+        vulnerabilities = self._get_vulnerabilities()
+        if not vulnerabilities:
+            self._selected_index = 0
+            return None
+        if self._selected_index >= len(vulnerabilities):
+            self._selected_index = len(vulnerabilities) - 1
+        if self._selected_index < 0:
+            self._selected_index = 0
+        return vulnerabilities[self._selected_index]
+
+    def _build_header(self, vulnerabilities: list[dict[str, Any]]) -> Text:
+        """Build a summary header with severity breakdown."""
+        text = Text()
+        total = len(vulnerabilities)
+        text.append(" VULNERABILITIES ", style="bold reverse #ea580c")
+        if total == 0:
+            text.append("  None found yet", style="dim")
+            return text
+
+        text.append(f"  {total} found", style="bold white")
+        text.append("  ", style="")
+
+        # Severity breakdown counts
+        counts: dict[str, int] = {}
+        for v in vulnerabilities:
+            sev = str(v.get("severity", "info")).lower()
+            counts[sev] = counts.get(sev, 0) + 1
+
+        parts = []
+        for sev_key in ("critical", "high", "medium", "low", "info"):
+            c = counts.get(sev_key, 0)
+            if c > 0:
+                parts.append((c, sev_key))
+
+        for i, (count, sev_key) in enumerate(parts):
+            color = self._SEVERITY_COLORS.get(sev_key, "#6b7280")
+            label = self._SEVERITY_LABELS.get(sev_key, sev_key.upper())
+            if i > 0:
+                text.append("  ", style="")
+            text.append(f" {count} {label} ", style=f"bold {color}")
+
+        return text
+
+    def _build_keyhints(self) -> Text:
+        """Build keyboard shortcut hints for the footer."""
+        text = Text()
+        hints = [
+            ("\u2191\u2193/jk", "navigate"),
+            ("c", "copy"),
+            ("a", "copy all"),
+            ("esc", "close"),
+        ]
+        for i, (key, desc) in enumerate(hints):
+            if i > 0:
+                text.append("  ", style="")
+            text.append(f" {key} ", style="bold #22d3ee")
+            text.append(desc, style="dim")
+        return text
+
+    def _refresh_view(self) -> None:
+        try:
+            header = self.query_one("#vuln_overlay_header", Static)
+            list_content = self.query_one("#vuln_overlay_list", Static)
+            detail_content = self.query_one("#vuln_overlay_detail", Static)
+            keyhints = self.query_one("#vuln_overlay_keyhints", Static)
+        except (ValueError, Exception):
+            return
+
+        vulnerabilities = self._get_vulnerabilities()
+        header.update(self._build_header(vulnerabilities))
+        keyhints.update(self._build_keyhints())
+        list_content.update(self._render_list(vulnerabilities))
+        detail_content.update(self._render_detail())
+
+    def _render_list(self, vulnerabilities: list[dict[str, Any]]) -> Text:
+        text = Text()
+        if not vulnerabilities:
+            text.append("\n")
+            text.append("  Waiting for findings...\n", style="dim italic")
+            text.append("\n")
+            text.append("  Vulnerabilities will appear here\n", style="dim")
+            text.append("  in realtime as agents discover them.", style="dim")
+            return text
+
+        vulnerabilities.sort(
+            key=lambda v: (
+                self._SEVERITY_ORDER.get(str(v.get("severity", "")).lower(), 5),
+                str(v.get("timestamp", "")),
+            )
+        )
+        if self._selected_index >= len(vulnerabilities):
+            self._selected_index = max(0, len(vulnerabilities) - 1)
+
+        for idx, vuln in enumerate(vulnerabilities):
+            severity = str(vuln.get("severity", "info")).lower()
+            title = str(vuln.get("title", "Untitled Vulnerability"))
+            cvss = vuln.get("cvss")
+            target = vuln.get("target", "")
+            endpoint = vuln.get("endpoint", "")
+
+            severity_color = self._SEVERITY_COLORS.get(severity, "#6b7280")
+            is_selected = idx == self._selected_index
+            sev_label = self._SEVERITY_LABELS.get(severity, severity.upper())
+
+            # Selection indicator
+            if is_selected:
+                text.append(" \u25b6 ", style=f"bold {severity_color}")
+            else:
+                text.append("   ", style="")
+
+            # Severity badge
+            text.append(f" {sev_label:4s} ", style=f"bold reverse {severity_color}")
+            text.append(" ", style="")
+
+            # CVSS score
+            if cvss is not None:
+                cvss_val = float(cvss)
+                cvss_color = severity_color
+                if cvss_val >= 9.0:
+                    cvss_color = "#dc2626"
+                elif cvss_val >= 7.0:
+                    cvss_color = "#ea580c"
+                text.append(f"{cvss_val:.1f}", style=f"bold {cvss_color}")
+                text.append(" ", style="")
+            else:
+                text.append("     ", style="")
+
+            # Title
+            title_style = f"bold {severity_color}" if is_selected else "white"
+            text.append(title, style=title_style)
+
+            # Target/endpoint on next line
+            if target or endpoint:
+                text.append("\n")
+                text.append("         ", style="")  # indent to align with title
+                location = endpoint or target
+                if len(location) > 50:
+                    location = location[:47] + "..."
+                text.append(location, style="dim #8a8a8a")
+
+            # Separator between items
+            if idx < len(vulnerabilities) - 1:
+                text.append("\n")
+                text.append("   \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n", style="dim #2f2f2f")
+
+        return text
+
+    def _render_detail(self) -> Text:
+        vulnerability = self._selected_vulnerability()
+        if not vulnerability:
+            text = Text()
+            text.append("\n")
+            text.append("  Select a vulnerability from\n", style="dim")
+            text.append("  the list to inspect details.", style="dim")
+            return text
+        return self._render_detail_panel(vulnerability)
+
+    def _render_detail_panel(self, vuln: dict[str, Any]) -> Text:
+        """Render a rich detail panel for a vulnerability."""
+        text = Text()
+        severity = str(vuln.get("severity", "info")).lower()
+        severity_color = self._SEVERITY_COLORS.get(severity, "#6b7280")
+        sev_label = self._SEVERITY_LABELS.get(severity, severity.upper())
+
+        # Title bar
+        title = vuln.get("title", "Untitled Vulnerability")
+        text.append(f" {sev_label} ", style=f"bold reverse {severity_color}")
+        text.append(f" {title}", style="bold white")
+        text.append("\n")
+
+        # Metadata row
+        cvss = vuln.get("cvss")
+        if cvss is not None:
+            cvss_val = float(cvss)
+            cvss_color = severity_color
+            if cvss_val >= 9.0:
+                cvss_color = "#dc2626"
+            elif cvss_val >= 7.0:
+                cvss_color = "#ea580c"
+            text.append(" CVSS ", style="dim")
+            text.append(f"{cvss_val:.1f}", style=f"bold {cvss_color}")
+
+        cve = vuln.get("cve", "")
+        if cve:
+            text.append("  ", style="")
+            text.append(cve, style="bold #60a5fa")
+
+        agent_name = vuln.get("agent_name", "")
+        if agent_name:
+            text.append("  ", style="")
+            text.append(f"[{agent_name}]", style="dim #8a8a8a")
+
+        text.append("\n")
+
+        # Target info
+        target = vuln.get("target", "")
+        endpoint = vuln.get("endpoint", "")
+        method = vuln.get("method", "")
+        if target or endpoint or method:
+            text.append(" \u2500\u2500 Target ", style="dim #555555")
+            text.append("\u2500" * 30, style="dim #2f2f2f")
+            text.append("\n")
+            if target:
+                text.append("  Target   ", style="#4ade80")
+                text.append(f"{target}\n", style="white")
+            if endpoint:
+                text.append("  Endpoint ", style="#4ade80")
+                text.append(f"{endpoint}\n", style="white")
+            if method:
+                text.append("  Method   ", style="#4ade80")
+                text.append(f"{method}\n", style="white")
+
+        # CVSS breakdown
+        cvss_breakdown = vuln.get("cvss_breakdown", {})
+        if cvss_breakdown:
+            parts = []
+            abbrevs = {
+                "attack_vector": "AV", "attack_complexity": "AC",
+                "privileges_required": "PR", "user_interaction": "UI",
+                "scope": "S", "confidentiality": "C",
+                "integrity": "I", "availability": "A",
+            }
+            for field, abbr in abbrevs.items():
+                val = cvss_breakdown.get(field)
+                if val:
+                    parts.append(f"{abbr}:{val}")
+            if parts:
+                text.append("\n")
+                text.append("  Vector ", style="dim #555555")
+                text.append("/".join(parts), style="dim")
+                text.append("\n")
+
+        # Description
+        description = vuln.get("description", "")
+        if description:
+            text.append("\n")
+            text.append(" \u2500\u2500 Description ", style="dim #555555")
+            text.append("\u2500" * 26, style="dim #2f2f2f")
+            text.append("\n")
+            text.append(f"  {description}\n", style="white")
+
+        # Impact
+        impact = vuln.get("impact", "")
+        if impact:
+            text.append("\n")
+            text.append(" \u2500\u2500 Impact ", style="dim #555555")
+            text.append("\u2500" * 30, style="dim #2f2f2f")
+            text.append("\n")
+            text.append(f"  {impact}\n", style="white")
+
+        # Technical Analysis
+        technical_analysis = vuln.get("technical_analysis", "")
+        if technical_analysis:
+            text.append("\n")
+            text.append(" \u2500\u2500 Technical Analysis ", style="dim #555555")
+            text.append("\u2500" * 19, style="dim #2f2f2f")
+            text.append("\n")
+            text.append(f"  {technical_analysis}\n", style="white")
+
+        # PoC
+        poc_description = vuln.get("poc_description", "")
+        poc_script_code = vuln.get("poc_script_code", "")
+        if poc_description or poc_script_code:
+            text.append("\n")
+            text.append(" \u2500\u2500 Proof of Concept ", style="dim #555555")
+            text.append("\u2500" * 20, style="dim #2f2f2f")
+            text.append("\n")
+            if poc_description:
+                text.append(f"  {poc_description}\n", style="white")
+            if poc_script_code:
+                text.append("\n")
+                text.append("  \u250c\u2500 code \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n", style="dim #444444")
+                for line in poc_script_code.splitlines():
+                    text.append(f"  \u2502 {line}\n", style="#a5d6a7")
+                text.append("  \u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n", style="dim #444444")
+
+        # Code file / diff
+        code_file = vuln.get("code_file", "")
+        code_diff = vuln.get("code_diff", "")
+        if code_file or code_diff:
+            text.append("\n")
+            text.append(" \u2500\u2500 Code Analysis ", style="dim #555555")
+            text.append("\u2500" * 24, style="dim #2f2f2f")
+            text.append("\n")
+            if code_file:
+                text.append(f"  File: {code_file}\n", style="#60a5fa")
+            if code_diff:
+                text.append("\n")
+                for line in code_diff.splitlines():
+                    if line.startswith("+"):
+                        text.append(f"  {line}\n", style="#4ade80")
+                    elif line.startswith("-"):
+                        text.append(f"  {line}\n", style="#f87171")
+                    else:
+                        text.append(f"  {line}\n", style="dim")
+
+        # Remediation
+        remediation_steps = vuln.get("remediation_steps", "")
+        if remediation_steps:
+            text.append("\n")
+            text.append(" \u2500\u2500 Remediation ", style="dim #555555")
+            text.append("\u2500" * 25, style="dim #2f2f2f")
+            text.append("\n")
+            text.append(f"  {remediation_steps}\n", style="#fbbf24")
+
+        return text
+
+    def _move_selection(self, step: int) -> None:
+        vulnerabilities = self._get_vulnerabilities()
+        if not vulnerabilities:
+            return
+        self._selected_index = max(0, min(len(vulnerabilities) - 1, self._selected_index + step))
+        self._refresh_view()
+
+    def _copy_selected(self) -> None:
+        vuln = self._selected_vulnerability()
+        if not vuln:
+            return
+        markdown = VulnerabilityDetailScreen(vuln)._get_markdown_report()
+        self.app.copy_to_clipboard(markdown)
+        self._show_button_feedback("copy_overlay_selected", "Copied!")
+
+    def _copy_all(self) -> None:
+        vulnerabilities = self._get_vulnerabilities()
+        if not vulnerabilities:
+            return
+        reports = [VulnerabilityDetailScreen(vuln)._get_markdown_report() for vuln in vulnerabilities]
+        self.app.copy_to_clipboard("\n\n---\n\n".join(reports))
+        self._show_button_feedback("copy_overlay_all", "Copied!")
+
+    def _show_button_feedback(self, button_id: str, label: str) -> None:
+        try:
+            button = self.query_one(f"#{button_id}", Button)
+        except (ValueError, Exception):
+            return
+        original_label = str(button.label)
+        button.label = label
+        self.set_timer(1.5, lambda: setattr(button, "label", original_label))
+
+    def on_key(self, event: events.Key) -> None:
+        if event.key in ("escape", "v"):
+            self.app.pop_screen()
+            event.prevent_default()
+            return
+        if event.key in ("up", "k"):
+            self._move_selection(-1)
+            event.prevent_default()
+            return
+        if event.key in ("down", "j"):
+            self._move_selection(1)
+            event.prevent_default()
+            return
+        if event.key == "c":
+            self._copy_selected()
+            event.prevent_default()
+            return
+        if event.key == "a":
+            self._copy_all()
+            event.prevent_default()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "copy_overlay_selected":
+            self._copy_selected()
+        elif event.button.id == "copy_overlay_all":
+            self._copy_all()
+        elif event.button.id == "close_vuln_overlay":
+            self.app.pop_screen()
+
+
+class AgentHealthPopupScreen(ModalScreen):  # type: ignore[misc]
+    """Live health diagnostics for all agents with intervention actions."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._selected_index = 0
+        self._refresh_timer: Timer | None = None
+
+    def compose(self) -> ComposeResult:
+        yield Grid(
+            Static("", id="health_popup_status"),
+            Horizontal(
+                VerticalScroll(Static("", id="health_popup_list"), id="health_popup_list_scroll"),
+                VerticalScroll(Static("", id="health_popup_detail"), id="health_popup_detail_scroll"),
+                id="health_popup_main",
+            ),
+            Horizontal(
+                Button("Stop Selected", variant="default", id="health_stop_selected"),
+                Button("Retry Selected", variant="default", id="health_retry_selected"),
+                Button("Close", variant="default", id="close_health_popup"),
+                id="health_popup_buttons",
+            ),
+            id="health_popup_dialog",
+        )
+
+    def on_mount(self) -> None:
+        close_button = self.query_one("#close_health_popup", Button)
+        close_button.focus()
+        self._refresh_view()
+        self._refresh_timer = self.set_interval(0.5, self._refresh_view)
+
+    def on_unmount(self) -> None:
+        if self._refresh_timer is not None:
+            self._refresh_timer.stop()
+            self._refresh_timer = None
+
+    def _get_app(self) -> "EspritTUIApp | None":
+        app = self.app
+        if isinstance(app, EspritTUIApp):
+            return app
+        return None
+
+    def _get_health_rows(self) -> list[dict[str, Any]]:
+        app = self._get_app()
+        if not app:
+            return []
+        return app._get_agent_health_rows()
+
+    def _selected_row(self) -> dict[str, Any] | None:
+        rows = self._get_health_rows()
+        if not rows:
+            self._selected_index = 0
+            return None
+        if self._selected_index >= len(rows):
+            self._selected_index = len(rows) - 1
+        if self._selected_index < 0:
+            self._selected_index = 0
+        return rows[self._selected_index]
+
+    def _refresh_view(self) -> None:
+        try:
+            status = self.query_one("#health_popup_status", Static)
+            list_content = self.query_one("#health_popup_list", Static)
+            detail_content = self.query_one("#health_popup_detail", Static)
+        except (ValueError, Exception):
+            return
+
+        app = self._get_app()
+        if app:
+            status.update(app._build_global_status_snapshot_text())
+        else:
+            status.update(Text("Status unavailable", style="dim"))
+
+        rows = self._get_health_rows()
+        list_content.update(self._render_list(rows))
+        detail_content.update(self._render_detail())
+
+    def _render_list(self, rows: list[dict[str, Any]]) -> Text:
+        text = Text()
+        if not rows:
+            text.append("No agents yet.\n", style="dim")
+            text.append("Agent health will appear once scan starts.", style="dim italic")
+            return text
+
+        for idx, row in enumerate(rows):
+            risk = row.get("risk", "low")
+            color = {"high": "#dc2626", "medium": "#d97706", "low": "#22c55e"}.get(risk, "#22c55e")
+            marker = "▶ " if idx == self._selected_index else "  "
+            text.append(marker, style=f"bold {color}")
+            text.append(f"[{risk.upper():6s}] ", style=color)
+            text.append(str(row.get("name", row.get("agent_id", "Agent"))), style="bold white")
+            text.append(f"  {row.get('status', 'unknown')}", style="dim")
+            text.append("\n  ", style="dim")
+            text.append(
+                f"age {row.get('last_output_age', '--')} · errors {row.get('error_streak', 0)} · retries {row.get('retry_count', 0)}",
+                style="dim",
+            )
+            if idx < len(rows) - 1:
+                text.append("\n")
+
+        return text
+
+    def _render_detail(self) -> Text:
+        row = self._selected_row()
+        text = Text()
+        if not row:
+            text.append("Select an agent to inspect diagnostics.", style="dim")
+            return text
+
+        text.append("Agent Health\n", style="bold #22d3ee")
+        text.append("Agent: ", style="bold #4ade80")
+        text.append(f"{row.get('name', 'Unknown')}\n")
+        text.append("Status: ", style="bold #4ade80")
+        text.append(f"{row.get('status', 'unknown')}\n")
+        text.append("Risk: ", style="bold #4ade80")
+        text.append(f"{row.get('risk', 'low').upper()}\n")
+        text.append("Last Output Age: ", style="bold #4ade80")
+        text.append(f"{row.get('last_output_age', '--')}\n")
+        text.append("Error Streak: ", style="bold #4ade80")
+        text.append(f"{row.get('error_streak', 0)}\n")
+        text.append("Retry Count: ", style="bold #4ade80")
+        text.append(f"{row.get('retry_count', 0)}\n\n")
+
+        snippet = row.get("snippet")
+        if snippet:
+            text.append("Latest Activity\n", style="bold #4ade80")
+            text.append(str(snippet), style="white")
+        else:
+            text.append("No activity snippet available yet.", style="dim")
+
+        return text
+
+    def _move_selection(self, step: int) -> None:
+        rows = self._get_health_rows()
+        if not rows:
+            return
+        self._selected_index = max(0, min(len(rows) - 1, self._selected_index + step))
+        self._refresh_view()
+
+    def _stop_selected(self) -> None:
+        row = self._selected_row()
+        app = self._get_app()
+        if not row or not app:
+            return
+        agent_id = str(row.get("agent_id", ""))
+        if not agent_id:
+            return
+        success = app._request_stop_agent(agent_id)
+        self._show_button_feedback("health_stop_selected", "Stopped" if success else "Failed")
+
+    def _retry_selected(self) -> None:
+        row = self._selected_row()
+        app = self._get_app()
+        if not row or not app:
+            return
+        agent_id = str(row.get("agent_id", ""))
+        if not agent_id:
+            return
+        success = app.retry_agent(agent_id)
+        self._show_button_feedback("health_retry_selected", "Retried" if success else "Failed")
+
+    def _show_button_feedback(self, button_id: str, label: str) -> None:
+        try:
+            button = self.query_one(f"#{button_id}", Button)
+        except (ValueError, Exception):
+            return
+        original_label = str(button.label)
+        button.label = label
+        self.set_timer(1.5, lambda: setattr(button, "label", original_label))
+
+    def on_key(self, event: events.Key) -> None:
+        if event.key in ("escape", "h"):
+            self.app.pop_screen()
+            event.prevent_default()
+            return
+        if event.key in ("up", "k"):
+            self._move_selection(-1)
+            event.prevent_default()
+            return
+        if event.key in ("down", "j"):
+            self._move_selection(1)
+            event.prevent_default()
+            return
+        if event.key == "s":
+            self._stop_selected()
+            event.prevent_default()
+            return
+        if event.key == "r":
+            self._retry_selected()
+            event.prevent_default()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "health_stop_selected":
+            self._stop_selected()
+        elif event.button.id == "health_retry_selected":
+            self._retry_selected()
+        elif event.button.id == "close_health_popup":
+            self.app.pop_screen()
+
+
 class QuitScreen(ModalScreen):  # type: ignore[misc]
     def compose(self) -> ComposeResult:
         yield Grid(
@@ -836,11 +1574,128 @@ class QuitScreen(ModalScreen):  # type: ignore[misc]
             self.app.pop_screen()
 
 
+class UpdateScreen(ModalScreen):  # type: ignore[misc]
+    """Update notification modal — shown automatically at startup or via Ctrl+U."""
+
+    def __init__(
+        self,
+        update_info: "UpdateInfo | None" = None,
+        checking: bool = False,
+    ) -> None:
+        super().__init__()
+        self._update_info = update_info
+        self._checking = checking
+
+    def compose(self) -> ComposeResult:
+        yield Grid(
+            Label("", id="update_title"),
+            Label("", id="update_body"),
+            Grid(
+                Button("Update Now", variant="success", id="update_now_btn"),
+                Button("Next Launch", variant="default", id="update_next_btn"),
+                Button("Skip", variant="default", id="update_skip_btn"),
+                id="update_action_buttons",
+            ),
+            Button("OK", variant="default", id="update_ok_btn"),
+            id="update_dialog",
+        )
+
+    def on_mount(self) -> None:
+        self._render_state()
+        if self._checking:
+            threading.Thread(target=self._run_check, daemon=True).start()
+
+    def _render_state(self) -> None:
+        from esprit.interface.updater import _current_version
+
+        title = self.query_one("#update_title", Label)
+        body = self.query_one("#update_body", Label)
+        action_btns = self.query_one("#update_action_buttons")
+        ok_btn = self.query_one("#update_ok_btn", Button)
+
+        if self._checking:
+            title.update("Checking for Updates")
+            body.update("Connecting to GitHub…")
+            action_btns.display = False
+            ok_btn.display = False
+        elif self._update_info is not None:
+            title.update("Update Available")
+            body.update(
+                f"Esprit v{self._update_info.latest} is available"
+                f"  ·  you have v{self._update_info.current}"
+            )
+            action_btns.display = True
+            ok_btn.display = False
+            self.query_one("#update_now_btn", Button).focus()
+        else:
+            current = _current_version()
+            title.update("Esprit is up to date")
+            body.update(f"You're running v{current}, the latest version.")
+            action_btns.display = False
+            ok_btn.display = True
+            ok_btn.focus()
+
+    def _run_check(self) -> None:
+        from esprit.interface.updater import check_for_update
+
+        result = check_for_update(force=True)
+        self.app.call_from_thread(self._on_check_done, result)
+
+    def _on_check_done(self, update_info: "UpdateInfo | None") -> None:
+        self._checking = False
+        self._update_info = update_info
+        self._render_state()
+
+    def on_key(self, event: events.Key) -> None:
+        if event.key in ("left", "right", "up", "down", "tab"):
+            buttons = [b for b in self.query(Button) if b.display]
+            if not buttons:
+                return
+            try:
+                focused = self.focused
+                idx = buttons.index(focused) if focused in buttons else -1  # type: ignore[arg-type]
+                if event.key in ("right", "down", "tab"):
+                    buttons[(idx + 1) % len(buttons)].focus()
+                else:
+                    buttons[(idx - 1) % len(buttons)].focus()
+            except (ValueError, Exception):
+                buttons[0].focus()
+            event.prevent_default()
+        elif event.key == "escape":
+            self.app.pop_screen()
+            event.prevent_default()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        btn_id = event.button.id
+        if btn_id == "update_now_btn":
+            self.app.exit("update_now")
+        elif btn_id == "update_next_btn":
+            from esprit.interface.updater import schedule_update
+
+            schedule_update()
+            self.app.pop_screen()
+            try:
+                tokens = get_theme_tokens(Config.get_launchpad_theme())
+                success_color = str(tokens.get("success", "#22c55e"))
+                keymap = self.app.query_one("#keymap_indicator", Static)
+                msg = Text()
+                msg.append("✓ ", style=f"bold {success_color}")
+                msg.append("Update scheduled — will apply on next launch", style="dim")
+                keymap.update(msg)
+            except Exception:
+                pass
+        else:  # skip or ok
+            self.app.pop_screen()
+
+
 class EspritTUIApp(App):  # type: ignore[misc]
     CSS_PATH = "assets/tui_styles.tcss"
+    DEFAULT_THEME = DEFAULT_THEME_ID
+    SUPPORTED_THEMES: ClassVar[tuple[str, ...]] = SUPPORTED_THEME_IDS
 
     LEFT_ONLY_LAYOUT_MIN_WIDTH = 120
     THREE_PANE_LAYOUT_MIN_WIDTH = 170
+    RUN_STATUS_FRAMES: ClassVar[tuple[str, ...]] = ("|", "/", "-", "\\")
 
     selected_agent_id: reactive[str | None] = reactive(default=None)
     show_splash: reactive[bool] = reactive(default=True)
@@ -851,12 +1706,16 @@ class EspritTUIApp(App):  # type: ignore[misc]
         Binding("ctrl+c", "request_quit", "Quit", priority=True),
         Binding("escape", "stop_selected_agent", "Stop Agent", priority=True),
         Binding("b", "show_browser_preview", "Browser Preview", priority=False),
+        Binding("ctrl+v", "toggle_vulnerability_overlay", "Vulnerabilities", priority=False),
+        Binding("ctrl+h", "toggle_agent_health_popup", "Agent Health", priority=False),
+        Binding("ctrl+u", "check_for_updates", "Updates", priority=True),
     ]
 
     def __init__(self, args: argparse.Namespace, gui_server: _GUIServerType = None):
         super().__init__()
         self.args = args
         self._gui_server = gui_server
+        self._theme_id = self._normalize_theme_id(Config.get_launchpad_theme())
         self.scan_config = self._build_scan_config(args)
         self.agent_config = self._build_agent_config(args)
 
@@ -880,29 +1739,39 @@ class EspritTUIApp(App):  # type: ignore[misc]
 
         self._spinner_frame_index: int = 0  # Current animation frame index
         self._sweep_num_squares: int = 6  # Number of squares in sweep animation
-        self._sweep_colors: list[str] = [
-            "#000000",  # Dimmest (shows dot)
-            "#001014",
-            "#03232d",
-            "#0b3a47",
-            "#0f5b6f",
-            "#0f7993",
-            "#22d3ee",
-            "#67e8f9",  # Brightest
-        ]
-        self._compact_sweep_colors: list[str] = [
-            "#000000",
-            "#1a0f00",
-            "#3d2400",
-            "#5c3a00",
-            "#7a5200",
-            "#a36e00",
-            "#e09b00",
-            "#fbbf24",  # Amber brightest
-        ]
+        palette = self._theme_palette()
+        self._sweep_colors: list[str] = list(palette.get("sweep_colors", []))
+        self._compact_sweep_colors: list[str] = list(palette.get("compact_sweep_colors", []))
+        self._shimmer_colors: list[str] = list(palette.get("shimmer_colors", []))
+        self._sweep_dot_color = str(palette.get("sweep_dot_color", "#0a3d1f"))
         self._dot_animation_timer: Any | None = None
 
         self._setup_cleanup_handlers()
+
+    @classmethod
+    def _normalize_theme_id(cls, theme_id: str | None) -> str:
+        return normalize_theme_id(theme_id)
+
+    def _theme_palette(self) -> dict[str, Any]:
+        theme_id = self._normalize_theme_id(getattr(self, "_theme_id", self.DEFAULT_THEME))
+        return get_theme_tokens(theme_id)
+
+    def _marker_color(self, marker: str) -> str:
+        return get_marker_color(self._theme_palette(), marker)
+
+    def _marker_style(self, marker: str, *, bold: bool = True) -> str:
+        color = self._marker_color(marker)
+        return f"bold {color}" if bold else color
+
+    def _apply_theme_class(self) -> None:
+        try:
+            screen = self.screen
+        except Exception:
+            return
+
+        for theme_id in self.SUPPORTED_THEMES:
+            screen.remove_class(f"theme-{theme_id}")
+        screen.add_class(f"theme-{self._theme_id}")
 
     def _build_scan_config(self, args: argparse.Namespace) -> dict[str, Any]:
         return {
@@ -928,7 +1797,11 @@ class EspritTUIApp(App):  # type: ignore[misc]
 
     def _setup_cleanup_handlers(self) -> None:
         def cleanup_on_exit() -> None:
-            from esprit.runtime import cleanup_runtime
+            from esprit.runtime import cleanup_runtime, extract_and_save_diffs
+
+            # Extract file edits from sandbox BEFORE destroying it
+            if hasattr(self, "agent") and hasattr(self.agent, "state") and self.agent.state.sandbox_id:
+                extract_and_save_diffs(self.agent.state.sandbox_id)
 
             self.tracer.cleanup()
             cleanup_runtime()
@@ -962,7 +1835,7 @@ class EspritTUIApp(App):  # type: ignore[misc]
             content_container = Horizontal(id="content_container")
             main_container.mount(content_container)
 
-            left_panel_header = Static("Subagents", id="left_panel_header")
+            left_panel_header = Static("Subagents  [Ctrl+H: Health]", id="left_panel_header")
 
             agents_tree = Tree("Active Agents", id="agents_tree")
             agents_tree.root.expand()
@@ -1000,7 +1873,7 @@ class EspritTUIApp(App):  # type: ignore[misc]
             chat_input.set_app_reference(self)
             chat_input_container = Horizontal(chat_prompt, chat_input, id="chat_input_container")
 
-            right_panel_header = Static("Vulnerabilities", id="right_panel_header")
+            right_panel_header = Static("Vulnerabilities  [Ctrl+V]", id="right_panel_header")
 
             vulnerabilities_panel = VulnerabilitiesPanel(id="vulnerabilities_panel")
 
@@ -1052,6 +1925,7 @@ class EspritTUIApp(App):  # type: ignore[misc]
 
     def on_mount(self) -> None:
         self.title = "esprit"
+        self._apply_theme_class()
 
         self.set_timer(4.5, self._hide_splash_screen)
 
@@ -1068,6 +1942,30 @@ class EspritTUIApp(App):  # type: ignore[misc]
                 logging.debug("Failed to start GUI server", exc_info=True)
 
         self.set_interval(0.35, self._update_ui_from_tracer)
+
+        # Background update check — uses a 24 h cache so it's essentially instant
+        # on repeat launches.  Notification is shown 3 s after the TUI starts.
+        threading.Thread(target=self._background_update_check, daemon=True).start()
+
+    def _background_update_check(self) -> None:
+        """Run in background thread; push UpdateScreen if a newer version exists."""
+        try:
+            from esprit.interface.updater import check_for_update
+
+            info = check_for_update()
+            if info is not None:
+                time.sleep(3.0)  # Let the TUI fully render before interrupting
+                self.call_from_thread(self._show_update_notification, info)
+        except Exception:
+            pass
+
+    def _show_update_notification(self, info: "UpdateInfo") -> None:
+        """Called on the main thread after a background update check finds a new version."""
+        if not self.is_mounted or self.show_splash:
+            return
+        if len(self.screen_stack) > 1:
+            return  # Another modal is already open; skip silently
+        self.push_screen(UpdateScreen(update_info=info))
 
     def _update_ui_from_tracer(self) -> None:
         if self.show_splash:
@@ -1148,6 +2046,22 @@ class EspritTUIApp(App):  # type: ignore[misc]
                 if isinstance(result, dict) and result.get("screenshot"):
                     result["screenshot"] = "[rendered]"
 
+    def _running_status_frame(self) -> str:
+        frame_index = self._stats_spinner_frame % len(self.RUN_STATUS_FRAMES)
+        return self.RUN_STATUS_FRAMES[frame_index]
+
+    def _agent_status_marker(self, status: str) -> str:
+        status_markers = {
+            "running": self._running_status_frame(),
+            "waiting": "~",
+            "completed": "●",
+            "failed": "x",
+            "stopped": "-",
+            "stopping": ".",
+            "llm_failed": "x",
+        }
+        return status_markers.get(status, ".")
+
     def _update_agent_node(self, agent_id: str, agent_data: dict[str, Any]) -> bool:
         if agent_id not in self.agent_nodes:
             return False
@@ -1156,18 +2070,7 @@ class EspritTUIApp(App):  # type: ignore[misc]
             agent_node = self.agent_nodes[agent_id]
             agent_name_raw = agent_data.get("name", "Agent")
             status = agent_data.get("status", "running")
-
-            status_indicators = {
-                "running": _ACTIVITY_SPINNER[self._stats_spinner_frame % len(_ACTIVITY_SPINNER)],
-                "waiting": "⏸",
-                "completed": "✓",
-                "failed": "✗",
-                "stopped": "■",
-                "stopping": "○",
-                "llm_failed": "✗",
-            }
-
-            status_icon = status_indicators.get(status, "○")
+            status_icon = self._agent_status_marker(status)
             vuln_count = self._agent_vulnerability_count(agent_id)
             vuln_indicator = f" ({vuln_count})" if vuln_count > 0 else ""
             agent_name = f"{status_icon} {agent_name_raw}{vuln_indicator}"
@@ -1316,12 +2219,15 @@ class EspritTUIApp(App):  # type: ignore[misc]
 
     def _render_compacting_indicator(self) -> Text:
         """Render an inline compacting-memory indicator for the chat stream."""
+        palette = self._theme_palette()
+        compact_primary = str(palette.get("compacting_primary", "#fbbf24"))
+        compact_secondary = str(palette.get("compacting_secondary", "#d97706"))
         text = Text()
         # Animated spinner using the stats spinner frame
         frames = ["◐", "◓", "◑", "◒"]
         frame = frames[self._stats_spinner_frame % len(frames)]
-        text.append(f" {frame} ", style="#fbbf24")
-        text.append("Compacting memory", style="#d97706 bold")
+        text.append(f" {frame} ", style=compact_primary)
+        text.append("Compacting memory", style=f"{compact_secondary} bold")
         text.append("  ·  ", style="dim")
         text.append("summarizing older messages to free context", style="dim")
         return text
@@ -1329,22 +2235,6 @@ class EspritTUIApp(App):  # type: ignore[misc]
     # ------------------------------------------------------------------
     # Shimmer text + subagent dashboard
     # ------------------------------------------------------------------
-
-    _SHIMMER_COLORS: ClassVar[list[str]] = [
-        "#3f3f46",  # zinc-700 (base)
-        "#52525b",  # zinc-600
-        "#71717a",  # zinc-500
-        "#a1a1aa",  # zinc-400
-        "#d4d4d8",  # zinc-300
-        "#f4f4f5",  # zinc-100
-        "#ffffff",  # white (peak)
-        "#f4f4f5",
-        "#d4d4d8",
-        "#a1a1aa",
-        "#71717a",
-        "#52525b",
-        "#3f3f46",
-    ]
 
     def _shimmer_text(self, content: str, max_len: int = 120) -> Text:
         """Create text with a sweeping shimmer gradient animation."""
@@ -1354,7 +2244,7 @@ class EspritTUIApp(App):  # type: ignore[misc]
         if not content:
             return text
 
-        colors = self._SHIMMER_COLORS
+        colors = self._shimmer_colors
         half_w = len(colors) // 2  # radius of the bright region
         text_len = len(content)
 
@@ -1390,7 +2280,8 @@ class EspritTUIApp(App):  # type: ignore[misc]
     def _get_agent_snippet(self, agent_id: str) -> str | None:
         """Get the latest activity snippet for an agent (streaming or last message)."""
         # Prefer current streaming content
-        streaming = self.tracer.get_streaming_content(agent_id)
+        get_streaming = getattr(self.tracer, "get_streaming_content", None)
+        streaming = get_streaming(agent_id) if callable(get_streaming) else None
         if streaming and streaming.strip():
             # Take the last non-empty line(s)
             lines = [ln for ln in streaming.strip().splitlines() if ln.strip()]
@@ -1399,7 +2290,7 @@ class EspritTUIApp(App):  # type: ignore[misc]
 
         # Fall back to the most recent chat message
         agent_msgs = [
-            m for m in reversed(list(self.tracer.chat_messages))
+            m for m in reversed(list(getattr(self.tracer, "chat_messages", [])))
             if m.get("agent_id") == agent_id and m.get("role") == "assistant"
         ]
         if agent_msgs:
@@ -1410,7 +2301,7 @@ class EspritTUIApp(App):  # type: ignore[misc]
 
         # Fall back to last tool being used
         agent_tools = [
-            t for t in list(self.tracer.tool_executions.values())
+            t for t in list(getattr(self.tracer, "tool_executions", {}).values())
             if t.get("agent_id") == agent_id
         ]
         if agent_tools:
@@ -1423,39 +2314,225 @@ class EspritTUIApp(App):  # type: ignore[misc]
 
         return None
 
+    @staticmethod
+    def _parse_iso(ts: str | None) -> datetime | None:
+        if not ts:
+            return None
+        normalized = ts.replace("Z", "+00:00")
+        try:
+            return datetime.fromisoformat(normalized)
+        except ValueError:
+            return None
+
+    @staticmethod
+    def _format_short_duration(total_seconds: float) -> str:
+        if total_seconds < 0:
+            total_seconds = 0
+        seconds = int(total_seconds)
+        hours = seconds // 3600
+        minutes = (seconds % 3600) // 60
+        remaining = seconds % 60
+        if hours > 0:
+            return f"{hours}h {minutes:02d}m"
+        if minutes > 0:
+            return f"{minutes}m {remaining:02d}s"
+        return f"{remaining}s"
+
+    def _get_agent_elapsed_seconds(self, agent_data: dict[str, Any]) -> float:
+        created = self._parse_iso(str(agent_data.get("created_at") or ""))
+        if not created:
+            created = self._parse_iso(str(getattr(self.tracer, "start_time", "") or ""))
+        if not created:
+            return 0.0
+
+        status = str(agent_data.get("status", "running"))
+        completed_states = {"completed", "failed", "stopped", "llm_failed", "error", "sandbox_failed"}
+        end_ts = (
+            str(getattr(self.tracer, "end_time", "") or "")
+            if status in completed_states
+            else datetime.now(UTC).isoformat()
+        )
+        end = self._parse_iso(end_ts)
+        if not end:
+            return 0.0
+        return max(0.0, (end - created).total_seconds())
+
+    def _get_agent_token_snapshot(self, agent_id: str) -> tuple[int, float]:
+        try:
+            llm_stats = self.tracer.get_total_llm_stats()
+        except Exception:  # noqa: BLE001
+            return (0, 0.0)
+
+        by_agent = llm_stats.get("by_agent", {})
+        agent_stats = by_agent.get(str(agent_id), {})
+        input_tokens = int(agent_stats.get("input_tokens", 0))
+        output_tokens = int(agent_stats.get("output_tokens", 0))
+        total_tokens = max(0, input_tokens + output_tokens)
+        cost = float(agent_stats.get("cost", 0.0))
+        return (total_tokens, cost)
+
+    def _get_tool_activity_snippet(self, agent_id: str) -> str | None:
+        tools = [
+            tool
+            for tool in list(getattr(self.tracer, "tool_executions", {}).values())
+            if tool.get("agent_id") == agent_id
+        ]
+        if not tools:
+            return None
+
+        latest = max(
+            tools,
+            key=lambda t: (
+                str(t.get("completed_at") or ""),
+                str(t.get("timestamp") or ""),
+                int(t.get("execution_id") or 0),
+            ),
+        )
+        tool_name = str(latest.get("tool_name", "")).strip()
+        if not tool_name or tool_name in {"scan_start_info", "subagent_start_info"}:
+            return None
+
+        pretty_tool = tool_name.replace("_", " ")
+        status = str(latest.get("status", "running"))
+        verb = "Running" if status == "running" else "Completed"
+        args = latest.get("args", {})
+        if not isinstance(args, dict):
+            args = {}
+        action = str(args.get("action", "")).strip()
+        target = str(args.get("url", "") or args.get("target", "") or args.get("selector", "")).strip()
+
+        if action and target:
+            return f"{verb} {pretty_tool}: {action} {target}"
+        if action:
+            return f"{verb} {pretty_tool}: {action}"
+        return f"{verb} {pretty_tool}"
+
+    def _truncate_snippet(self, snippet: str, max_len: int = 110) -> str:
+        normalized = " ".join(snippet.split())
+        if len(normalized) <= max_len:
+            return normalized
+        return normalized[: max_len - 1] + "…"
+
+    def _get_agent_live_snippet(self, agent_id: str, status: str) -> str:
+        if status == "waiting":
+            return "Waiting for user input to continue."
+        if status in {"completed", "stopped"}:
+            return "Agent finished execution."
+        if status in {"failed", "llm_failed", "error", "sandbox_failed"}:
+            return "Agent failed. Review logs and retry."
+        if agent_id in self.tracer.compacting_agents:
+            return "Compacting memory to recover context budget."
+
+        snippet = self._get_agent_snippet(agent_id)
+        if snippet:
+            return self._truncate_snippet(snippet)
+        tool_snippet = self._get_tool_activity_snippet(agent_id)
+        if tool_snippet:
+            return self._truncate_snippet(tool_snippet)
+        return "Initializing scan flow."
+
+    def _build_status_line_text(self, agent_id: str, agent_data: dict[str, Any]) -> Text:
+        palette = self._theme_palette()
+        status = str(agent_data.get("status", "running"))
+        elapsed = self._format_short_duration(self._get_agent_elapsed_seconds(agent_data))
+        token_count, cost = self._get_agent_token_snapshot(agent_id)
+        snippet = self._get_agent_live_snippet(agent_id, status)
+
+        text = Text()
+        if status in {"running", "waiting"}:
+            text.append_text(self._build_running_spinner_indicator())
+        elif status in {"completed", "stopped"}:
+            text.append("[ok] ", style=self._marker_style("ok"))
+        elif status in {"failed", "llm_failed", "error", "sandbox_failed"}:
+            text.append("[err] ", style=self._marker_style("err"))
+        else:
+            text.append("[run] ", style=self._marker_style("run"))
+
+        dim_style = f"dim {str(palette.get('muted', '#9ca3af'))}"
+        text.append(elapsed, style=dim_style)
+        text.append(" · ", style=dim_style)
+        text.append(f"{format_token_count(token_count)} tok", style=dim_style)
+        if cost > 0:
+            text.append(" · ", style=dim_style)
+            text.append(f"${cost:.2f}", style=dim_style)
+        text.append(" · ", style=dim_style)
+        text.append(snippet, style=str(palette.get("text", "#e8d5d5")))
+        return text
+
+    def _build_global_status_snapshot_text(self) -> Text:
+        if not self.tracer.agents:
+            return Text("Waiting for agents to connect...", style="dim")
+
+        agent_id = self.selected_agent_id
+        if not agent_id or agent_id not in self.tracer.agents:
+            agent_id = self._get_root_agent_id() or next(iter(self.tracer.agents))
+        agent_data = self.tracer.agents.get(agent_id, {})
+        status_line = self._build_status_line_text(agent_id, agent_data)
+
+        prefix = Text()
+        prefix.append("Live Status  ", style=f"bold {self._marker_color('run')}")
+        prefix.append(f"{agent_data.get('name', agent_id)}", style="bold")
+        prefix.append("\n", style="dim")
+        prefix.append_text(status_line)
+        return prefix
+
+    def _get_enriched_vulnerabilities(self) -> list[dict[str, Any]]:
+        vulnerabilities = list(getattr(self.tracer, "vulnerability_reports", []))
+        if not vulnerabilities:
+            return []
+
+        severity_order = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
+        enriched: list[dict[str, Any]] = []
+        for vulnerability in vulnerabilities:
+            item = dict(vulnerability)
+            report_id = str(vulnerability.get("id", ""))
+            agent_name = self._get_agent_name_for_vulnerability(report_id)
+            if agent_name:
+                item["agent_name"] = agent_name
+            enriched.append(item)
+
+        enriched.sort(
+            key=lambda v: (
+                severity_order.get(str(v.get("severity", "")).lower(), 5),
+                str(v.get("timestamp", "")),
+            )
+        )
+        return enriched
+
     def _build_subagent_dashboard(self, root_agent_id: str) -> Any:
         """Build a renderable dashboard showing snippets of all child agents."""
         children = self._get_child_agents(root_agent_id)
         if not children:
             return None
 
+        palette = self._theme_palette()
+        header_color = str(palette.get("subagent_header", "#22d3ee"))
         renderables: list[Any] = []
 
         # Section header
         header = Text()
-        header.append("─" * 3, style="dim #22d3ee")
-        header.append("  Subagent Activity  ", style="bold #22d3ee")
-        header.append("─" * 40, style="dim #22d3ee")
+        header.append("─" * 3, style=f"dim {header_color}")
+        header.append("  Subagent Activity  ", style=f"bold {header_color}")
+        header.append("─" * 40, style=f"dim {header_color}")
         renderables.append(header)
 
-        spinner_frames = _ACTIVITY_SPINNER
-        spinner = spinner_frames[self._stats_spinner_frame % len(spinner_frames)]
+        spinner = self._running_status_frame()
 
         status_styles: dict[str, tuple[str, str]] = {
-            "running": (spinner, "#22d3ee"),
-            "waiting": ("⏸", "#fbbf24"),
-            "completed": ("✓", "#22c55e"),
-            "failed": ("✗", "#ef4444"),
-            "stopped": ("■", "#a1a1aa"),
-            "stopping": ("○", "#a1a1aa"),
-            "llm_failed": ("✗", "#ef4444"),
+            "running": (f"[{spinner}]", self._marker_color("run")),
+            "waiting": ("[warn]", self._marker_color("warn")),
+            "completed": ("[ok]", self._marker_color("ok")),
+            "failed": ("[err]", self._marker_color("err")),
+            "stopped": ("[ok]", self._marker_color("ok")),
+            "stopping": ("[warn]", self._marker_color("warn")),
+            "llm_failed": ("[err]", self._marker_color("err")),
         }
 
         for child in children:
             agent_id = child["id"]
             agent_name = child.get("name", "Agent")
             status = child.get("status", "running")
-            icon, color = status_styles.get(status, ("○", "#a1a1aa"))
+            icon, color = status_styles.get(status, ("[run]", str(palette.get("status_idle", "#947575"))))
             is_active = status in ("running", "waiting")
 
             card = Text()
@@ -1465,7 +2542,10 @@ class EspritTUIApp(App):  # type: ignore[misc]
 
             vuln_count = self._agent_vulnerability_count(agent_id)
             if vuln_count > 0:
-                card.append(f"  ⚡{vuln_count}", style="bold #ef4444")
+                card.append(
+                    f"  [warn:{vuln_count}]",
+                    style=f"bold {self._marker_color('warn')}",
+                )
 
             snippet = self._get_agent_snippet(agent_id)
             if snippet:
@@ -1540,11 +2620,14 @@ class EspritTUIApp(App):  # type: ignore[misc]
     def _render_streaming_tool(
         self, tool_name: str, args: dict[str, str], is_complete: bool
     ) -> Any:
+        palette = self._theme_palette()
         tool_data = {
             "tool_name": tool_name,
             "args": args,
             "status": "completed" if is_complete else "running",
             "result": None,
+            "_theme_id": self._theme_id,
+            "_theme_tokens": palette,
         }
 
         # For completed browser actions, try to find the actual result from the tracer
@@ -1584,20 +2667,26 @@ class EspritTUIApp(App):  # type: ignore[misc]
     def _render_default_streaming_tool(
         self, tool_name: str, args: dict[str, str], is_complete: bool
     ) -> Text:
+        palette = self._theme_palette()
+        running_style = self._marker_color("run")
+        success_style = self._marker_color("ok")
+        muted_style = str(palette.get("muted", "#9ca3af"))
+        info_style = str(palette.get("info", "#60a5fa"))
         text = Text()
 
         if is_complete:
-            text.append("✓ ", style="green")
+            text.append("[ok] ", style=f"bold {success_style}")
         else:
-            text.append("● ", style="yellow")
+            frame = self.RUN_STATUS_FRAMES[self._spinner_frame_index % len(self.RUN_STATUS_FRAMES)]
+            text.append(f"[{frame}] ", style=f"bold {running_style}")
 
-        text.append("Using tool ", style="dim")
-        text.append(tool_name, style="bold blue")
+        text.append("Using tool ", style=f"dim {muted_style}")
+        text.append(tool_name, style=f"bold {info_style}")
 
         if args:
             for key, value in list(args.items())[:3]:
                 text.append("\n  ")
-                text.append(key, style="dim")
+                text.append(key, style=f"dim {muted_style}")
                 text.append(": ")
                 display_value = value if len(value) <= 100 else value[:97] + "..."
                 text.append(display_value, style="italic" if not is_complete else None)
@@ -1607,68 +2696,54 @@ class EspritTUIApp(App):  # type: ignore[misc]
     def _get_status_display_content(
         self, agent_id: str, agent_data: dict[str, Any]
     ) -> tuple[Text | None, Text, bool]:
-        status = agent_data.get("status", "running")
+        palette = self._theme_palette()
+        key_style = str(palette.get("keymap_key", "white"))
+        text_style = str(palette.get("keymap_text", "dim"))
+        status = str(agent_data.get("status", "running"))
 
         def keymap_styled(keys: list[tuple[str, str]]) -> Text:
             t = Text()
             for i, (key, action) in enumerate(keys):
                 if i > 0:
-                    t.append(" · ", style="dim")
-                t.append(key, style="white")
-                t.append(" ", style="dim")
-                t.append(action, style="dim")
+                    t.append(" · ", style=text_style)
+                t.append(key, style=key_style)
+                t.append(" ", style=text_style)
+                t.append(action, style=text_style)
             return t
 
-        simple_statuses: dict[str, tuple[str, str]] = {
-            "stopping": ("Agent stopping...", ""),
-            "stopped": ("Agent stopped", ""),
-            "completed": ("Agent completed", ""),
-        }
+        line = self._build_status_line_text(agent_id, agent_data)
+        if status in {"running", "waiting"}:
+            return (
+                line,
+                keymap_styled([("Ctrl+V", "vulns"), ("Ctrl+H", "health"), ("esc", "stop"), ("ctrl-q", "quit")]),
+                True,
+            )
+        if status in {"failed", "llm_failed", "error", "sandbox_failed"}:
+            return (
+                line,
+                keymap_styled([("send", "retry"), ("Ctrl+V", "vulns"), ("Ctrl+H", "health")]),
+                False,
+            )
+        if status in {"completed", "stopped", "stopping"}:
+            return (
+                line,
+                keymap_styled([("Ctrl+V", "vulns"), ("Ctrl+H", "health"), ("Ctrl+U", "update"), ("ctrl-q", "quit")]),
+                False,
+            )
+        return (line, keymap_styled([("Ctrl+V", "vulns"), ("Ctrl+H", "health"), ("Ctrl+U", "update")]), False)
 
-        if status in simple_statuses:
-            msg, _ = simple_statuses[status]
-            text = Text()
-            text.append(msg)
-            return (text, Text(), False)
-
-        if status == "llm_failed":
-            error_msg = agent_data.get("error_message", "")
-            text = Text()
-            if error_msg:
-                text.append(error_msg, style="red")
-            else:
-                text.append("LLM request failed", style="red")
-            self._stop_dot_animation()
-            keymap = Text()
-            keymap.append("Send message to retry", style="dim")
-            return (text, keymap, False)
-
-        if status == "waiting":
-            keymap = Text()
-            keymap.append("Send message to resume", style="dim")
-            return (Text(" "), keymap, False)
-
-        if status == "running":
-            # Check if this agent is compacting memory
-            if agent_id in self.tracer.compacting_agents:
-                animated_text = Text()
-                animated_text.append_text(
-                    self._get_sweep_animation(self._compact_sweep_colors)
-                )
-                animated_text.append("Compacting", style="#fbbf24")
-                animated_text.append(" memory", style="#d97706")
-                return (animated_text, keymap_styled([("ctrl-q", "quit")]), True)
-            if self._agent_has_real_activity(agent_id):
-                animated_text = Text()
-                animated_text.append_text(self._get_sweep_animation(self._sweep_colors))
-                animated_text.append("esc", style="white")
-                animated_text.append(" ", style="dim")
-                animated_text.append("stop", style="dim")
-                return (animated_text, keymap_styled([("ctrl-q", "quit")]), True)
-            animated_text = self._get_animated_verb_text(agent_id, "Initializing")
-            return (animated_text, keymap_styled([("ctrl-q", "quit")]), True)
-
-        return (None, Text(), False)
+    def _build_running_spinner_indicator(self) -> Text:
+        """Render a stable-width spinner prefix for running-status affordance."""
+        palette = self._theme_palette()
+        frame = self.RUN_STATUS_FRAMES[self._spinner_frame_index % len(self.RUN_STATUS_FRAMES)]
+        running_style = self._marker_color("run")
+        muted_style = str(palette.get("muted", "#9ca3af"))
+        text = Text()
+        text.append("[", style=running_style)
+        text.append(frame, style=f"bold {running_style}")
+        text.append("]", style=running_style)
+        text.append(" ", style=muted_style)
+        return text
 
     def _update_agent_status_display(self) -> None:
         try:
@@ -1747,6 +2822,7 @@ class EspritTUIApp(App):  # type: ignore[misc]
             scan_completed=scan_done,
             scan_failed=scan_failed,
             spinner_frame=self._stats_spinner_frame,
+            theme_tokens=self._theme_palette(),
         )
         if stats_text:
             stats_content.append(stats_text)
@@ -1776,22 +2852,12 @@ class EspritTUIApp(App):  # type: ignore[misc]
         if not self._is_widget_safe(vuln_panel):
             return
 
-        vulnerabilities = self.tracer.vulnerability_reports
-
+        vulnerabilities = self._get_enriched_vulnerabilities()
         if not vulnerabilities:
             vuln_panel.update_vulnerabilities([])
             return
 
-        enriched_vulns = []
-        for vuln in vulnerabilities:
-            enriched = dict(vuln)
-            report_id = vuln.get("id", "")
-            agent_name = self._get_agent_name_for_vulnerability(report_id)
-            if agent_name:
-                enriched["agent_name"] = agent_name
-            enriched_vulns.append(enriched)
-
-        vuln_panel.update_vulnerabilities(enriched_vulns)
+        vuln_panel.update_vulnerabilities(vulnerabilities)
 
     def _get_agent_name_for_vulnerability(self, report_id: str) -> str | None:
         """Find the agent name that created a vulnerability report."""
@@ -1819,7 +2885,7 @@ class EspritTUIApp(App):  # type: ignore[misc]
         wave_pos = total_range - abs(total_range - frame_in_cycle)
         sweep_pos = wave_pos - offset
 
-        dot_color = "#0a3d1f"
+        dot_color = self._sweep_dot_color
 
         for i in range(num_squares):
             dist = abs(i - sweep_pos)
@@ -1835,14 +2901,17 @@ class EspritTUIApp(App):  # type: ignore[misc]
         return text
 
     def _get_animated_verb_text(self, agent_id: str, verb: str) -> Text:  # noqa: ARG002
+        palette = self._theme_palette()
+        verb_primary = str(palette.get("verb_primary", "white"))
+        verb_secondary = str(palette.get("verb_secondary", "dim"))
         text = Text()
         sweep = self._get_sweep_animation(self._sweep_colors)
         text.append_text(sweep)
         parts = verb.split(" ", 1)
-        text.append(parts[0], style="white")
+        text.append(parts[0], style=verb_primary)
         if len(parts) > 1:
-            text.append(" ", style="dim")
-            text.append(parts[1], style="dim")
+            text.append(" ", style=verb_secondary)
+            text.append(parts[1], style=verb_secondary)
         return text
 
     def _start_dot_animation(self) -> None:
@@ -1904,6 +2973,142 @@ class EspritTUIApp(App):  # type: ignore[misc]
                         if isinstance(result, dict) and result.get("success"):
                             count += 1
         return count
+
+    def _agent_last_activity_age_seconds(self, agent_id: str, agent_data: dict[str, Any]) -> float:
+        timestamps: list[datetime] = []
+
+        updated_at = self._parse_iso(str(agent_data.get("updated_at") or ""))
+        if updated_at:
+            timestamps.append(updated_at)
+
+        for message in getattr(self.tracer, "chat_messages", []):
+            if message.get("agent_id") != agent_id:
+                continue
+            msg_ts = self._parse_iso(str(message.get("timestamp") or ""))
+            if msg_ts:
+                timestamps.append(msg_ts)
+
+        for tool_data in getattr(self.tracer, "tool_executions", {}).values():
+            if tool_data.get("agent_id") != agent_id:
+                continue
+            started = self._parse_iso(str(tool_data.get("timestamp") or ""))
+            completed = self._parse_iso(str(tool_data.get("completed_at") or ""))
+            if started:
+                timestamps.append(started)
+            if completed:
+                timestamps.append(completed)
+
+        get_streaming = getattr(self.tracer, "get_streaming_content", None)
+        if callable(get_streaming) and get_streaming(agent_id):
+            timestamps.append(datetime.now(UTC))
+
+        if not timestamps:
+            created = self._parse_iso(str(agent_data.get("created_at") or ""))
+            if created:
+                timestamps.append(created)
+
+        if not timestamps:
+            return 0.0
+        latest = max(timestamps)
+        return max(0.0, (datetime.now(UTC) - latest).total_seconds())
+
+    def _agent_error_streak(self, agent_id: str) -> int:
+        tools = [
+            tool_data
+            for tool_data in self.tracer.tool_executions.values()
+            if tool_data.get("agent_id") == agent_id
+        ]
+        if not tools:
+            return 0
+
+        tools.sort(
+            key=lambda t: (
+                str(t.get("completed_at") or ""),
+                str(t.get("timestamp") or ""),
+                int(t.get("execution_id") or 0),
+            ),
+            reverse=True,
+        )
+        failed_states = {"failed", "error"}
+        streak = 0
+        for tool in tools:
+            status = str(tool.get("status", "")).lower()
+            if status in failed_states:
+                streak += 1
+                continue
+            if status in {"completed", "running"}:
+                break
+        return streak
+
+    def _agent_retry_count(self, agent_id: str) -> int:
+        retry_tools = {"llm_error_details", "sandbox_error_details"}
+        retries = 0
+        for tool_data in self.tracer.tool_executions.values():
+            if tool_data.get("agent_id") != agent_id:
+                continue
+            tool_name = str(tool_data.get("tool_name", ""))
+            status = str(tool_data.get("status", ""))
+            if tool_name in retry_tools or status.lower() in {"failed", "error"}:
+                retries += 1
+        agent_status = str(self.tracer.agents.get(agent_id, {}).get("status", "")).lower()
+        if agent_status in {"failed", "llm_failed", "error", "sandbox_failed"}:
+            retries += 1
+        return retries
+
+    def _agent_risk_tier(
+        self, status: str, age_seconds: float, error_streak: int, retry_count: int
+    ) -> tuple[str, int]:
+        score = 0
+        failed_statuses = {"failed", "llm_failed", "error", "sandbox_failed"}
+        if status in failed_statuses:
+            score += 80
+        elif status in {"running", "waiting"}:
+            score += 20
+
+        if age_seconds >= 240:
+            score += 40
+        elif age_seconds >= 120:
+            score += 25
+        elif age_seconds >= 60:
+            score += 10
+
+        score += min(error_streak * 15, 45)
+        score += min(retry_count * 5, 25)
+
+        if status in {"running", "waiting"} and age_seconds >= 120 and error_streak >= 2:
+            score += 25
+
+        if score >= 70:
+            return ("high", score)
+        if score >= 40:
+            return ("medium", score)
+        return ("low", score)
+
+    def _get_agent_health_rows(self) -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+        for agent_id, agent_data in self.tracer.agents.items():
+            status = str(agent_data.get("status", "running")).lower()
+            age_seconds = self._agent_last_activity_age_seconds(agent_id, agent_data)
+            error_streak = self._agent_error_streak(agent_id)
+            retry_count = self._agent_retry_count(agent_id)
+            risk, risk_score = self._agent_risk_tier(status, age_seconds, error_streak, retry_count)
+
+            rows.append(
+                {
+                    "agent_id": agent_id,
+                    "name": str(agent_data.get("name", agent_id)),
+                    "status": status,
+                    "last_output_age": self._format_short_duration(age_seconds),
+                    "error_streak": error_streak,
+                    "retry_count": retry_count,
+                    "risk": risk,
+                    "risk_score": risk_score,
+                    "snippet": self._get_agent_live_snippet(agent_id, status),
+                }
+            )
+
+        rows.sort(key=lambda item: (-int(item["risk_score"]), str(item["name"]).lower()))
+        return rows
 
     def _gather_agent_events(self, agent_id: str) -> list[dict[str, Any]]:
         chat_events = [
@@ -2006,18 +3211,7 @@ class EspritTUIApp(App):  # type: ignore[misc]
             return
 
         agent_name_raw = agent_data.get("name", "Agent")
-
-        status_indicators = {
-            "running": "◐",
-            "waiting": "⏸",
-            "completed": "✓",
-            "failed": "✗",
-            "stopped": "■",
-            "stopping": "○",
-            "llm_failed": "✗",
-        }
-
-        status_icon = status_indicators.get(status, "○")
+        status_icon = self._agent_status_marker(status)
         vuln_count = self._agent_vulnerability_count(agent_id)
         vuln_indicator = f" ({vuln_count})" if vuln_count > 0 else ""
         agent_name = f"{status_icon} {agent_name_raw}{vuln_indicator}"
@@ -2079,18 +3273,7 @@ class EspritTUIApp(App):  # type: ignore[misc]
         agent_data = self.tracer.agents.get(agent_id, {})
         agent_name_raw = agent_data.get("name", "Agent")
         status = agent_data.get("status", "running")
-
-        status_indicators = {
-            "running": "◐",
-            "waiting": "⏸",
-            "completed": "✓",
-            "failed": "✗",
-            "stopped": "■",
-            "stopping": "○",
-            "llm_failed": "✗",
-        }
-
-        status_icon = status_indicators.get(status, "○")
+        status_icon = self._agent_status_marker(status)
         vuln_count = self._agent_vulnerability_count(agent_id)
         vuln_indicator = f" ({vuln_count})" if vuln_count > 0 else ""
         agent_name = f"{status_icon} {agent_name_raw}{vuln_indicator}"
@@ -2151,11 +3334,15 @@ class EspritTUIApp(App):  # type: ignore[misc]
             return UserMessageRenderer.render_simple(content)
 
         if metadata.get("interrupted"):
+            palette = self._theme_palette()
             streaming_result = self._render_streaming_content(content)
             interrupted_text = Text()
             interrupted_text.append("\n")
-            interrupted_text.append("⚠ ", style="yellow")
-            interrupted_text.append("Interrupted by user", style="yellow dim")
+            interrupted_text.append("[warn] ", style=self._marker_style("warn"))
+            interrupted_text.append(
+                "Interrupted by user",
+                style=f"dim {str(palette.get('warning', '#f59e0b'))}",
+            )
             return Group(streaming_result, interrupted_text)
 
         return AgentMessageRenderer.render_simple(content)
@@ -2169,26 +3356,36 @@ class EspritTUIApp(App):  # type: ignore[misc]
         renderer = get_tool_renderer(tool_name)
 
         if renderer:
-            widget = renderer.render(tool_data)
+            renderer_payload = dict(tool_data)
+            renderer_payload["_theme_id"] = self._theme_id
+            renderer_payload["_theme_tokens"] = self._theme_palette()
+            widget = renderer.render(renderer_payload)
             return widget.renderable
 
         text = Text()
+        palette = self._theme_palette()
+        muted_style = str(palette.get("muted", "#9ca3af"))
+        info_style = str(palette.get("info", "#60a5fa"))
+        success_style = self._marker_color("ok")
+        warning_style = self._marker_color("run")
+        error_style = self._marker_color("err")
 
         if tool_name in ("llm_error_details", "sandbox_error_details"):
             return self._render_error_details(text, tool_name, args)
 
-        text.append("→ Using tool ")
-        text.append(tool_name, style="bold blue")
+        text.append("[run] ", style=f"bold {warning_style}")
+        text.append("Using tool ", style=f"dim {muted_style}")
+        text.append(tool_name, style=f"bold {info_style}")
 
         status_styles = {
-            "running": ("●", "yellow"),
-            "completed": ("✓", "green"),
-            "failed": ("✗", "red"),
-            "error": ("✗", "red"),
+            "running": ("[run]", warning_style),
+            "completed": ("[ok]", success_style),
+            "failed": ("[err]", error_style),
+            "error": ("[err]", error_style),
         }
-        icon, style = status_styles.get(status, ("○", "dim"))
+        icon, style = status_styles.get(status, ("[warn]", self._marker_color("warn")))
         text.append(" ")
-        text.append(icon, style=style)
+        text.append(icon, style=f"bold {style}")
 
         if args:
             for k, v in list(args.items())[:5]:
@@ -2196,7 +3393,7 @@ class EspritTUIApp(App):  # type: ignore[misc]
                 if len(str_v) > 500:
                     str_v = str_v[:497] + "..."
                 text.append("\n  ")
-                text.append(k, style="dim")
+                text.append(k, style=f"dim {muted_style}")
                 text.append(": ")
                 text.append(str_v)
 
@@ -2211,17 +3408,22 @@ class EspritTUIApp(App):  # type: ignore[misc]
         return text
 
     def _render_error_details(self, text: Any, tool_name: str, args: dict[str, Any]) -> Any:
+        palette = self._theme_palette()
+        error_style = str(palette.get("status_failed", "#ef4444"))
+        muted_style = str(palette.get("muted", "#9ca3af"))
         if tool_name == "llm_error_details":
-            text.append("✗ LLM Request Failed", style="red")
+            text.append("[err] ", style=self._marker_style("err"))
+            text.append("LLM request failed", style=f"bold {error_style}")
         else:
-            text.append("✗ Sandbox Initialization Failed", style="red")
+            text.append("[err] ", style=self._marker_style("err"))
+            text.append("Sandbox initialization failed", style=f"bold {error_style}")
             if args.get("error"):
-                text.append(f"\n{args['error']}", style="bold red")
+                text.append(f"\n{args['error']}", style=f"bold {error_style}")
         if args.get("details"):
             details = str(args["details"])
             if len(details) > 1000:
                 details = details[:997] + "..."
-            text.append("\nDetails: ", style="dim")
+            text.append("\nDetails: ", style=f"dim {muted_style}")
             text.append(details)
         return text
 
@@ -2264,25 +3466,39 @@ class EspritTUIApp(App):  # type: ignore[misc]
     def _send_user_message(self, message: str) -> None:
         if not self.selected_agent_id:
             return
+        self._send_user_message_to_agent(self.selected_agent_id, message, interrupt_if_streaming=True)
 
-        if self.tracer:
-            streaming_content = self.tracer.get_streaming_content(self.selected_agent_id)
+        self._displayed_events.clear()
+        self._update_chat_view()
+
+        self.call_after_refresh(self._focus_chat_input)
+
+    def _send_user_message_to_agent(
+        self,
+        agent_id: str,
+        message: str,
+        *,
+        interrupt_if_streaming: bool,
+        metadata: dict[str, Any] | None = None,
+    ) -> bool:
+        if interrupt_if_streaming and self.tracer:
+            streaming_content = self.tracer.get_streaming_content(agent_id)
             if streaming_content and streaming_content.strip():
-                self.tracer.clear_streaming_content(self.selected_agent_id)
-                self.tracer.interrupted_content[self.selected_agent_id] = streaming_content
+                self.tracer.clear_streaming_content(agent_id)
+                self.tracer.interrupted_content[agent_id] = streaming_content
                 self.tracer.log_chat_message(
                     content=streaming_content,
                     role="assistant",
-                    agent_id=self.selected_agent_id,
+                    agent_id=agent_id,
                     metadata={"interrupted": True},
                 )
 
         try:
             from esprit.tools.agents_graph.agents_graph_actions import _agent_instances
 
-            if self.selected_agent_id in _agent_instances:
-                agent_instance = _agent_instances[self.selected_agent_id]
-                if hasattr(agent_instance, "cancel_current_execution"):
+            if agent_id in _agent_instances:
+                agent_instance = _agent_instances[agent_id]
+                if interrupt_if_streaming and hasattr(agent_instance, "cancel_current_execution"):
                     agent_instance.cancel_current_execution()
         except (ImportError, AttributeError, KeyError):
             pass
@@ -2291,21 +3507,48 @@ class EspritTUIApp(App):  # type: ignore[misc]
             self.tracer.log_chat_message(
                 content=message,
                 role="user",
-                agent_id=self.selected_agent_id,
+                agent_id=agent_id,
+                metadata=metadata or {},
             )
 
         try:
             from esprit.tools.agents_graph.agents_graph_actions import send_user_message_to_agent
 
-            send_user_message_to_agent(self.selected_agent_id, message)
-
+            send_user_message_to_agent(agent_id, message)
         except (ImportError, AttributeError) as e:
-            logging.warning(f"Failed to send message to agent {self.selected_agent_id}: {e}")
+            logging.warning(f"Failed to send message to agent {agent_id}: {e}")
+            return False
+        else:
+            return True
 
-        self._displayed_events.clear()
-        self._update_chat_view()
+    def retry_agent(self, agent_id: str) -> bool:
+        retry_message = (
+            "Please continue your current task. Prioritize high-severity vulnerabilities first "
+            "and summarize your next step."
+        )
+        success = self._send_user_message_to_agent(
+            agent_id,
+            retry_message,
+            interrupt_if_streaming=True,
+            metadata={"retry": True},
+        )
+        if success and agent_id == self.selected_agent_id:
+            self._displayed_events.clear()
+            self._update_chat_view()
+        return success
 
-        self.call_after_refresh(self._focus_chat_input)
+    def _request_stop_agent(self, agent_id: str) -> bool:
+        try:
+            from esprit.tools.agents_graph.agents_graph_actions import stop_agent
+
+            result = stop_agent(agent_id)
+            if result.get("success"):
+                logging.info(f"Stop request sent to agent: {result.get('message', 'Unknown')}")
+                return True
+            logging.warning(f"Failed to stop agent: {result.get('error', 'Unknown error')}")
+        except Exception:
+            logging.exception(f"Failed to stop agent {agent_id}")
+        return False
 
     def _get_agent_name(self, agent_id: str) -> str:
         try:
@@ -2360,6 +3603,45 @@ class EspritTUIApp(App):  # type: ignore[misc]
             return
 
         self.push_screen(BrowserPreviewScreen(screenshot_b64, url, agent_id=self.selected_agent_id))
+
+    def action_toggle_vulnerability_overlay(self) -> None:
+        if self.show_splash or not self.is_mounted:
+            return
+
+        if isinstance(self.screen, VulnerabilityOverlayScreen):
+            self.pop_screen()
+            return
+
+        if len(self.screen_stack) > 1:
+            return
+
+        self.push_screen(VulnerabilityOverlayScreen())
+
+    def action_toggle_agent_health_popup(self) -> None:
+        if self.show_splash or not self.is_mounted:
+            return
+
+        if isinstance(self.screen, AgentHealthPopupScreen):
+            self.pop_screen()
+            return
+
+        if len(self.screen_stack) > 1:
+            return
+
+        self.push_screen(AgentHealthPopupScreen())
+
+    def action_check_for_updates(self) -> None:
+        if self.show_splash or not self.is_mounted:
+            return
+
+        if isinstance(self.screen, UpdateScreen):
+            self.pop_screen()
+            return
+
+        if len(self.screen_stack) > 1:
+            return
+
+        self.push_screen(UpdateScreen(checking=True))
 
     def _get_latest_browser_screenshot(self, agent_id: str) -> tuple[str | None, str]:
         """Find the latest browser screenshot for an agent."""
@@ -2461,19 +3743,7 @@ class EspritTUIApp(App):  # type: ignore[misc]
 
     def action_confirm_stop_agent(self, agent_id: str) -> None:
         self.pop_screen()
-
-        try:
-            from esprit.tools.agents_graph.agents_graph_actions import stop_agent
-
-            result = stop_agent(agent_id)
-
-            if result.get("success"):
-                logging.info(f"Stop request sent to agent: {result.get('message', 'Unknown')}")
-            else:
-                logging.warning(f"Failed to stop agent: {result.get('error', 'Unknown error')}")
-
-        except Exception:
-            logging.exception(f"Failed to stop agent {agent_id}")
+        self._request_stop_agent(agent_id)
 
     def action_custom_quit(self) -> None:
         if self._scan_thread and self._scan_thread.is_alive():
@@ -2548,7 +3818,7 @@ class EspritTUIApp(App):  # type: ignore[misc]
         self._apply_responsive_layout(event.size.width)
 
 
-async def run_tui(args: argparse.Namespace, gui_server: Any = None) -> None:
+async def run_tui(args: argparse.Namespace, gui_server: Any = None) -> Any:
     """Run esprit in interactive TUI mode with textual."""
     app = EspritTUIApp(args, gui_server=gui_server)
-    await app.run_async()
+    return await app.run_async()

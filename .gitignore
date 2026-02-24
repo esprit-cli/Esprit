@@ -49,6 +49,8 @@ coverage.xml
 *.cover
 .hypothesis/
 .pytest_cache/
+.mypy_cache/
+.ruff_cache/
 htmlcov/
 
 # FastAPI
@@ -97,3 +99,7 @@ Thumbs.db
 schema.graphql
 
 .opencode/
+
+# Large binaries (exceed GitHub 100MB limit)
+.terraform/
+node_modules/

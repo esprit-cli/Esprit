@@ -47,6 +47,9 @@ class Config:
 
     # Config file override (set via --config CLI arg)
     _config_file_override: Path | None = None
+    _UI_SECTION_KEY = "ui"
+    _LAUNCHPAD_THEME_KEY = "launchpad_theme"
+    _DEFAULT_LAUNCHPAD_THEME = "esprit"
 
     @classmethod
     def _tracked_names(cls) -> list[str]:
@@ -118,6 +121,8 @@ class Config:
     @classmethod
     def apply_saved(cls, force: bool = False) -> dict[str, str]:
         saved = cls.load()
+        if not isinstance(saved, dict):
+            saved = {}
         env_vars = saved.get("env", {})
         if not isinstance(env_vars, dict):
             env_vars = {}
@@ -130,12 +135,14 @@ class Config:
             for var_name in cleared_vars:
                 env_vars.pop(var_name, None)
             if cls._config_file_override is None:
-                cls.save({"env": env_vars})
+                saved["env"] = env_vars
+                cls.save(saved)
         if cls._llm_env_changed(env_vars):
             for var_name in cls._llm_env_vars():
                 env_vars.pop(var_name, None)
             if cls._config_file_override is None:
-                cls.save({"env": env_vars})
+                saved["env"] = env_vars
+                cls.save(saved)
         applied = {}
 
         for var_name, var_value in env_vars.items():
@@ -156,7 +163,12 @@ class Config:
 
     @classmethod
     def save_current(cls) -> bool:
-        existing = cls.load().get("env", {})
+        saved = cls.load()
+        if not isinstance(saved, dict):
+            saved = {}
+        existing = saved.get("env", {})
+        if not isinstance(existing, dict):
+            existing = {}
         merged = dict(existing)
 
         for var_name in cls.tracked_vars():
@@ -168,7 +180,35 @@ class Config:
             else:
                 merged[var_name] = value
 
-        return cls.save({"env": merged})
+        saved["env"] = merged
+        return cls.save(saved)
+
+    @classmethod
+    def get_launchpad_theme(cls) -> str:
+        saved = cls.load()
+        if not isinstance(saved, dict):
+            return cls._DEFAULT_LAUNCHPAD_THEME
+        ui = saved.get(cls._UI_SECTION_KEY, {})
+        if not isinstance(ui, dict):
+            return cls._DEFAULT_LAUNCHPAD_THEME
+        theme = ui.get(cls._LAUNCHPAD_THEME_KEY)
+        if isinstance(theme, str) and theme:
+            return theme
+        return cls._DEFAULT_LAUNCHPAD_THEME
+
+    @classmethod
+    def save_launchpad_theme(cls, theme: str) -> bool:
+        if not theme:
+            return False
+        saved = cls.load()
+        if not isinstance(saved, dict):
+            saved = {}
+        ui = saved.get(cls._UI_SECTION_KEY, {})
+        if not isinstance(ui, dict):
+            ui = {}
+        ui[cls._LAUNCHPAD_THEME_KEY] = theme
+        saved[cls._UI_SECTION_KEY] = ui
+        return cls.save(saved)
 
 
 def apply_saved_config(force: bool = False) -> dict[str, str]:

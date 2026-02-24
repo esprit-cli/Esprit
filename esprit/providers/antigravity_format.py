@@ -171,6 +171,62 @@ def _convert_tool_call(tool_call: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _normalize_tool_response_content(content: Any) -> dict[str, Any]:
+    """Normalize role=tool content to an object payload for functionResponse."""
+    if isinstance(content, dict):
+        return content
+
+    if isinstance(content, str):
+        try:
+            parsed = json.loads(content)
+            if isinstance(parsed, dict):
+                return parsed
+        except json.JSONDecodeError:
+            pass
+        return {"result": content}
+
+    if isinstance(content, list):
+        text_parts: list[str] = []
+        images: list[dict[str, Any]] = []
+        other_parts: list[Any] = []
+
+        for part in content:
+            if not isinstance(part, dict):
+                other_parts.append(part)
+                continue
+
+            part_type = part.get("type")
+            if part_type == "text":
+                text_parts.append(str(part.get("text", "")))
+                continue
+
+            if part_type == "image_url":
+                image_url = part.get("image_url")
+                if isinstance(image_url, dict):
+                    images.append(image_url)
+                elif isinstance(image_url, str):
+                    images.append({"url": image_url})
+                else:
+                    other_parts.append(part)
+                continue
+
+            other_parts.append(part)
+
+        normalized: dict[str, Any] = {}
+        result_text = "\n".join(text for text in text_parts if text)
+        if result_text:
+            normalized["result"] = result_text
+        if images:
+            normalized["images"] = images
+        if other_parts:
+            normalized["parts"] = other_parts
+
+        if normalized:
+            return normalized
+
+    return {"result": str(content)}
+
+
 def _convert_messages(messages: list[dict[str, Any]]) -> tuple[
     dict[str, Any] | None,  # systemInstruction
     list[dict[str, Any]],  # contents
@@ -204,21 +260,14 @@ def _convert_messages(messages: list[dict[str, Any]]) -> tuple[
             tool_call_id = msg.get("tool_call_id", "")
             # Resolve the function name from a prior assistant message's tool_calls
             func_name = tc_id_to_name.get(tool_call_id, tool_call_id)
-            result_content = content
-            if isinstance(result_content, str):
-                try:
-                    result_content = json.loads(result_content)
-                except json.JSONDecodeError:
-                    result_content = {"result": result_content}
+            result_content = _normalize_tool_response_content(content)
 
             contents.append({
                 "role": "user",
                 "parts": [{
                     "functionResponse": {
                         "name": func_name,
-                        "response": result_content
-                        if isinstance(result_content, dict)
-                        else {"result": str(result_content)},
+                        "response": result_content,
                         "id": tool_call_id,
                     }
                 }],

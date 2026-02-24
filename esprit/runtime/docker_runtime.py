@@ -380,6 +380,26 @@ class DockerRuntime(AbstractRuntime):
                 return parsed.hostname
         return "127.0.0.1"
 
+    async def get_workspace_diffs(self, container_id: str) -> list[dict[str, object]]:
+        """Retrieve file edit log from the sandbox tool server."""
+        if not self._tool_server_port or not self._tool_server_token:
+            return []
+        try:
+            import requests as _req
+
+            host = self._resolve_docker_host()
+            resp = _req.get(
+                f"http://{host}:{self._tool_server_port}/diffs",
+                headers={"Authorization": f"Bearer {self._tool_server_token}"},
+                timeout=10,
+            )
+            if resp.ok:
+                data = resp.json()
+                return list(data.get("edits", []))
+        except Exception:  # noqa: BLE001
+            pass
+        return []
+
     async def destroy_sandbox(self, container_id: str) -> None:
         try:
             container = self.client.containers.get(container_id)

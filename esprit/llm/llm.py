@@ -12,6 +12,7 @@ from litellm import acompletion, stream_chunk_builder, supports_reasoning
 from litellm.utils import supports_prompt_caching, supports_vision
 
 from esprit.config import Config
+from esprit.llm.api_base import resolve_api_base
 from esprit.llm.config import LLMConfig
 from esprit.llm.memory_compressor import MemoryCompressor
 from esprit.llm.utils import (
@@ -33,6 +34,11 @@ try:
     )
     from esprit.providers.account_pool import get_account_pool
     from esprit.providers.antigravity import ANTIGRAVITY_MODELS, ENDPOINTS
+    from esprit.providers.config import (
+        get_available_models,
+        get_public_opencode_models,
+        is_public_opencode_model,
+    )
     from esprit.providers.antigravity_format import (
         build_cloudcode_request,
         build_request_headers,
@@ -43,6 +49,27 @@ except ImportError:
     PROVIDERS_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
+
+_OPENCODE_PREFERRED_PUBLIC_FALLBACK_MODELS = [
+    "minimax-m2.5-free",
+    "kimi-k2.5-free",
+    "gpt-5-nano",
+    "minimax-m2.1-free",
+    "trinity-large-preview-free",
+]
+
+_AUTH_ERROR_TEXT_MARKERS = (
+    "invalid api key",
+    "incorrect api key",
+    "api_key client option must be set",
+    "authenticationerror",
+    "unauthorized",
+)
+
+_OPENCODE_UPSTREAM_ERROR_MARKERS = (
+    "prompt_tokens",
+    "upstream model error",
+)
 
 
 def _mask_email(email: str) -> str:
@@ -73,10 +100,11 @@ for _base in ["gpt-5.3-codex", "gpt-5.2-codex"]:
 
 
 class LLMRequestFailedError(Exception):
-    def __init__(self, message: str, details: str | None = None):
+    def __init__(self, message: str, details: str | None = None, status_code: int | None = None):
         super().__init__(message)
         self.message = message
         self.details = details
+        self.status_code = status_code
 
 
 @dataclass
@@ -190,10 +218,19 @@ class LLM:
                 if self._try_rotate_on_rate_limit(e):
                     # Rotated to a new account — retry immediately (don't increment)
                     continue
+                # For OpenCode public models, rate limits/upstream failures should
+                # switch quickly to another public model instead of waiting through
+                # full retry exhaustion on an unhealthy model.
+                if self._should_try_opencode_fallback_early(e) and self._try_opencode_model_fallback(e):
+                    attempt = 0
+                    continue
                 if attempt >= max_retries or not self._should_retry(e):
                     # Before giving up, try auto model fallback for Antigravity
                     if self._is_antigravity() and self._try_model_fallback(e):
                         # Switched to fallback model — restart retry loop
+                        attempt = 0
+                        continue
+                    if self._try_opencode_model_fallback(e):
                         attempt = 0
                         continue
                     self._raise_error(e)
@@ -208,8 +245,9 @@ class LLM:
 
         self._total_stats.requests += 1
         response = await acompletion(**self._build_completion_args(messages, tools=tools), stream=True)
+        idle_timeout = self._get_stream_idle_timeout_seconds()
 
-        async for chunk in response:
+        async for chunk in self._iter_with_idle_timeout(response, idle_timeout):
             chunks.append(chunk)
             if done_streaming:
                 done_streaming += 1
@@ -353,7 +391,8 @@ class LLM:
         async with httpx.AsyncClient(timeout=120) as http:
             async with http.stream("POST", url, headers=headers, json=body) as resp:
                 resp.raise_for_status()
-                async for line in resp.aiter_lines():
+                idle_timeout = self._get_stream_idle_timeout_seconds()
+                async for line in self._iter_with_idle_timeout(resp.aiter_lines(), idle_timeout):
                     if done_streaming:
                         break
 
@@ -508,10 +547,57 @@ class LLM:
         # Translate google/ → gemini/ for litellm compatibility
         if self.config.model_name and self.config.model_name.lower().startswith("google/"):
             args["model"] = "gemini/" + self.config.model_name.split("/", 1)[1]
+        # OpenCode Zen uses an OpenAI-compatible API surface.
+        if self.config.model_name and (
+            self.config.model_name.lower().startswith("opencode/")
+            or self.config.model_name.lower().startswith("zen/")
+        ):
+            args["model"] = "openai/" + self.config.model_name.split("/", 1)[1]
 
-        # Check for provider OAuth authentication first (Codex, Copilot, Gemini, etc.)
+        # Esprit subscription provider — route through Esprit LLM proxy to Bedrock
+        if self.config.model_name and self.config.model_name.lower().startswith("esprit/"):
+            if PROVIDERS_AVAILABLE:
+                from esprit.providers.esprit_subs import (
+                    LLM_PROXY_URL,
+                    resolve_bedrock_model,
+                    _load_esprit_credentials,
+                )
+                bare_model = self.config.model_name.split("/", 1)[1]
+                bedrock_model = resolve_bedrock_model(bare_model)
+                creds = _load_esprit_credentials()
+                if creds and creds.access_token:
+                    # The Esprit proxy exposes an OpenAI-compatible API, so
+                    # we use the openai/ prefix to avoid litellm attempting
+                    # AWS SigV4 signing with bedrock/ prefix.
+                    args["model"] = f"openai/{bedrock_model}"
+                    args["api_base"] = LLM_PROXY_URL
+                    args["api_key"] = creds.access_token
+                    args["extra_headers"] = {
+                        "X-Esprit-Provider": "bedrock",
+                        "X-Esprit-Model": bedrock_model,
+                    }
+                else:
+                    raise LLMRequestFailedError(
+                        "Not logged in to Esprit. Run 'esprit provider login esprit' first.",
+                        status_code=401,
+                    )
+                return args
+
+        # Check provider-managed credentials first (API keys + OAuth)
         use_oauth = False
+        provider_api_key: str | None = None
         if PROVIDERS_AVAILABLE and self.config.model_name:
+            provider_api_key = get_provider_api_key(self.config.model_name)
+            if provider_api_key:
+                args["api_key"] = provider_api_key
+
+            provider_headers = get_provider_headers(self.config.model_name)
+            if provider_headers:
+                args["extra_headers"] = {
+                    **args.get("extra_headers", {}),
+                    **provider_headers,
+                }
+
             use_oauth = should_use_oauth(self.config.model_name)
             if use_oauth:
                 model_lower = self.config.model_name.lower()
@@ -523,29 +609,52 @@ class LLM:
                 if "codex" in model_lower:
                     bare_model = self.config.model_name.split("/", 1)[-1]
                     args["model"] = bare_model
-                    args["api_key"] = get_provider_api_key(self.config.model_name) or "oauth-auth"
+                    args["api_key"] = provider_api_key or "oauth-auth"
                 else:
-                    provider_headers = get_provider_headers(self.config.model_name)
-                    if provider_headers:
-                        args["extra_headers"] = provider_headers
-                    args["api_key"] = get_provider_api_key(self.config.model_name) or "oauth-auth"
+                    args["api_key"] = provider_api_key or "oauth-auth"
 
-        # Fall back to environment variables if not using OAuth
+        # Fall back to configured API key when provider auth is not active.
         if not use_oauth:
-            if api_key := Config.get("llm_api_key"):
+            if "api_key" not in args and (api_key := Config.get("llm_api_key")):
                 args["api_key"] = api_key
-            if api_base := (
-                Config.get("llm_api_base")
-                or Config.get("openai_api_base")
-                or Config.get("litellm_base_url")
-                or Config.get("ollama_api_base")
-            ):
-                args["api_base"] = api_base
+
+        # Always resolve API base explicitly so provider-specific env vars (e.g.
+        # ANTHROPIC_BASE_URL) do not silently hijack requests.
+        if api_base := resolve_api_base(self.config.model_name):
+            args["api_base"] = api_base
 
         if self._supports_reasoning():
             args["reasoning_effort"] = self._reasoning_effort
 
         return args
+
+    def _get_stream_idle_timeout_seconds(self) -> float:
+        configured = Config.get("esprit_llm_stream_idle_timeout")
+        if configured:
+            try:
+                return max(5.0, float(configured))
+            except (TypeError, ValueError):
+                pass
+
+        request_timeout = float(getattr(self.config, "timeout", 300) or 300)
+        return max(20.0, min(120.0, request_timeout / 2))
+
+    async def _iter_with_idle_timeout(
+        self,
+        iterator: AsyncIterator[Any],
+        timeout_seconds: float,
+    ) -> AsyncIterator[Any]:
+        while True:
+            try:
+                item = await asyncio.wait_for(iterator.__anext__(), timeout=timeout_seconds)
+            except StopAsyncIteration:
+                return
+            except asyncio.TimeoutError as e:
+                raise TimeoutError(
+                    f"LLM stream idle timeout after {timeout_seconds:.0f}s"
+                ) from e
+            else:
+                yield item
 
     def _get_chunk_content(self, chunk: Any) -> str:
         if chunk.choices and hasattr(chunk.choices[0], "delta"):
@@ -663,12 +772,23 @@ class LLM:
         from esprit.telemetry import posthog
 
         posthog.error("llm_error", type(e).__name__)
-        raise LLMRequestFailedError(f"LLM request failed: {type(e).__name__}", str(e)) from e
+        status_code = getattr(e, "status_code", None) or getattr(
+            getattr(e, "response", None), "status_code", None
+        )
+        raise LLMRequestFailedError(
+            f"LLM request failed: {type(e).__name__}",
+            str(e),
+            status_code=status_code,
+        ) from e
 
     def _is_anthropic(self) -> bool:
         if not self.config.model_name:
             return False
-        return any(p in self.config.model_name.lower() for p in ["anthropic/", "claude"])
+        model_lower = self.config.model_name.lower()
+        # Esprit subscription routes to Bedrock Claude (Haiku)
+        if model_lower.startswith("esprit/"):
+            return True
+        return any(p in model_lower for p in ["anthropic/", "claude"])
 
     def _is_antigravity(self) -> bool:
         if not PROVIDERS_AVAILABLE or not self.config.model_name:
@@ -680,7 +800,8 @@ class LLM:
         if "/" in model:
             prefix = model.split("/", 1)[0]
             _NON_AG_PREFIXES = {"anthropic", "google", "openai", "bedrock",
-                                "github-copilot", "gemini", "azure", "vertex_ai"}
+                                "github-copilot", "gemini", "azure", "vertex_ai",
+                                "esprit"}
             if prefix in _NON_AG_PREFIXES:
                 return False
         # Check if the bare model name is an antigravity model and oauth is configured
@@ -785,6 +906,91 @@ class LLM:
 
         return False
 
+    def _should_try_opencode_fallback_early(self, e: Exception) -> bool:
+        """Return True when OpenCode fallback should happen immediately."""
+        if not self._is_opencode():
+            return False
+
+        code = getattr(e, "status_code", None) or getattr(
+            getattr(e, "response", None), "status_code", None
+        )
+        if code == 429:
+            return True
+
+        message = str(e).lower()
+        return any(marker in message for marker in _OPENCODE_UPSTREAM_ERROR_MARKERS)
+
+    def _is_opencode(self) -> bool:
+        model = (self.config.model_name or "").strip().lower()
+        return model.startswith("opencode/") or model.startswith("zen/")
+
+    def _is_auth_error(self, e: Exception) -> bool:
+        code = getattr(e, "status_code", None) or getattr(
+            getattr(e, "response", None), "status_code", None
+        )
+        if code in (401, 403):
+            return True
+
+        message = str(e).lower()
+        return any(marker in message for marker in _AUTH_ERROR_TEXT_MARKERS)
+
+    def _try_opencode_model_fallback(self, e: Exception) -> bool:
+        """Switch to another OpenCode public model when the active one is failing."""
+        if str(Config.get("esprit_auto_fallback") or "").lower() in ("false", "0", "no"):
+            return False
+
+        if not PROVIDERS_AVAILABLE or not self._is_opencode():
+            return False
+
+        if self._is_auth_error(e):
+            return False
+
+        current_model = self.config.model_name or ""
+        catalog = get_available_models()
+
+        if not is_public_opencode_model(current_model, catalog):
+            return False
+
+        public_models = get_public_opencode_models(catalog)
+        if not public_models:
+            return False
+
+        current_bare = current_model.split("/", 1)[-1] if "/" in current_model else current_model
+
+        if not hasattr(self, "_tried_opencode_models"):
+            self._tried_opencode_models: set[str] = set()
+        self._tried_opencode_models.add(current_bare)
+
+        fallback_bare_models = [
+            model_id
+            for model_id in _OPENCODE_PREFERRED_PUBLIC_FALLBACK_MODELS
+            if model_id in public_models and model_id != current_bare
+        ]
+        fallback_bare_models.extend(
+            sorted(
+                model_id
+                for model_id in public_models
+                if model_id not in fallback_bare_models and model_id != current_bare
+            )
+        )
+
+        prefix = current_model.split("/", 1)[0] if "/" in current_model else "opencode"
+        for fallback_bare in fallback_bare_models:
+            if fallback_bare in self._tried_opencode_models:
+                continue
+
+            old_model = current_model
+            new_model = f"{prefix}/{fallback_bare}"
+            self.config.model_name = new_model
+            self._tried_opencode_models.add(fallback_bare)
+            logger.warning(
+                "OpenCode model %s failed (%s), falling back to %s",
+                old_model, type(e).__name__, new_model,
+            )
+            return True
+
+        return False
+
     def _supports_vision(self) -> bool:
         try:
             return bool(supports_vision(model=self.config.model_name))
@@ -814,7 +1020,12 @@ class LLM:
         return result
 
     def _add_cache_control(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        if not messages or not supports_prompt_caching(self.config.model_name):
+        # Esprit models route to Bedrock Claude which supports prompt caching,
+        # but litellm doesn't recognise the "esprit/..." alias.
+        model_for_cache_check = self.config.model_name
+        if model_for_cache_check.lower().startswith("esprit/"):
+            model_for_cache_check = "anthropic/claude-3-5-haiku-latest"
+        if not messages or not supports_prompt_caching(model_for_cache_check):
             return messages
 
         result = list(messages)

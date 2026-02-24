@@ -16,6 +16,10 @@
         <i data-lucide="wifi" class="icon-xs"></i>
         <span>connecting...</span>
       </span>
+      <button id="theme-toggle" class="theme-toggle" title="Toggle theme mode (T)">
+        <i data-lucide="sun-moon" class="icon-xs"></i>
+        <span id="theme-toggle-label">dark</span>
+      </button>
     </div>
     <div class="header-stats" id="header-stats">
       <div class="stat-card" id="stat-agents" title="Active agents">
@@ -37,6 +41,11 @@
         <i data-lucide="dollar-sign" class="icon-stat"></i>
         <span class="stat-value">$0.00</span>
         <span class="stat-label">cost</span>
+      </div>
+      <div class="stat-card" id="stat-projected" title="Projected final cost">
+        <i data-lucide="chart-no-axes-combined" class="icon-stat"></i>
+        <span class="stat-value">$0.00</span>
+        <span class="stat-label">proj cost</span>
       </div>
       <div class="stat-card" id="stat-tps" title="Tokens per second">
         <i data-lucide="zap" class="icon-stat"></i>
@@ -133,6 +142,10 @@
           <span class="terminal-title" id="terminal-title">esprit-cli</span>
         </div>
         <div id="terminal-feed" class="terminal-body"></div>
+        <div id="live-status-line" class="live-status-line">
+          <i id="live-status-icon" data-lucide="loader" class="icon-xs spin-icon"></i>
+          <span id="live-status-text">Waiting for active agent status...</span>
+        </div>
       </div>
 
       <!-- Tools Timeline -->
@@ -197,6 +210,64 @@
         <i data-lucide="x" class="icon-sm"></i>
       </button>
       <img id="screenshot-modal-img" alt="Full resolution screenshot">
+    </div>
+  </div>
+
+  <!-- Vulnerability workspace overlay -->
+  <div id="vuln-workspace-modal" class="modal" style="display:none">
+    <div class="modal-backdrop"></div>
+    <div class="workspace-modal-content">
+      <div class="modal-header">
+        <span>
+          <i data-lucide="shield-alert" class="icon-sm"></i>
+          Vulnerability Workspace
+        </span>
+        <button class="modal-close" onclick="closeVulnWorkspaceModal()">
+          <i data-lucide="x" class="icon-sm"></i>
+        </button>
+      </div>
+      <div id="vuln-workspace-status" class="workspace-status"></div>
+      <div class="workspace-body">
+        <div class="workspace-list" id="vuln-workspace-list"></div>
+        <div class="workspace-detail" id="vuln-workspace-detail"></div>
+      </div>
+      <div class="workspace-actions">
+        <button class="copy-btn" id="copy-vuln-selected-btn">
+          <i data-lucide="copy" class="icon-xs"></i> Copy Selected
+        </button>
+        <button class="copy-btn" id="copy-vuln-all-btn">
+          <i data-lucide="files" class="icon-xs"></i> Copy All
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Agent health popup -->
+  <div id="health-modal" class="modal" style="display:none">
+    <div class="modal-backdrop"></div>
+    <div class="workspace-modal-content health-content">
+      <div class="modal-header">
+        <span>
+          <i data-lucide="activity" class="icon-sm"></i>
+          Agent Health
+        </span>
+        <button class="modal-close" onclick="closeHealthModal()">
+          <i data-lucide="x" class="icon-sm"></i>
+        </button>
+      </div>
+      <div id="health-workspace-status" class="workspace-status"></div>
+      <div class="workspace-body">
+        <div class="workspace-list" id="health-list"></div>
+        <div class="workspace-detail" id="health-detail"></div>
+      </div>
+      <div class="workspace-actions">
+        <button class="copy-btn" id="health-stop-btn">
+          <i data-lucide="square" class="icon-xs"></i> Stop Selected
+        </button>
+        <button class="copy-btn" id="health-retry-btn">
+          <i data-lucide="rotate-cw" class="icon-xs"></i> Retry Selected
+        </button>
+      </div>
     </div>
   </div>
 

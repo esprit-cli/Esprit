@@ -15,11 +15,19 @@ NC='\033[0m'
 
 requested_version=${VERSION:-}
 SKIP_DOWNLOAD=false
+FORCE=false
+
+# Parse flags
+for arg in "$@"; do
+  case "$arg" in
+    --force|-f) FORCE=true ;;
+  esac
+done
 
 raw_os=$(uname -s)
 os=$(echo "$raw_os" | tr '[:upper:]' '[:lower:]')
 case "$raw_os" in
-  Darwin*) os="darwin" ;;
+  Darwin*) os="macos" ;;
   Linux*) os="linux" ;;
   MINGW*|MSYS*|CYGWIN*) os="windows" ;;
 esac
@@ -32,7 +40,7 @@ if [[ "$arch" == "x86_64" ]]; then
   arch="x86_64"
 fi
 
-if [ "$os" = "darwin" ] && [ "$arch" = "x86_64" ]; then
+if [ "$os" = "macos" ] && [ "$arch" = "x86_64" ]; then
   rosetta_flag=$(sysctl -n sysctl.proc_translated 2>/dev/null || echo 0)
   if [ "$rosetta_flag" = "1" ]; then
     arch="arm64"
@@ -41,7 +49,7 @@ fi
 
 combo="$os-$arch"
 case "$combo" in
-  linux-x86_64|darwin-x86_64|darwin-arm64|windows-x86_64)
+  linux-x86_64|macos-x86_64|macos-arm64|windows-x86_64)
     ;;
   *)
     echo -e "${RED}Unsupported OS/Arch: $os/$arch${NC}"
@@ -73,6 +81,10 @@ fi
 INSTALL_DIR=$HOME/.esprit/bin
 mkdir -p "$INSTALL_DIR"
 
+# Ensure temp files are cleaned up on interrupt/error
+_cleanup_tmp() { [ -n "${_tmp_dir:-}" ] && rm -rf "$_tmp_dir"; }
+trap _cleanup_tmp EXIT INT TERM HUP
+
 if [ -z "$requested_version" ]; then
     specific_version=$(curl -s "https://api.github.com/repos/$REPO/releases/latest" | sed -n 's/.*"tag_name": *"v\([^"]*\)".*/\1/p')
     if [[ $? -ne 0 || -z "$specific_version" ]]; then
@@ -83,7 +95,7 @@ else
     specific_version=$requested_version
 fi
 
-filename="$APP-${target}${archive_ext}"
+filename="$APP-${specific_version}-${target}${archive_ext}"
 url="https://github.com/$REPO/releases/download/v${specific_version}/$filename"
 
 print_message() {
@@ -135,8 +147,12 @@ check_version() {
     if [[ -x "$INSTALL_DIR/esprit" ]]; then
         installed_version=$("$INSTALL_DIR/esprit" --version 2>/dev/null | awk '{print $2}' || echo "")
         if [[ "$installed_version" == "$specific_version" ]]; then
-            print_message info "${GREEN}✓ Esprit ${NC}$specific_version${GREEN} already installed${NC}"
-            SKIP_DOWNLOAD=true
+            if [ "$FORCE" = true ]; then
+                print_message info "${MUTED}Reinstalling ${NC}$specific_version ${MUTED}(--force)${NC}"
+            else
+                print_message info "${GREEN}✓ Esprit ${NC}$specific_version${GREEN} already installed${NC}"
+                SKIP_DOWNLOAD=true
+            fi
         elif [[ -n "$installed_version" ]]; then
             print_message info "${MUTED}Installed: ${NC}$installed_version ${MUTED}→ Upgrading to ${NC}$specific_version"
         fi
@@ -147,7 +163,8 @@ download_and_install() {
     print_message info "\n${CYAN}Installing Esprit${NC} ${MUTED}version: ${NC}$specific_version"
     print_message info "${MUTED}Platform: ${NC}$target\n"
 
-    local tmp_dir=$(mktemp -d)
+    _tmp_dir=$(mktemp -d)
+    local tmp_dir="$_tmp_dir"
     cd "$tmp_dir"
 
     echo -e "${MUTED}Downloading...${NC}"
@@ -170,6 +187,7 @@ download_and_install() {
 
     cd - > /dev/null
     rm -rf "$tmp_dir"
+    _tmp_dir=""  # prevent double-cleanup from trap
 
     echo -e "${GREEN}✓ Esprit installed to $INSTALL_DIR${NC}"
 }
@@ -178,26 +196,30 @@ check_docker() {
     echo ""
     if ! command -v docker >/dev/null 2>&1; then
         echo -e "${YELLOW}⚠ Docker not found${NC}"
-        echo -e "${MUTED}Esprit requires Docker to run the security sandbox.${NC}"
-        echo -e "${MUTED}Please install Docker: ${NC}https://docs.docker.com/get-docker/"
+        echo -e "${MUTED}Docker is required for local mode (third-party LLM providers).${NC}"
+        echo -e "${MUTED}Install Docker: ${NC}https://docs.docker.com/get-docker/"
         echo ""
-        return 1
+        echo -e "${MUTED}Alternatively, use ${NC}Esprit Cloud${MUTED} — no Docker needed:${NC}"
+        echo -e "  ${MUTED}esprit provider login esprit${NC}"
+        echo ""
+        return 0
     fi
 
     if ! docker info >/dev/null 2>&1; then
         echo -e "${YELLOW}⚠ Docker daemon not running${NC}"
-        echo -e "${MUTED}Please start Docker and run: ${NC}docker pull $ESPRIT_IMAGE"
+        echo -e "${MUTED}Start Docker for local mode, or use Esprit Cloud instead:${NC}"
+        echo -e "  ${MUTED}esprit provider login esprit${NC}"
         echo ""
-        return 1
+        return 0
     fi
 
-    echo -e "${MUTED}Checking for sandbox image...${NC}"
-    if docker image inspect "$ESPRIT_IMAGE" >/dev/null 2>&1; then
-        echo -e "${GREEN}✓ Sandbox image already available${NC}"
+    echo -e "${MUTED}Checking for sandbox image updates...${NC}"
+    # Always attempt to pull the latest image — even if an older copy exists
+    if docker pull "$ESPRIT_IMAGE" 2>/dev/null; then
+        echo -e "${GREEN}✓ Sandbox image up to date${NC}"
     else
-        echo -e "${MUTED}Pulling sandbox image (this may take a few minutes)...${NC}"
-        if docker pull "$ESPRIT_IMAGE"; then
-            echo -e "${GREEN}✓ Sandbox image pulled successfully${NC}"
+        if docker image inspect "$ESPRIT_IMAGE" >/dev/null 2>&1; then
+            echo -e "${YELLOW}⚠ Could not check for image updates (using cached image)${NC}"
         else
             echo -e "${YELLOW}⚠ Failed to pull sandbox image${NC}"
             echo -e "${MUTED}You can pull it manually later: ${NC}docker pull $ESPRIT_IMAGE"
@@ -335,12 +357,13 @@ echo -e "${MUTED}  AI Penetration Testing Agent${NC}"
 echo ""
 echo -e "${MUTED}To get started:${NC}"
 echo ""
-echo -e "  ${CYAN}1.${NC} Set your LLM provider:"
-echo -e "     ${MUTED}export ESPRIT_LLM='openai/gpt-5'${NC}"
-echo -e "     ${MUTED}export LLM_API_KEY='your-api-key'${NC}"
+echo -e "  ${GREEN}Option A — Esprit Cloud (no Docker required):${NC}"
+echo -e "     ${MUTED}esprit provider login esprit${NC}"
+echo -e "     ${MUTED}esprit scan https://example.com${NC}"
 echo ""
-echo -e "  ${CYAN}2.${NC} Run a penetration test:"
-echo -e "     ${MUTED}esprit --target https://example.com${NC}"
+echo -e "  ${GREEN}Option B — Local mode (requires Docker):${NC}"
+echo -e "     ${MUTED}esprit provider login openai      ${NC}${MUTED}# or anthropic, google, etc.${NC}"
+echo -e "     ${MUTED}esprit scan https://example.com${NC}"
 echo ""
 echo -e "${MUTED}For more information visit ${NC}https://esprit.dev"
 echo -e "${MUTED}Join our community ${NC}https://discord.gg/esprit-ai"

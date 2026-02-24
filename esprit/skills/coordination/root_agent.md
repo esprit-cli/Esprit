@@ -73,7 +73,7 @@ Complex findings warrant specialized subagents:
 - Discovery agent finds potential vulnerability
 - Validation agent confirms exploitability
 - Reporting agent documents with reproduction steps
-- Fix agent provides remediation (if needed)
+- **Fixing agent patches the code** (white-box mode only — see Remediation Stage below)
 
 **Resource Efficiency**
 
@@ -82,11 +82,34 @@ Complex findings warrant specialized subagents:
 - Use message passing only when essential (requests/answers, critical handoffs)
 - Prefer batched updates over routine status messages
 
+## Remediation Stage (White-Box Only)
+
+When source code is provided (local path or cloned repository), after all vulnerabilities
+have been reported (assessment stage complete), enter the remediation stage:
+
+1. Review all vulnerability reports from the assessment stage
+2. For each vulnerability that has fixable source code, spawn a Fixing Agent:
+   ```
+   create_agent(
+       name="<Vuln Type> Fixing Agent (<location>)",
+       task="Fix <vulnerability description> in <file path>. The vulnerability report is in your inherited context.",
+       skills="remediation,<vuln_type_skill>"
+   )
+   ```
+3. The Fixing Agent receives the vulnerability report via inherited context
+4. Wait for each Fixing Agent to complete before calling finish_scan
+
+**Skip remediation for:**
+- Vulnerabilities in third-party/vendor code you do not control
+- Configuration-only issues (server headers, TLS settings, missing security headers)
+- Issues requiring architectural changes beyond single-file edits
+
 ## Completion
 
 When all agents report completion:
 
 1. Collect and deduplicate findings across agents
 2. Assess overall security posture
-3. Compile executive summary with prioritized recommendations
-4. Invoke finish tool with final report
+3. In white-box mode: ensure all fixable vulnerabilities have been patched by Fixing Agents
+4. Compile executive summary with prioritized recommendations
+5. Invoke finish tool with final report

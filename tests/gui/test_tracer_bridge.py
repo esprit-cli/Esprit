@@ -176,6 +176,31 @@ class TestTracerBridgeFullState:
         assert stats["start_time"] == tracer.start_time
         assert stats["status"] == "running"
 
+    def test_stats_status_falls_back_to_failed_from_root_agent(self) -> None:
+        from esprit.gui.tracer_bridge import TracerBridge
+
+        tracer = Tracer("test")
+        tracer.log_agent_creation("root", "Root", "task", parent_id=None)
+        # Simulate stale metadata from older runs/paths.
+        tracer.run_metadata["status"] = "running"
+        tracer.update_agent_status("root", "failed", "boom")
+
+        bridge = TracerBridge(tracer)
+        state = bridge.get_full_state()
+        assert state["stats"]["status"] == "failed"
+
+    def test_stats_status_falls_back_to_completed_when_report_exists(self) -> None:
+        from esprit.gui.tracer_bridge import TracerBridge
+
+        tracer = Tracer("test")
+        tracer.run_metadata["status"] = "running"
+        tracer.final_scan_result = "# report"
+        tracer.end_time = datetime.now(UTC).isoformat()
+
+        bridge = TracerBridge(tracer)
+        state = bridge.get_full_state()
+        assert state["stats"]["status"] == "completed"
+
 
 class TestTracerBridgeScreenshot:
     """Tests for screenshot REST endpoint data."""

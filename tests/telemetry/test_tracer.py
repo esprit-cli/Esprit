@@ -88,3 +88,26 @@ class TestTracerLLMStats:
         assert stats["total"]["uncached_input_tokens"] == 0
         assert stats["by_model"] == {}
         assert stats["by_agent"] == {}
+
+
+class TestTracerRunStatus:
+    def test_root_agent_failure_updates_run_status(self) -> None:
+        tracer = Tracer("test-run")
+        tracer.log_agent_creation("root", "Root", "task", parent_id=None)
+
+        tracer.update_agent_status("root", "llm_failed", "provider error")
+
+        assert tracer.run_metadata["status"] == "failed"
+
+    def test_final_report_marks_completed_status_and_end_time(self) -> None:
+        tracer = Tracer("test-run")
+        tracer.update_scan_final_fields(
+            executive_summary="done",
+            methodology="m",
+            technical_analysis="t",
+            recommendations="r",
+        )
+
+        assert tracer.run_metadata["status"] == "completed"
+        assert tracer.end_time is not None
+        assert tracer.run_metadata["end_time"] == tracer.end_time

@@ -178,7 +178,6 @@ COPY esprit/tools/__init__.py esprit/tools/registry.py esprit/tools/executor.py 
 
 COPY esprit/tools/browser/ /app/esprit/tools/browser/
 COPY esprit/tools/file_edit/ /app/esprit/tools/file_edit/
-COPY esprit/tools/notes/ /app/esprit/tools/notes/
 COPY esprit/tools/python/ /app/esprit/tools/python/
 COPY esprit/tools/terminal/ /app/esprit/tools/terminal/
 COPY esprit/tools/proxy/ /app/esprit/tools/proxy/

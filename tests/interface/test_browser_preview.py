@@ -68,13 +68,14 @@ class TestPyprojectTomlUpdates:
 
         assert 'gui = ["fastapi", "uvicorn", "websockets"]' in content
 
-    def test_enhanced_preview_extra_defined(self) -> None:
+    def test_textual_image_is_required_dep(self) -> None:
+        """textual-image is now a core dep (not optional) for pixel-perfect rendering."""
         from pathlib import Path
 
         toml_path = Path(__file__).parent.parent.parent / "pyproject.toml"
         content = toml_path.read_text()
 
-        assert 'enhanced-preview = ["textual-image"]' in content
+        assert 'textual-image = "*"' in content
 
     def test_websockets_optional_dep(self) -> None:
         from pathlib import Path

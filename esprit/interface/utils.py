@@ -18,6 +18,8 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.text import Text
 
+from esprit.interface.theme_tokens import get_marker_color, get_theme_tokens
+
 
 # Token formatting utilities
 def format_token_count(count: float) -> str:
@@ -27,6 +29,36 @@ def format_token_count(count: float) -> str:
     if count >= 1_000:
         return f"{count / 1_000:.1f}K"
     return str(count)
+
+
+def _format_quota_value(value: Any) -> str:
+    if value in (None, "", -1):
+        return "unlimited"
+
+    try:
+        numeric = int(value)
+    except (TypeError, ValueError):
+        return str(value)
+
+    return f"{numeric:,}"
+
+
+def build_subscription_quota_lines(verification: dict[str, Any] | None) -> list[str]:
+    """Build display lines for subscription quota status."""
+    if not verification or not verification.get("valid"):
+        return []
+
+    plan = str(verification.get("plan", "free")).upper()
+    quota = verification.get("quota_remaining")
+    if not isinstance(quota, dict):
+        quota = {}
+
+    scans_remaining = _format_quota_value(quota.get("scans"))
+    tokens_remaining = _format_quota_value(quota.get("tokens"))
+
+    lines = [f"[dim]Plan:[/] [bold]{plan}[/]"]
+    lines.append(f"[dim]Quota:[/] scans {scans_remaining}  |  tokens {tokens_remaining}")
+    return lines
 
 
 # Display utilities
@@ -296,6 +328,27 @@ def build_final_stats_text(tracer: Any) -> Text:
     return stats_text
 
 
+def _resolve_session_cost(total_stats: dict[str, Any], model: str) -> float:
+    """Resolve session cost from tracer totals, with token-based fallback."""
+    cost = total_stats.get("cost")
+    if isinstance(cost, int | float):
+        return float(cost)
+
+    if not model:
+        return 0.0
+
+    from esprit.llm.pricing import get_pricing_db
+
+    return float(
+        get_pricing_db().get_cost(
+            model,
+            int(total_stats.get("input_tokens", 0)),
+            int(total_stats.get("output_tokens", 0)),
+            int(total_stats.get("cached_tokens", 0)),
+        ),
+    )
+
+
 def build_live_stats_text(tracer: Any, agent_config: dict[str, Any] | None = None) -> Text:
     stats_text = Text()
     if not tracer:
@@ -370,14 +423,7 @@ def build_live_stats_text(tracer: Any, agent_config: dict[str, Any] | None = Non
         llm_config = agent_config["llm_config"]
         model = getattr(llm_config, "model_name", "")
 
-    from esprit.llm.pricing import get_pricing_db
-
-    session_cost = get_pricing_db().get_cost(
-        model,
-        total_stats["input_tokens"],
-        total_stats["output_tokens"],
-        total_stats["cached_tokens"],
-    ) if model else 0.0
+    session_cost = _resolve_session_cost(total_stats, model)
 
     stats_text.append("Cost ", style="dim")
     if session_cost >= 0.005:
@@ -403,16 +449,67 @@ def _format_elapsed(seconds: float) -> str:
     return f"{m}:{s:02d}"
 
 
+def _estimate_projection(
+    tracer: Any,
+    *,
+    elapsed_seconds: float,
+    current_cost: float,
+    scan_completed: bool,
+    scan_failed: bool,
+) -> tuple[float, float, float]:
+    """Estimate projected total duration/cost using live run-rate and agent progress."""
+    if elapsed_seconds <= 0:
+        return (0.0, 0.0, 0.0)
+
+    if scan_completed or scan_failed:
+        return (elapsed_seconds, current_cost, 0.0)
+
+    statuses = [str(a.get("status", "running")).lower() for a in tracer.agents.values()]
+    if not statuses:
+        progress = 0.12
+    else:
+        status_weights = {
+            "completed": 1.0,
+            "stopped": 1.0,
+            "failed": 1.0,
+            "llm_failed": 1.0,
+            "error": 1.0,
+            "sandbox_failed": 1.0,
+            "stopping": 0.85,
+            "waiting": 0.55,
+            "running": 0.35,
+        }
+        progress = sum(status_weights.get(status, 0.25) for status in statuses) / len(statuses)
+        progress = max(0.08, min(0.98, progress))
+
+    projected_total_duration = elapsed_seconds / progress
+    projected_total_duration = max(elapsed_seconds, min(projected_total_duration, elapsed_seconds * 8))
+    projected_cost = current_cost / progress if current_cost > 0 else 0.0
+    projected_cost = max(current_cost, projected_cost)
+    remaining_seconds = max(0.0, projected_total_duration - elapsed_seconds)
+    return (projected_total_duration, projected_cost, remaining_seconds)
+
+
 def build_tui_stats_text(
     tracer: Any,
     agent_config: dict[str, Any] | None = None,
     scan_completed: bool = False,
     scan_failed: bool = False,
     spinner_frame: int = 0,
+    theme_tokens: dict[str, Any] | None = None,
 ) -> Text:
     stats_text = Text()
     if not tracer:
         return stats_text
+    tokens = theme_tokens or get_theme_tokens(None)
+    accent = str(tokens.get("accent", "#22d3ee"))
+    info = str(tokens.get("info", "#60a5fa"))
+    success = str(tokens.get("success", "#22c55e"))
+    warning = str(tokens.get("warning", "#f59e0b"))
+    error = str(tokens.get("error", "#ef4444"))
+    muted = str(tokens.get("muted", "#9ca3af"))
+    text_color = str(tokens.get("text", "white"))
+    marker_colors = {marker: get_marker_color(tokens, marker) for marker in ("run", "ok", "warn", "err", "web")}
 
     model = ""
     # Model name with provider badge
@@ -426,14 +523,14 @@ def build_tui_stats_text(
         if is_antigravity:
             stats_text.append("AG ", style="bold #a78bfa")
         elif "gpt" in bare_model.lower() or "o1" in bare_model or "o3" in bare_model or "o4" in bare_model or "codex" in bare_model.lower():
-            stats_text.append("OAI ", style="bold #22c55e")
+            stats_text.append("OAI ", style=f"bold {success}")
         elif "copilot" in model.lower():
             stats_text.append("CO ", style="bold #6366f1")
         elif "gemini" in bare_model.lower():
             stats_text.append("GG ", style="bold #4285f4")
         elif "claude" in bare_model.lower():
             stats_text.append("CC ", style="bold #d97706")
-        stats_text.append(bare_model, style="white")
+        stats_text.append(bare_model, style=text_color)
 
     # Elapsed time and scan status
     elapsed = 0.0
@@ -456,15 +553,14 @@ def build_tui_stats_text(
     if elapsed_str:
         stats_text.append("\n")
         if scan_failed:
-            stats_text.append("✗ ", style="#ef4444 bold")
-            stats_text.append(f"Failed  {elapsed_str}", style="#ef4444")
+            stats_text.append("[err] ", style=f"bold {marker_colors['err']}")
+            stats_text.append(f"Failed  {elapsed_str}", style=error)
         elif scan_completed:
-            stats_text.append("✓ ", style="#22c55e bold")
-            stats_text.append(f"Completed  {elapsed_str}", style="#22c55e")
+            stats_text.append("[ok] ", style=f"bold {marker_colors['ok']}")
+            stats_text.append(f"Completed  {elapsed_str}", style=success)
         else:
-            char = _SCAN_SPINNER[spinner_frame % len(_SCAN_SPINNER)]
-            stats_text.append(f"{char} ", style="#22d3ee")
-            stats_text.append(f"Scanning  {elapsed_str}", style="#22d3ee")
+            stats_text.append("[run] ", style=f"bold {marker_colors['run']}")
+            stats_text.append(f"Scanning  {elapsed_str}", style=accent)
 
     # Divider
     stats_text.append("\n")
@@ -501,21 +597,19 @@ def build_tui_stats_text(
     # Agents / Tools / Requests
     stats_text.append("\n")
     if scan_failed:
-        activity_char = "●"
-        activity_style = "#ef4444"
+        activity_char = "[err]"
     elif scan_completed:
-        activity_char = "●"
-        activity_style = "#22c55e"
+        activity_char = "[ok]"
     else:
-        activity_char = _ACTIVITY_SPINNER[spinner_frame % len(_ACTIVITY_SPINNER)]
-        activity_style = "#22d3ee"
-    stats_text.append(f"{activity_char} ", style=activity_style)
-    stats_text.append(f"{agent_count}", style="white bold")
-    stats_text.append(" agents  ", style="dim")
-    stats_text.append(f"{tool_count}", style="white bold")
-    stats_text.append(" tools  ", style="dim")
-    stats_text.append(f"{requests}", style="white bold")
-    stats_text.append(" reqs", style="dim")
+        activity_char = "[run]"
+    marker_key = "err" if scan_failed else "ok" if scan_completed else "run"
+    stats_text.append(f"{activity_char} ", style=f"bold {marker_colors[marker_key]}")
+    stats_text.append(f"{agent_count}", style=f"bold {text_color}")
+    stats_text.append(" agents  ", style=f"dim {muted}")
+    stats_text.append(f"{tool_count}", style=f"bold {text_color}")
+    stats_text.append(" tools  ", style=f"dim {muted}")
+    stats_text.append(f"{requests}", style=f"bold {text_color}")
+    stats_text.append(" reqs", style=f"dim {muted}")
 
     # Token breakdown
     stats_text.append("\n")
@@ -523,29 +617,29 @@ def build_tui_stats_text(
 
     if total_tokens > 0:
         stats_text.append("\n")
-        stats_text.append("▸ In   ", style="dim")
-        stats_text.append(f"{format_token_count(input_tokens):>6s}", style="white")
+        stats_text.append("▸ In   ", style=f"dim {muted}")
+        stats_text.append(f"{format_token_count(input_tokens):>6s}", style=text_color)
         if cached_tokens > 0:
             stats_text.append(f"  ({format_token_count(cached_tokens)} cached)", style="#a78bfa")
 
         stats_text.append("\n")
-        stats_text.append("▸ Bill ", style="dim")
-        stats_text.append(f"{format_token_count(uncached_input_tokens):>6s}", style="white")
+        stats_text.append("▸ Bill ", style=f"dim {muted}")
+        stats_text.append(f"{format_token_count(uncached_input_tokens):>6s}", style=text_color)
         if input_tokens > 0:
             stats_text.append(f"  ({cache_hit_ratio:.0f}% hit)", style="#a78bfa")
 
         stats_text.append("\n")
-        stats_text.append("▸ Out  ", style="dim")
-        stats_text.append(f"{format_token_count(output_tokens):>6s}", style="white")
+        stats_text.append("▸ Out  ", style=f"dim {muted}")
+        stats_text.append(f"{format_token_count(output_tokens):>6s}", style=text_color)
 
         # Tokens per second
         if elapsed > 0 and output_tokens > 0:
             tps = output_tokens / elapsed
-            stats_text.append(f"  ({tps:.0f} tok/s)", style="dim #22d3ee")
+            stats_text.append(f"  ({tps:.0f} tok/s)", style=f"dim {info}")
 
         stats_text.append("\n")
-        stats_text.append("▸ Total ", style="dim")
-        stats_text.append(f"{format_token_count(total_tokens):>5s}", style="white bold")
+        stats_text.append("▸ Total ", style=f"dim {muted}")
+        stats_text.append(f"{format_token_count(total_tokens):>5s}", style=f"bold {text_color}")
 
         # Context window usage bar — uses last request's input tokens (current window)
         context_limit = get_pricing_db().get_context_limit(model) if model else 128_000
@@ -553,35 +647,51 @@ def build_tui_stats_text(
         ctx_pct = min(100, (ctx_input / max(context_limit, 1)) * 100)
         bar_width = 18
         filled = int(bar_width * ctx_pct / 100)
-        bar_color = "#22c55e" if ctx_pct < 60 else "#eab308" if ctx_pct < 85 else "#ef4444"
+        bar_color = success if ctx_pct < 60 else warning if ctx_pct < 85 else error
         stats_text.append("\n")
-        stats_text.append("▸ Ctx  ", style="dim")
+        stats_text.append("▸ Ctx  ", style=f"dim {muted}")
         stats_text.append("█" * filled, style=bar_color)
         stats_text.append("░" * (bar_width - filled), style="dim #3f3f3f")
         stats_text.append(f" {ctx_pct:.0f}%", style=bar_color)
     else:
         stats_text.append("\n")
-        stats_text.append("▸ Tokens ", style="dim")
-        stats_text.append("0", style="dim white")
+        stats_text.append("▸ Tokens ", style=f"dim {muted}")
+        stats_text.append("0", style=f"dim {text_color}")
 
     # Cost — calculated from pricing DB
     stats_text.append("\n")
     stats_text.append("─" * 28, style="dim #3f3f3f")
 
-    session_cost = get_pricing_db().get_cost(
-        model, input_tokens, output_tokens, cached_tokens,
-    ) if model else 0.0
+    session_cost = _resolve_session_cost(total_stats, model)
     lifetime_cost = get_lifetime_cost()
 
     stats_text.append("\n")
-    stats_text.append("  Cost ", style="dim")
+    stats_text.append("  Cost ", style=f"dim {muted}")
     if session_cost >= 0.005:
-        stats_text.append(f"${session_cost:.2f}", style="#fbbf24 bold")
+        stats_text.append(f"${session_cost:.2f}", style=f"bold {warning}")
     else:
-        stats_text.append(f"${session_cost:.2f}", style="dim white")
+        stats_text.append(f"${session_cost:.2f}", style=f"dim {text_color}")
     if lifetime_cost >= 0.01:
-        stats_text.append("  all-time ", style="dim")
+        stats_text.append("  all-time ", style=f"dim {muted}")
         stats_text.append(f"${lifetime_cost:.2f}", style="dim #a78bfa")
+
+    projected_duration, projected_cost, remaining_seconds = _estimate_projection(
+        tracer,
+        elapsed_seconds=elapsed,
+        current_cost=session_cost,
+        scan_completed=scan_completed,
+        scan_failed=scan_failed,
+    )
+    if projected_duration > 0:
+        stats_text.append("\n")
+        stats_text.append("  Proj ", style=f"dim {muted}")
+        projection_color = warning if projected_cost > (session_cost * 1.25) and session_cost > 0 else text_color
+        stats_text.append(f"${projected_cost:.2f}", style=f"bold {projection_color}")
+        stats_text.append("  total ", style=f"dim {muted}")
+        stats_text.append(_format_elapsed(projected_duration), style=f"bold {projection_color}")
+        if remaining_seconds > 0:
+            stats_text.append("  left ", style=f"dim {muted}")
+            stats_text.append(_format_elapsed(remaining_seconds), style=f"dim {projection_color}")
 
     # Vulnerabilities
     vuln_count = (
@@ -593,9 +703,9 @@ def build_tui_stats_text(
         stats_text.append("\n")
         stats_text.append("─" * 28, style="dim #3f3f3f")
         stats_text.append("\n")
-        stats_text.append("⚠ ", style="#dc2626")
-        stats_text.append(f"{vuln_count} ", style="#dc2626 bold")
-        stats_text.append("vulns found", style="#dc2626")
+        stats_text.append("[warn] ", style=f"bold {marker_colors['warn']}")
+        stats_text.append(f"{vuln_count} ", style=f"bold {error}")
+        stats_text.append("vulns found", style=error)
 
         # Severity mini-breakdown
         severity_counts: dict[str, int] = {}
@@ -616,25 +726,27 @@ def build_tui_stats_text(
 
     # Rotating tips
     _TIPS = [
-        ("💬", "Send a message", "during a scan to interrupt and redirect the agent"),
-        ("🔄", "Context at 100%?", "Esprit auto-compacts memory, summarizing older messages"),
-        ("🔑", "esprit provider login", "to add OAuth accounts for free model access"),
-        ("📊", "esprit provider status", "to see which providers are connected"),
-        ("🔀", "esprit config model", "to switch between AI models mid-session"),
-        ("⌨️", "Press Esc", "to stop the current agent, Ctrl-Q to quit"),
-        ("🔍", "Quick scan mode", "is faster but less thorough than deep scan"),
-        ("💰", "Antigravity models", "are free — no API key or billing needed"),
-        ("📁", "Results are saved", "in esprit_runs/ after each scan completes"),
-        ("👥", "Add multiple accounts", "for OpenAI or Antigravity for rate-limit rotation"),
+        ("[run]", "Send a message", "during a scan to interrupt and redirect the agent"),
+        ("[run]", "Context at 100%?", "Esprit auto-compacts memory, summarizing older messages"),
+        ("[info]", "esprit provider login", "to add OAuth accounts for free model access"),
+        ("[info]", "esprit provider status", "to see which providers are connected"),
+        ("[info]", "esprit config model", "to switch between AI models mid-session"),
+        ("[warn]", "Press Esc", "to stop the current agent, Ctrl-Q to quit"),
+        ("[info]", "Quick scan mode", "is faster but less thorough than deep scan"),
+        ("[ok]", "Antigravity models", "are free — no API key or billing needed"),
+        ("[info]", "Results are saved", "in esprit_runs/ after each scan completes"),
+        ("[run]", "Add multiple accounts", "for OpenAI or Antigravity for rate-limit rotation"),
     ]
     tip_index = (spinner_frame // 30) % len(_TIPS)  # rotate every ~10 seconds
-    icon, title, desc = _TIPS[tip_index]
+    marker, title, desc = _TIPS[tip_index]
     stats_text.append("\n")
     stats_text.append("─" * 28, style="dim #3f3f3f")
     stats_text.append("\n")
-    stats_text.append(f"{icon} ", style="dim")
-    stats_text.append(title, style="white")
-    stats_text.append(f"\n  {desc}", style="dim")
+    marker_key = marker.strip("[]").lower()
+    marker_color = marker_colors.get(marker_key, marker_colors["run"])
+    stats_text.append(f"{marker} ", style=f"bold {marker_color}")
+    stats_text.append(title, style=text_color)
+    stats_text.append(f"\n  {desc}", style=f"dim {muted}")
 
     return stats_text
 
@@ -1020,9 +1132,9 @@ def update_layer_status(layers_info: dict[str, str], layer_id: str, layer_status
     elif "Downloading" in layer_status:
         layers_info[layer_id] = "↓"
     elif "Extracting" in layer_status:
-        layers_info[layer_id] = "📦"
+        layers_info[layer_id] = "="
     elif "Waiting" in layer_status:
-        layers_info[layer_id] = "⏳"
+        layers_info[layer_id] = "."
     else:
         layers_info[layer_id] = "•"
 

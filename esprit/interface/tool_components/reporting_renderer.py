@@ -7,6 +7,8 @@ from rich.padding import Padding
 from rich.text import Text
 from textual.widgets import Static
 
+from esprit.interface.theme_tokens import get_marker_color, get_theme_tokens_from_tool_data
+
 from .base_renderer import BaseToolRenderer
 from .registry import register_tool_renderer
 
@@ -17,7 +19,6 @@ def _get_style_colors() -> dict[Any, str]:
     return {token: f"#{style_def['color']}" for token, style_def in style if style_def["color"]}
 
 
-FIELD_STYLE = "bold #4ade80"
 BG_COLOR = "#141414"
 
 
@@ -72,6 +73,11 @@ class CreateVulnerabilityReportRenderer(BaseToolRenderer):
     def render(cls, tool_data: dict[str, Any]) -> Static:  # noqa: PLR0912, PLR0915
         args = tool_data.get("args", {})
         result = tool_data.get("result", {})
+        tokens = get_theme_tokens_from_tool_data(tool_data)
+        field_style = f"bold {str(tokens.get('success', '#4ade80'))}"
+        muted_style = f"dim {str(tokens.get('muted', '#9ca3af'))}"
+        header_style = str(tokens.get("warning", "#ea580c"))
+        bug_style = get_marker_color(tokens, "bug")
 
         title = args.get("title", "")
         description = args.get("description", "")
@@ -102,44 +108,44 @@ class CreateVulnerabilityReportRenderer(BaseToolRenderer):
             cvss_score = result.get("cvss_score")
 
         text = Text()
-        text.append("🐞 ")
-        text.append("Vulnerability Report", style="bold #ea580c")
+        text.append("[bug] ", style=f"bold {bug_style}")
+        text.append("Vulnerability Report", style=f"bold {header_style}")
 
         if title:
             text.append("\n\n")
-            text.append("Title: ", style=FIELD_STYLE)
+            text.append("Title: ", style=field_style)
             text.append(title)
 
         if severity:
             text.append("\n\n")
-            text.append("Severity: ", style=FIELD_STYLE)
+            text.append("Severity: ", style=field_style)
             severity_color = cls.SEVERITY_COLORS.get(severity.lower(), "#6b7280")
             text.append(severity.upper(), style=f"bold {severity_color}")
 
         if cvss_score is not None:
             text.append("\n\n")
-            text.append("CVSS Score: ", style=FIELD_STYLE)
+            text.append("CVSS Score: ", style=field_style)
             cvss_color = cls._get_cvss_color(cvss_score)
             text.append(str(cvss_score), style=f"bold {cvss_color}")
 
         if target:
             text.append("\n\n")
-            text.append("Target: ", style=FIELD_STYLE)
+            text.append("Target: ", style=field_style)
             text.append(target)
 
         if endpoint:
             text.append("\n\n")
-            text.append("Endpoint: ", style=FIELD_STYLE)
+            text.append("Endpoint: ", style=field_style)
             text.append(endpoint)
 
         if method:
             text.append("\n\n")
-            text.append("Method: ", style=FIELD_STYLE)
+            text.append("Method: ", style=field_style)
             text.append(method)
 
         if cve:
             text.append("\n\n")
-            text.append("CVE: ", style=FIELD_STYLE)
+            text.append("CVE: ", style=field_style)
             text.append(cve)
 
         if any(
@@ -172,48 +178,48 @@ class CreateVulnerabilityReportRenderer(BaseToolRenderer):
                 cvss_parts.append(f"I:{integrity}")
             if availability:
                 cvss_parts.append(f"A:{availability}")
-            text.append("CVSS Vector: ", style=FIELD_STYLE)
-            text.append("/".join(cvss_parts), style="dim")
+            text.append("CVSS Vector: ", style=field_style)
+            text.append("/".join(cvss_parts), style=muted_style)
 
         if description:
             text.append("\n\n")
-            text.append("Description", style=FIELD_STYLE)
+            text.append("Description", style=field_style)
             text.append("\n")
             text.append(description)
 
         if impact:
             text.append("\n\n")
-            text.append("Impact", style=FIELD_STYLE)
+            text.append("Impact", style=field_style)
             text.append("\n")
             text.append(impact)
 
         if technical_analysis:
             text.append("\n\n")
-            text.append("Technical Analysis", style=FIELD_STYLE)
+            text.append("Technical Analysis", style=field_style)
             text.append("\n")
             text.append(technical_analysis)
 
         if poc_description:
             text.append("\n\n")
-            text.append("PoC Description", style=FIELD_STYLE)
+            text.append("PoC Description", style=field_style)
             text.append("\n")
             text.append(poc_description)
 
         if poc_script_code:
             text.append("\n\n")
-            text.append("PoC Code", style=FIELD_STYLE)
+            text.append("PoC Code", style=field_style)
             text.append("\n")
             text.append_text(cls._highlight_python(poc_script_code))
 
         if remediation_steps:
             text.append("\n\n")
-            text.append("Remediation", style=FIELD_STYLE)
+            text.append("Remediation", style=field_style)
             text.append("\n")
             text.append(remediation_steps)
 
         if not title:
             text.append("\n  ")
-            text.append("Creating report...", style="dim")
+            text.append("Creating report...", style=muted_style)
 
         padded = Padding(text, 2, style=f"on {BG_COLOR}")
 

@@ -8,9 +8,22 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TypedDict
+from typing import Any, TypedDict
+
+import requests
+
+
+API_BASE_URL = os.getenv("ESPRIT_API_URL", "https://esprit.dev/api/v1").rstrip("/")
+_VERIFICATION_CACHE_TTL_SECONDS = 300
+_PAID_PLANS = {"pro", "team", "enterprise"}
+_verification_cache: dict[str, Any] = {
+    "token": None,
+    "checked_at": 0.0,
+    "result": None,
+}
 
 
 class Credentials(TypedDict, total=False):
@@ -23,6 +36,15 @@ class Credentials(TypedDict, total=False):
     email: str
     full_name: str | None
     plan: str  # 'free', 'pro', 'team'
+
+
+class SubscriptionVerification(TypedDict, total=False):
+    valid: bool
+    plan: str
+    quota_remaining: dict[str, int]
+    cloud_enabled: bool
+    available_models: list[str]
+    error: str
 
 
 def get_credentials_path() -> Path:
@@ -117,3 +139,74 @@ def get_user_id() -> str | None:
     """Get the current user's ID."""
     creds = get_credentials()
     return creds.get("user_id") if creds else None
+
+
+def verify_subscription(
+    access_token: str | None = None,
+    *,
+    force_refresh: bool = False,
+) -> SubscriptionVerification:
+    """Verify subscription status with the Esprit API."""
+    token = access_token or get_auth_token()
+    if not token:
+        return {
+            "valid": False,
+            "plan": "free",
+            "quota_remaining": {"scans": 0, "tokens": 0},
+            "cloud_enabled": False,
+            "available_models": [],
+            "error": "No authentication token available.",
+        }
+
+    now = time.time()
+    cached_token = _verification_cache.get("token")
+    cached_checked_at = float(_verification_cache.get("checked_at") or 0.0)
+    cached_result = _verification_cache.get("result")
+    if (
+        not force_refresh
+        and cached_token == token
+        and cached_result is not None
+        and now - cached_checked_at < _VERIFICATION_CACHE_TTL_SECONDS
+    ):
+        return cached_result
+
+    headers = {"Authorization": f"Bearer {token}"}
+    default_result: SubscriptionVerification = {
+        "valid": False,
+        "plan": get_user_plan(),
+        "quota_remaining": {"scans": 0, "tokens": 0},
+        "cloud_enabled": False,
+        "available_models": [],
+    }
+
+    try:
+        response = requests.get(
+            f"{API_BASE_URL}/subscription/verify",
+            headers=headers,
+            timeout=15,
+        )
+        if response.status_code != 200:
+            result = dict(default_result)
+            result["error"] = f"Subscription API returned HTTP {response.status_code}."
+        else:
+            payload = response.json()
+            plan_value = str(payload.get("plan", default_result["plan"]))
+            cloud_default = plan_value.lower() in _PAID_PLANS
+            result = dict(default_result)
+            result.update(
+                {
+                    "valid": bool(payload.get("valid", False)),
+                    "plan": plan_value,
+                    "quota_remaining": payload.get("quota_remaining", {"scans": 0, "tokens": 0}),
+                    "cloud_enabled": bool(payload.get("cloud_enabled", cloud_default)),
+                    "available_models": payload.get("available_models", []),
+                }
+            )
+    except (requests.RequestException, ValueError) as exc:
+        result = dict(default_result)
+        result["error"] = f"Subscription verification failed: {exc}"
+
+    _verification_cache["token"] = token
+    _verification_cache["checked_at"] = now
+    _verification_cache["result"] = result
+    return result

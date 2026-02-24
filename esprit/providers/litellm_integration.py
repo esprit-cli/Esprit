@@ -15,6 +15,7 @@ import httpx
 
 from esprit.providers import get_provider_auth, PROVIDERS
 from esprit.providers.base import OAuthCredentials
+from esprit.providers.config import is_public_opencode_model
 from esprit.providers.token_store import TokenStore
 from esprit.providers.account_pool import AccountPool, get_account_pool
 from esprit.providers.constants import MULTI_ACCOUNT_PROVIDERS
@@ -61,6 +62,9 @@ class ProviderAuthClient:
             - "antigravity/claude-opus-4-6-thinking" -> "antigravity"
             - "github-copilot/gpt-5" -> "github-copilot"
             - "google/gemini-2.5-pro" -> "google"
+            - "opencode/gpt-5.1-codex" -> "opencode"
+            - "zen/gpt-5.1-codex" -> "opencode"
+            - "esprit/claude-haiku-4-5" -> "esprit"
         """
         model_lower = model_name.lower()
 
@@ -70,6 +74,12 @@ class ProviderAuthClient:
             # Bedrock uses AWS credentials, not OAuth - skip it
             if prefix == "bedrock":
                 return None
+            # Esprit subscription provider
+            if prefix == "esprit":
+                return "esprit"
+            # Alias for OpenCode Zen
+            if prefix == "zen":
+                return "opencode"
             if prefix in PROVIDERS:
                 return prefix
 
@@ -97,6 +107,10 @@ class ProviderAuthClient:
 
     def get_credentials(self, provider_id: str) -> OAuthCredentials | None:
         """Get credentials for a provider, checking pool first for multi-account."""
+        if provider_id == "esprit":
+            # Esprit subscription uses platform credentials
+            from esprit.providers.esprit_subs import _load_esprit_credentials
+            return _load_esprit_credentials()
         if provider_id in _MULTI_ACCOUNT_PROVIDERS:
             pool = get_account_pool()
             acct = pool.get_best_account(provider_id)
@@ -106,6 +120,9 @@ class ProviderAuthClient:
 
     def has_oauth_credentials(self, provider_id: str) -> bool:
         """Check if OAuth credentials exist for a provider."""
+        if provider_id == "esprit":
+            from esprit.auth.credentials import is_authenticated
+            return is_authenticated()
         if provider_id in _MULTI_ACCOUNT_PROVIDERS:
             pool = get_account_pool()
             if pool.has_accounts(provider_id):
@@ -152,6 +169,11 @@ class ProviderAuthClient:
                             break
                     if not matched:
                         logger.warning("Could not find account to update for %s", provider_id)
+            elif provider_id == "esprit":
+                # Esprit credentials live in platform credentials file,
+                # not in the token store.  refresh_token() already reloaded
+                # from disk, so nothing extra to persist here.
+                pass
             else:
                 self.token_store.set(provider_id, new_credentials)
             return new_credentials
@@ -232,6 +254,10 @@ def get_provider_api_key(model_name: str) -> str | None:
     
     credentials = client.get_credentials(provider_id)
     if not credentials:
+        # OpenCode public models can run without user credentials, but LiteLLM's
+        # openai adapter requires api_key to be present.
+        if provider_id == "opencode" and is_public_opencode_model(model_name):
+            return "sk-opencode-public-noauth"
         return None
     
     if credentials.type == "api":
@@ -258,6 +284,16 @@ def get_provider_headers(model_name: str) -> dict[str, str]:
         return {}
     
     credentials = client.get_credentials(provider_id)
+
+    # OpenCode public models are no-auth. Keep LiteLLM happy with a placeholder
+    # key, but clear Authorization so no bearer token is sent upstream.
+    if (
+        provider_id == "opencode"
+        and not credentials
+        and is_public_opencode_model(model_name)
+    ):
+        return {"Authorization": ""}
+
     if not credentials or credentials.type != "oauth":
         return {}
     
@@ -295,6 +331,10 @@ def sync_codex_credentials_to_litellm(model_name: str) -> None:
     client = get_auth_client()
     provider_id = client.detect_provider(model_name)
     if not provider_id:
+        return
+
+    # Esprit subscription uses platform credentials — never sync to litellm auth file
+    if provider_id == "esprit":
         return
 
     credentials = client.get_credentials(provider_id)

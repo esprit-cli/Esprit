@@ -18,6 +18,7 @@ class AgentState(BaseModel):
     sandbox_info: dict[str, Any] | None = None
 
     task: str = ""
+    is_whitebox: bool = False
     iteration: int = 0
     max_iterations: int = 300
     completed: bool = False

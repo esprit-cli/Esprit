@@ -135,6 +135,19 @@ async def register_agent(
     return {"status": "registered", "agent_id": agent_id}
 
 
+@app.get("/diffs")
+async def get_diffs(
+    credentials: HTTPAuthorizationCredentials = security_dependency,
+) -> dict[str, Any]:
+    """Return all file edits recorded during this sandbox session."""
+    verify_token(credentials)
+    try:
+        from esprit.tools.file_edit.file_edit_actions import _edit_log
+    except ImportError:
+        return {"edits": [], "count": 0}
+    return {"edits": list(_edit_log), "count": len(_edit_log)}
+
+
 @app.get("/health")
 async def health_check() -> dict[str, Any]:
     return {

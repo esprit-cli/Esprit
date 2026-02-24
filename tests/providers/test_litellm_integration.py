@@ -5,7 +5,11 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from esprit.providers.base import OAuthCredentials
-from esprit.providers.litellm_integration import ProviderAuthClient
+from esprit.providers.litellm_integration import (
+    ProviderAuthClient,
+    get_provider_api_key,
+    get_provider_headers,
+)
 
 
 @pytest.fixture
@@ -36,6 +40,12 @@ class TestDetectProvider:
 
     def test_explicit_antigravity_prefix(self, client: ProviderAuthClient) -> None:
         assert client.detect_provider("antigravity/claude-opus-4-6-thinking") == "antigravity"
+
+    def test_explicit_opencode_prefix(self, client: ProviderAuthClient) -> None:
+        assert client.detect_provider("opencode/gpt-5.1-codex") == "opencode"
+
+    def test_zen_alias_prefix_maps_to_opencode(self, client: ProviderAuthClient) -> None:
+        assert client.detect_provider("zen/gpt-5.1-codex") == "opencode"
 
     def test_bedrock_returns_none(self, client: ProviderAuthClient) -> None:
         """Bedrock uses AWS credentials, not OAuth — should be skipped."""
@@ -89,7 +99,10 @@ class TestGetCredentials:
             result = client.get_credentials("openai")
         assert result is creds
 
-    def test_multi_account_falls_to_token_store_if_no_pool(self, client: ProviderAuthClient) -> None:
+    def test_multi_account_falls_back_to_token_store(
+        self,
+        client: ProviderAuthClient,
+    ) -> None:
         mock_pool = MagicMock()
         mock_pool.get_best_account.return_value = None
 
@@ -125,3 +138,51 @@ class TestHasOAuthCredentials:
         client.token_store = MagicMock()
         client.token_store.get.return_value = None
         assert client.has_oauth_credentials("anthropic") is False
+
+
+class TestGetProviderApiKey:
+    def test_public_opencode_without_credentials_returns_placeholder(self) -> None:
+        mock_client = MagicMock()
+        mock_client.detect_provider.return_value = "opencode"
+        mock_client.get_credentials.return_value = None
+
+        with (
+            patch("esprit.providers.litellm_integration.get_auth_client", return_value=mock_client),
+            patch("esprit.providers.litellm_integration.is_public_opencode_model", return_value=True),
+        ):
+            assert get_provider_api_key("opencode/minimax-m2.5-free") == "sk-opencode-public-noauth"
+
+    def test_non_public_opencode_without_credentials_returns_none(self) -> None:
+        mock_client = MagicMock()
+        mock_client.detect_provider.return_value = "opencode"
+        mock_client.get_credentials.return_value = None
+
+        with (
+            patch("esprit.providers.litellm_integration.get_auth_client", return_value=mock_client),
+            patch("esprit.providers.litellm_integration.is_public_opencode_model", return_value=False),
+        ):
+            assert get_provider_api_key("opencode/gpt-5.2-codex") is None
+
+
+class TestGetProviderHeaders:
+    def test_public_opencode_without_credentials_clears_authorization(self) -> None:
+        mock_client = MagicMock()
+        mock_client.detect_provider.return_value = "opencode"
+        mock_client.get_credentials.return_value = None
+
+        with (
+            patch("esprit.providers.litellm_integration.get_auth_client", return_value=mock_client),
+            patch("esprit.providers.litellm_integration.is_public_opencode_model", return_value=True),
+        ):
+            assert get_provider_headers("opencode/minimax-m2.5-free") == {"Authorization": ""}
+
+    def test_non_public_opencode_without_credentials_no_headers(self) -> None:
+        mock_client = MagicMock()
+        mock_client.detect_provider.return_value = "opencode"
+        mock_client.get_credentials.return_value = None
+
+        with (
+            patch("esprit.providers.litellm_integration.get_auth_client", return_value=mock_client),
+            patch("esprit.providers.litellm_integration.is_public_opencode_model", return_value=False),
+        ):
+            assert get_provider_headers("opencode/gpt-5.2-codex") == {}

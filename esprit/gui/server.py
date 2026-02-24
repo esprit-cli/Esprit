@@ -97,6 +97,34 @@ class GUIServer:
             data = self._bridge.get_screenshot(agent_id)
             return JSONResponse(data)
 
+        @app.post("/api/agent/{agent_id}/stop")
+        async def stop_agent_route(agent_id: str) -> JSONResponse:
+            try:
+                from esprit.tools.agents_graph.agents_graph_actions import stop_agent
+
+                result = stop_agent(agent_id)
+                return JSONResponse({
+                    "success": bool(result.get("success")),
+                    "message": result.get("message", ""),
+                    "error": result.get("error", ""),
+                })
+            except Exception as exc:  # noqa: BLE001
+                return JSONResponse({"success": False, "error": str(exc)}, status_code=500)
+
+        @app.post("/api/agent/{agent_id}/retry")
+        async def retry_agent_route(agent_id: str) -> JSONResponse:
+            try:
+                from esprit.tools.agents_graph.agents_graph_actions import send_user_message_to_agent
+
+                retry_message = (
+                    "Please continue your current task. Prioritize high-severity vulnerabilities first "
+                    "and summarize your next step."
+                )
+                send_user_message_to_agent(agent_id, retry_message)
+                return JSONResponse({"success": True, "message": "Retry instruction sent"})
+            except Exception as exc:  # noqa: BLE001
+                return JSONResponse({"success": False, "error": str(exc)}, status_code=500)
+
         @app.websocket("/ws")
         async def websocket_endpoint(websocket: WebSocket) -> None:
             await websocket.accept()
