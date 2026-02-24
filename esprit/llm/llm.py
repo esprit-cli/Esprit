@@ -819,9 +819,20 @@ class LLM:
         status_code = getattr(e, "status_code", None) or getattr(
             getattr(e, "response", None), "status_code", None
         )
+        details = str(e)
+
+        # Translate common OpenAI scope failures into actionable guidance.
+        if "api.responses.write" in details:
+            details = (
+                "OpenAI credentials are missing the `api.responses.write` scope. "
+                "Use a Project API key/token with Responses API write permission "
+                "(Project Member/Owner), or switch to a provider/model that does "
+                "not require OpenAI Responses API."
+            )
+
         raise LLMRequestFailedError(
             f"LLM request failed: {type(e).__name__}",
-            str(e),
+            details,
             status_code=status_code,
         ) from e
 

@@ -230,6 +230,21 @@ class TestRaiseError:
 
         assert exc.value.status_code == 503
 
+    def test_maps_openai_responses_scope_error_to_guidance(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        llm = LLM.__new__(LLM)
+        monkeypatch.setattr("esprit.telemetry.posthog.error", lambda *_args, **_kwargs: None)
+
+        error = RuntimeError("OpenAIException: Missing scopes: api.responses.write")
+
+        with pytest.raises(LLMRequestFailedError) as exc:
+            llm._raise_error(error)
+
+        assert exc.value.details is not None
+        assert "api.responses.write" in exc.value.details
+        assert "Use a Project API key/token" in exc.value.details
+
 
 class TestStreamIdleTimeout:
     @pytest.mark.asyncio
