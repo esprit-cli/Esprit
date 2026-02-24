@@ -589,9 +589,11 @@ class LLM:
 
         # Check provider-managed credentials first (API keys + OAuth)
         use_oauth = False
+        provider_id: str | None = None
         provider_api_key: str | None = None
         provider_api_base: str | None = None
         if PROVIDERS_AVAILABLE and self.config.model_name:
+            provider_id = get_auth_client().detect_provider(self.config.model_name)
             provider_api_key = get_provider_api_key(self.config.model_name)
             if provider_api_key:
                 args["api_key"] = provider_api_key
@@ -617,6 +619,10 @@ class LLM:
                     args["api_key"] = provider_api_key or "oauth-auth"
                 else:
                     args["api_key"] = provider_api_key or "oauth-auth"
+
+                # Codex backend rejects persisted response storage for OAuth calls.
+                if provider_id == "openai":
+                    args["store"] = False
 
         # Fall back to configured API key when provider auth is not active.
         if not use_oauth:
