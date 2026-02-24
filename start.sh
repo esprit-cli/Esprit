@@ -109,7 +109,7 @@ if command -v esprit >/dev/null 2>&1; then
 
     if _version_is_newer "$installed" "$latest"; then
       echo -e "${YELLOW}Update available:${NC} $installed → ${GREEN}$latest${NC}"
-      echo -e "${MUTED}Run:${NC} curl -fsSL https://raw.githubusercontent.com/$repo/refs/heads/main/scripts/install.sh | bash"
+      echo -e "${MUTED}Run:${NC} curl -fsSL https://raw.githubusercontent.com/$repo/main/scripts/install.sh | bash"
       echo ""
     fi
   }
