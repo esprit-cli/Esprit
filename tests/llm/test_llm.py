@@ -613,3 +613,86 @@ class TestEspritProxyRouting:
 
         assert exc.value.status_code == 500
         assert "Internal Server Error" in (exc.value.details or "")
+
+    @pytest.mark.asyncio
+    async def test_stream_esprit_proxy_includes_request_id_in_details(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        llm = LLM.__new__(LLM)
+        llm.config = SimpleNamespace(model_name="esprit/default", timeout=120)
+        llm._total_stats = SimpleNamespace(
+            requests=0,
+            input_tokens=0,
+            output_tokens=0,
+            cached_tokens=0,
+            cost=0.0,
+            last_input_tokens=0,
+        )
+        llm._reasoning_effort = "high"
+
+        monkeypatch.setattr(LLM, "_supports_reasoning", lambda self: False)
+        monkeypatch.setattr(
+            "esprit.providers.esprit_subs._load_esprit_credentials",
+            lambda: SimpleNamespace(access_token="token"),
+        )
+        monkeypatch.setattr(
+            "esprit.providers.esprit_subs.resolve_bedrock_model",
+            lambda _model: "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+        )
+        monkeypatch.setattr(
+            "esprit.providers.esprit_subs.LLM_PROXY_URL",
+            "https://example.test/api/v1/llm/generate",
+        )
+
+        class FakeErrorResponse:
+            status_code = 500
+            text = "Internal Server Error"
+            headers = {"x-vercel-id": "test-edge-id"}
+
+            @staticmethod
+            def json() -> dict[str, object]:
+                return {}
+
+        class FakeAsyncClient:
+            def __init__(self, timeout: int):
+                _ = timeout
+
+            async def __aenter__(self) -> "FakeAsyncClient":
+                return self
+
+            async def __aexit__(self, _exc_type, _exc, _tb) -> None:
+                return None
+
+            async def post(
+                self, url: str, headers: dict[str, str], json: dict[str, object]
+            ) -> FakeErrorResponse:
+                _ = (url, headers, json)
+                return FakeErrorResponse()
+
+        monkeypatch.setattr("esprit.llm.llm.httpx.AsyncClient", FakeAsyncClient)
+
+        with pytest.raises(LLMRequestFailedError) as exc:
+            async for _ in llm._stream_esprit_proxy([{"role": "user", "content": "ping"}]):
+                pass
+
+        assert "request_id: test-edge-id" in (exc.value.details or "")
+
+
+class TestRaiseError:
+    def test_preserves_llm_request_failed_error_details(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        llm = LLM.__new__(LLM)
+        monkeypatch.setattr("esprit.telemetry.posthog.error", lambda *_args, **_kwargs: None)
+
+        with pytest.raises(LLMRequestFailedError) as exc:
+            llm._raise_error(
+                LLMRequestFailedError(
+                    "LLM request failed: Esprit proxy returned HTTP 500",
+                    details="Internal Server Error [request_id: abc123]",
+                    status_code=500,
+                )
+            )
+
+        assert exc.value.status_code == 500
+        assert exc.value.details == "Internal Server Error [request_id: abc123]"

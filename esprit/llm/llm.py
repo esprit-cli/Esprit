@@ -359,7 +359,7 @@ class LLM:
         if response.status_code >= 400:
             raise LLMRequestFailedError(
                 f"LLM request failed: Esprit proxy returned HTTP {response.status_code}",
-                details=response.text.strip() or "Empty error response",
+                details=self._format_esprit_proxy_error_details(response),
                 status_code=response.status_code,
             )
 
@@ -387,6 +387,44 @@ class LLM:
 
     def _is_esprit_subscription_model(self) -> bool:
         return bool(self.config.model_name and self.config.model_name.lower().startswith("esprit/"))
+
+    def _format_esprit_proxy_error_details(self, response: httpx.Response) -> str:
+        details = response.text.strip()
+
+        if details.startswith("{"):
+            try:
+                payload = response.json()
+            except ValueError:
+                payload = None
+            if isinstance(payload, dict):
+                raw_detail = payload.get("detail")
+                if isinstance(raw_detail, str) and raw_detail.strip():
+                    details = raw_detail.strip()
+                elif isinstance(raw_detail, dict):
+                    nested = raw_detail.get("message") or raw_detail.get("error")
+                    if isinstance(nested, str) and nested.strip():
+                        details = nested.strip()
+                elif isinstance(payload.get("message"), str) and payload["message"].strip():
+                    details = payload["message"].strip()
+
+        if not details:
+            details = "Empty error response"
+
+        if response.status_code >= 500 and details == "Internal Server Error":
+            details = (
+                "Internal Server Error "
+                "(Esprit cloud LLM service is currently unavailable)"
+            )
+
+        headers = getattr(response, "headers", {}) or {}
+        request_id = (
+            str(headers.get("x-request-id", ""))
+            or str(headers.get("x-vercel-id", ""))
+        ).strip()
+        if request_id:
+            details = f"{details} [request_id: {request_id}]"
+
+        return details
 
     def _extract_content_from_payload(self, payload: Any) -> str:
         if not isinstance(payload, dict):
@@ -940,6 +978,14 @@ class LLM:
         from esprit.telemetry import posthog
 
         posthog.error("llm_error", type(e).__name__)
+
+        if isinstance(e, LLMRequestFailedError):
+            status_code = e.status_code or getattr(
+                getattr(e, "response", None), "status_code", None
+            )
+            details = e.details or e.message
+            raise LLMRequestFailedError(e.message, details, status_code=status_code) from e
+
         status_code = getattr(e, "status_code", None) or getattr(
             getattr(e, "response", None), "status_code", None
         )
