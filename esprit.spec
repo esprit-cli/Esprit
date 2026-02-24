@@ -24,6 +24,10 @@ for jinja in Path(ESPRIT_PKG).rglob("*.jinja"):
 for xml in Path(ESPRIT_PKG).rglob("*_schema.xml"):
     datas.append((str(xml), str(xml.parent.relative_to(ROOT))))
 
+# TUI stylesheets (.tcss)
+for tcss in Path(ESPRIT_PKG).rglob("*.tcss"):
+    datas.append((str(tcss), str(tcss.parent.relative_to(ROOT))))
+
 # Skills (.md files)
 skills_dir = os.path.join(ESPRIT_PKG, "skills")
 if os.path.isdir(skills_dir):
