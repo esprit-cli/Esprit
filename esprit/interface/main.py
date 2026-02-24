@@ -580,6 +580,7 @@ def pre_scan_setup(non_interactive: bool = False) -> bool:
 
 async def warm_up_llm() -> None:
     from esprit.llm.config import DEFAULT_MODEL
+    from esprit.llm.model_routing import to_litellm_model_name
     from esprit.llm.api_base import (
         configured_api_base,
         detect_conflicting_provider_base_env,
@@ -587,6 +588,7 @@ async def warm_up_llm() -> None:
     )
     from esprit.providers.litellm_integration import (
         get_provider_api_key,
+        get_provider_api_base,
         get_provider_headers,
         should_use_oauth,
     )
@@ -636,23 +638,19 @@ async def warm_up_llm() -> None:
                 if oauth_key:
                     api_key = oauth_key
 
+            routed_model = to_litellm_model_name(candidate_model) or candidate_model
             completion_kwargs: dict[str, Any] = {
-                "model": candidate_model,
+                "model": routed_model,
                 "messages": test_messages,
                 "timeout": llm_timeout,
             }
-
-            # Translate google/ → gemini/ for litellm compatibility
-            if candidate_model.lower().startswith("google/"):
-                completion_kwargs["model"] = "gemini/" + candidate_model.split("/", 1)[1]
-            # OpenCode Zen is OpenAI-compatible; use openai/ for litellm routing.
-            if candidate_model.lower().startswith(("opencode/", "zen/")):
-                completion_kwargs["model"] = "openai/" + candidate_model.split("/", 1)[1]
 
             if api_key:
                 completion_kwargs["api_key"] = api_key
 
             api_base = resolve_api_base(candidate_model)
+            if not api_base:
+                api_base = get_provider_api_base(candidate_model)
             if api_base:
                 completion_kwargs["api_base"] = api_base
 

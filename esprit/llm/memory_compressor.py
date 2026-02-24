@@ -5,6 +5,18 @@ import litellm
 
 from esprit.config import Config
 from esprit.llm.api_base import resolve_api_base
+from esprit.llm.model_routing import to_litellm_model_name
+
+try:
+    from esprit.providers.litellm_integration import (
+        get_provider_api_base,
+        get_provider_api_key,
+        get_provider_headers,
+    )
+
+    PROVIDERS_AVAILABLE = True
+except ImportError:
+    PROVIDERS_AVAILABLE = False
 
 
 logger = logging.getLogger(__name__)
@@ -32,7 +44,8 @@ _TOKEN_COUNTER_MAP: dict[str, str] = {
 
 def _resolve_model_for_counting(model: str) -> str:
     """Resolve Antigravity model names to litellm-compatible names for token counting."""
-    return _TOKEN_COUNTER_MAP.get(model, model)
+    mapped = _TOKEN_COUNTER_MAP.get(model, model)
+    return to_litellm_model_name(mapped) or mapped
 
 SUMMARY_PROMPT_TEMPLATE = """You are an agent performing context
 condensation for a security agent. Your job is to compress scan data while preserving
@@ -135,12 +148,18 @@ def summarize_messages(
     conversation = "\n".join(formatted)
     prompt = SUMMARY_PROMPT_TEMPLATE.format(conversation=conversation)
 
+    routed_model = to_litellm_model_name(model) or model
     api_key = Config.get("llm_api_key")
+    if not api_key and PROVIDERS_AVAILABLE:
+        api_key = get_provider_api_key(model)
     api_base = resolve_api_base(model)
+    if not api_base and PROVIDERS_AVAILABLE:
+        api_base = get_provider_api_base(model)
+    extra_headers = get_provider_headers(model) if PROVIDERS_AVAILABLE else {}
 
     try:
         completion_args: dict[str, Any] = {
-            "model": model,
+            "model": routed_model,
             "messages": [{"role": "user", "content": prompt}],
             "timeout": timeout,
         }
@@ -148,6 +167,8 @@ def summarize_messages(
             completion_args["api_key"] = api_key
         if api_base:
             completion_args["api_base"] = api_base
+        if extra_headers:
+            completion_args["extra_headers"] = extra_headers
 
         response = litellm.completion(**completion_args)
         summary = response.choices[0].message.content or ""

@@ -7,6 +7,18 @@ import litellm
 
 from esprit.config import Config
 from esprit.llm.api_base import resolve_api_base
+from esprit.llm.model_routing import to_litellm_model_name
+
+try:
+    from esprit.providers.litellm_integration import (
+        get_provider_api_base,
+        get_provider_api_key,
+        get_provider_headers,
+    )
+
+    PROVIDERS_AVAILABLE = True
+except ImportError:
+    PROVIDERS_AVAILABLE = False
 
 
 logger = logging.getLogger(__name__)
@@ -157,8 +169,14 @@ def check_duplicate(
         comparison_data = {"candidate": candidate_cleaned, "existing_reports": existing_cleaned}
 
         model_name = Config.get("esprit_llm")
+        routed_model = to_litellm_model_name(model_name) or model_name
         api_key = Config.get("llm_api_key")
+        if not api_key and PROVIDERS_AVAILABLE and model_name:
+            api_key = get_provider_api_key(model_name)
         api_base = resolve_api_base(model_name)
+        if not api_base and PROVIDERS_AVAILABLE and model_name:
+            api_base = get_provider_api_base(model_name)
+        extra_headers = get_provider_headers(model_name) if PROVIDERS_AVAILABLE and model_name else {}
 
         messages = [
             {"role": "system", "content": DEDUPE_SYSTEM_PROMPT},
@@ -173,7 +191,7 @@ def check_duplicate(
         ]
 
         completion_kwargs: dict[str, Any] = {
-            "model": model_name,
+            "model": routed_model,
             "messages": messages,
             "timeout": 120,
         }
@@ -181,6 +199,8 @@ def check_duplicate(
             completion_kwargs["api_key"] = api_key
         if api_base:
             completion_kwargs["api_base"] = api_base
+        if extra_headers:
+            completion_kwargs["extra_headers"] = extra_headers
 
         response = litellm.completion(**completion_kwargs)
 

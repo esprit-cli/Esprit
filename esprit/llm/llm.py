@@ -15,6 +15,11 @@ from esprit.config import Config
 from esprit.llm.api_base import resolve_api_base
 from esprit.llm.config import LLMConfig
 from esprit.llm.memory_compressor import MemoryCompressor
+from esprit.llm.model_routing import (
+    OPENAI_CODEX_MODEL_ALIASES,
+    normalize_openai_codex_model_name,
+    to_litellm_model_name,
+)
 from esprit.llm.utils import (
     _truncate_to_first_function,
     fix_incomplete_tool_call,
@@ -30,6 +35,7 @@ try:
         get_provider_headers,
         should_use_oauth,
         get_provider_api_key,
+        get_provider_api_base,
         get_auth_client,
     )
     from esprit.providers.account_pool import get_account_pool
@@ -94,49 +100,15 @@ _CODEX_BASE_INFO = {
     "supports_reasoning": True,
     "supports_native_streaming": True,
 }
-_CODEX_MODEL_ALIASES: dict[str, str] = {
-    "codex-5.3": "gpt-5.3-codex",
-    "codex-5.2": "gpt-5.2-codex",
-    "codex-5.1": "gpt-5.1-codex",
-    "codex-5": "gpt-5-codex",
-}
 for _base in [
     "gpt-5.3-codex",
     "gpt-5.2-codex",
     "gpt-5.1-codex",
     "gpt-5-codex",
-    "codex-5.3",
-    "codex-5.2",
-    "codex-5.1",
-    "codex-5",
+    *OPENAI_CODEX_MODEL_ALIASES.keys(),
 ]:
     if _base not in litellm.model_cost:
         litellm.model_cost[_base] = {**_CODEX_BASE_INFO, "litellm_provider": "openai"}
-
-
-def _normalize_openai_codex_model_name(model_name: str | None) -> str | None:
-    """Normalize OpenAI Codex aliases to canonical LiteLLM model identifiers."""
-    if not model_name:
-        return model_name
-
-    model = model_name.strip()
-    if not model:
-        return model_name
-
-    raw_prefix = ""
-    bare = model
-    if "/" in model:
-        raw_prefix, bare = model.split("/", 1)
-        if raw_prefix.lower() not in {"openai", "codex"}:
-            return model
-
-    bare_lower = bare.lower()
-    mapped_bare = _CODEX_MODEL_ALIASES.get(bare_lower, bare)
-
-    if bare_lower.startswith("codex-") or raw_prefix.lower() in {"openai", "codex"}:
-        return f"openai/{mapped_bare}"
-
-    return model
 
 
 class LLMRequestFailedError(Exception):
@@ -233,7 +205,8 @@ class LLM:
             return True
 
         try:
-            return bool(litellm.supports_function_calling(model=self.config.model_name))
+            routed_model = to_litellm_model_name(self.config.model_name) or self.config.model_name
+            return bool(litellm.supports_function_calling(model=routed_model))
         except Exception:  # noqa: BLE001
             return False
 
@@ -574,8 +547,9 @@ class LLM:
         if not self._supports_vision():
             messages = self._strip_images(messages)
 
+        routed_model = to_litellm_model_name(self.config.model_name) or self.config.model_name
         args: dict[str, Any] = {
-            "model": self.config.model_name,
+            "model": routed_model,
             "messages": messages,
             "timeout": self.config.timeout,
             "stream_options": {"include_usage": True},
@@ -583,21 +557,6 @@ class LLM:
 
         if tools:
             args["tools"] = tools
-
-        # Normalize OpenAI Codex aliases to canonical gpt-*-codex routes.
-        normalized_openai_model = _normalize_openai_codex_model_name(self.config.model_name)
-        if normalized_openai_model:
-            args["model"] = normalized_openai_model
-
-        # Translate google/ → gemini/ for litellm compatibility
-        if self.config.model_name and self.config.model_name.lower().startswith("google/"):
-            args["model"] = "gemini/" + self.config.model_name.split("/", 1)[1]
-        # OpenCode Zen uses an OpenAI-compatible API surface.
-        if self.config.model_name and (
-            self.config.model_name.lower().startswith("opencode/")
-            or self.config.model_name.lower().startswith("zen/")
-        ):
-            args["model"] = "openai/" + self.config.model_name.split("/", 1)[1]
 
         # Esprit subscription provider — route through Esprit LLM proxy to Bedrock
         if self.config.model_name and self.config.model_name.lower().startswith("esprit/"):
@@ -631,6 +590,7 @@ class LLM:
         # Check provider-managed credentials first (API keys + OAuth)
         use_oauth = False
         provider_api_key: str | None = None
+        provider_api_base: str | None = None
         if PROVIDERS_AVAILABLE and self.config.model_name:
             provider_api_key = get_provider_api_key(self.config.model_name)
             if provider_api_key:
@@ -644,6 +604,7 @@ class LLM:
                 }
 
             use_oauth = should_use_oauth(self.config.model_name)
+            provider_api_base = get_provider_api_base(self.config.model_name)
             if use_oauth:
                 model_lower = self.config.model_name.lower()
 
@@ -652,7 +613,7 @@ class LLM:
                 # with Esprit's OAuth token — avoids litellm's chatgpt/
                 # provider which has auth-file bugs with external tokens.
                 if "codex" in model_lower:
-                    args["model"] = _normalize_openai_codex_model_name(self.config.model_name) or self.config.model_name
+                    args["model"] = normalize_openai_codex_model_name(self.config.model_name) or args["model"]
                     args["api_key"] = provider_api_key or "oauth-auth"
                 else:
                     args["api_key"] = provider_api_key or "oauth-auth"
@@ -666,6 +627,8 @@ class LLM:
         # ANTHROPIC_BASE_URL) do not silently hijack requests.
         if api_base := resolve_api_base(self.config.model_name):
             args["api_base"] = api_base
+        elif provider_api_base:
+            args["api_base"] = provider_api_base
 
         if self._supports_reasoning():
             args["reasoning_effort"] = self._reasoning_effort

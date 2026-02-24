@@ -373,6 +373,7 @@ class TestBuildCompletionArgs:
         monkeypatch.setattr(LLM, "_supports_reasoning", lambda self: False)
         monkeypatch.setattr("esprit.llm.llm.PROVIDERS_AVAILABLE", True, raising=False)
         monkeypatch.setattr("esprit.llm.llm.get_provider_api_key", lambda _model: "oauth-token")
+        monkeypatch.setattr("esprit.llm.llm.get_provider_api_base", lambda _model: None)
         monkeypatch.setattr("esprit.llm.llm.get_provider_headers", lambda _model: {})
         monkeypatch.setattr("esprit.llm.llm.should_use_oauth", lambda _model: True)
         monkeypatch.setattr("esprit.llm.llm.resolve_api_base", lambda _model: None)
@@ -392,6 +393,7 @@ class TestBuildCompletionArgs:
         monkeypatch.setattr(LLM, "_supports_reasoning", lambda self: False)
         monkeypatch.setattr("esprit.llm.llm.PROVIDERS_AVAILABLE", True, raising=False)
         monkeypatch.setattr("esprit.llm.llm.get_provider_api_key", lambda _model: None)
+        monkeypatch.setattr("esprit.llm.llm.get_provider_api_base", lambda _model: None)
         monkeypatch.setattr("esprit.llm.llm.get_provider_headers", lambda _model: {})
         monkeypatch.setattr("esprit.llm.llm.should_use_oauth", lambda _model: False)
         monkeypatch.setattr("esprit.llm.llm.resolve_api_base", lambda _model: None)
@@ -400,3 +402,25 @@ class TestBuildCompletionArgs:
         args = llm._build_completion_args([{"role": "user", "content": "hi"}])
 
         assert args["model"] == "openai/gpt-5.2-codex"
+
+    def test_provider_api_base_used_when_no_explicit_base(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        llm = LLM.__new__(LLM)
+        llm.config = SimpleNamespace(model_name="openai/gpt-5.3-codex", timeout=120)
+
+        monkeypatch.setattr(LLM, "_supports_vision", lambda self: True)
+        monkeypatch.setattr(LLM, "_supports_reasoning", lambda self: False)
+        monkeypatch.setattr("esprit.llm.llm.PROVIDERS_AVAILABLE", True, raising=False)
+        monkeypatch.setattr("esprit.llm.llm.get_provider_api_key", lambda _model: "oauth-token")
+        monkeypatch.setattr(
+            "esprit.llm.llm.get_provider_api_base",
+            lambda _model: "https://chatgpt.com/backend-api/codex",
+        )
+        monkeypatch.setattr("esprit.llm.llm.get_provider_headers", lambda _model: {})
+        monkeypatch.setattr("esprit.llm.llm.should_use_oauth", lambda _model: True)
+        monkeypatch.setattr("esprit.llm.llm.resolve_api_base", lambda _model: None)
+
+        args = llm._build_completion_args([{"role": "user", "content": "hi"}])
+
+        assert args["api_base"] == "https://chatgpt.com/backend-api/codex"

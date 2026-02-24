@@ -16,6 +16,7 @@ import httpx
 from esprit.providers import get_provider_auth, PROVIDERS
 from esprit.providers.base import OAuthCredentials
 from esprit.providers.config import is_public_opencode_model
+from esprit.providers.openai_codex import CODEX_API_BASE
 from esprit.providers.token_store import TokenStore
 from esprit.providers.account_pool import AccountPool, get_account_pool
 from esprit.providers.constants import MULTI_ACCOUNT_PROVIDERS
@@ -269,6 +270,21 @@ def get_provider_api_key(model_name: str) -> str | None:
         return credentials.access_token
     
     return None
+
+
+def get_provider_api_base(model_name: str) -> str | None:
+    """Return a provider-specific API base override when required."""
+    client = get_auth_client()
+    provider_id = client.detect_provider(model_name)
+    if provider_id != "openai":
+        return None
+
+    credentials = client.get_credentials(provider_id)
+    if not credentials or credentials.type != "oauth":
+        return None
+
+    # ChatGPT Plus/Pro OAuth tokens must route through the Codex backend.
+    return CODEX_API_BASE
 
 
 def get_provider_headers(model_name: str) -> dict[str, str]:

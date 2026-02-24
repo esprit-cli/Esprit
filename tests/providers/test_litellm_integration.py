@@ -7,6 +7,7 @@ import pytest
 from esprit.providers.base import OAuthCredentials
 from esprit.providers.litellm_integration import (
     ProviderAuthClient,
+    get_provider_api_base,
     get_provider_api_key,
     get_provider_headers,
 )
@@ -186,3 +187,29 @@ class TestGetProviderHeaders:
             patch("esprit.providers.litellm_integration.is_public_opencode_model", return_value=False),
         ):
             assert get_provider_headers("opencode/gpt-5.2-codex") == {}
+
+
+class TestGetProviderApiBase:
+    def test_openai_oauth_routes_to_codex_backend(self) -> None:
+        mock_client = MagicMock()
+        mock_client.detect_provider.return_value = "openai"
+        mock_client.get_credentials.return_value = OAuthCredentials(type="oauth", access_token="tok")
+
+        with patch("esprit.providers.litellm_integration.get_auth_client", return_value=mock_client):
+            assert get_provider_api_base("openai/gpt-5.3-codex") == "https://chatgpt.com/backend-api/codex"
+
+    def test_openai_api_key_does_not_override_base(self) -> None:
+        mock_client = MagicMock()
+        mock_client.detect_provider.return_value = "openai"
+        mock_client.get_credentials.return_value = OAuthCredentials(type="api", access_token="sk-123")
+
+        with patch("esprit.providers.litellm_integration.get_auth_client", return_value=mock_client):
+            assert get_provider_api_base("openai/gpt-5.3-codex") is None
+
+    def test_non_openai_provider_returns_none(self) -> None:
+        mock_client = MagicMock()
+        mock_client.detect_provider.return_value = "google"
+        mock_client.get_credentials.return_value = OAuthCredentials(type="oauth", access_token="tok")
+
+        with patch("esprit.providers.litellm_integration.get_auth_client", return_value=mock_client):
+            assert get_provider_api_base("google/gemini-3-pro") is None

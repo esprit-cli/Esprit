@@ -6,12 +6,15 @@ import json
 import pytest
 
 from esprit.providers.openai_codex import (
+    CODEX_API_URL,
     _decode_jwt_payload,
     _extract_account_id,
     _extract_email,
     _generate_pkce,
     _generate_state,
+    OpenAICodexProvider,
 )
+from esprit.providers.base import OAuthCredentials
 
 
 def _make_jwt(payload: dict, header: dict | None = None) -> str:
@@ -141,3 +144,43 @@ class TestGenerateState:
 
     def test_state_unique(self) -> None:
         assert _generate_state() != _generate_state()
+
+
+class TestModifyRequest:
+    def test_rewrites_openai_responses_to_codex_backend(self) -> None:
+        provider = OpenAICodexProvider()
+        creds = OAuthCredentials(type="oauth", access_token="tok", account_id="acct-1")
+
+        url, headers, _ = provider.modify_request(
+            "https://api.openai.com/v1/responses",
+            {"X-Test": "1"},
+            {"foo": "bar"},
+            creds,
+        )
+
+        assert url == CODEX_API_URL
+        assert headers["Authorization"] == "Bearer tok"
+        assert headers["ChatGPT-Account-Id"] == "acct-1"
+        assert headers["X-Test"] == "1"
+
+    def test_rewrites_chat_completions_to_codex_backend(self) -> None:
+        provider = OpenAICodexProvider()
+        creds = OAuthCredentials(type="oauth", access_token="tok")
+
+        url, _, _ = provider.modify_request(
+            "https://api.openai.com/v1/chat/completions",
+            {},
+            None,
+            creds,
+        )
+
+        assert url == CODEX_API_URL
+
+    def test_empty_url_keeps_empty(self) -> None:
+        provider = OpenAICodexProvider()
+        creds = OAuthCredentials(type="oauth", access_token="tok")
+
+        url, headers, _ = provider.modify_request("", {}, None, creds)
+
+        assert url == ""
+        assert headers["Authorization"] == "Bearer tok"

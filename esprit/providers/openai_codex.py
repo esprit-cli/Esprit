@@ -38,7 +38,8 @@ ISSUER = "https://auth.openai.com"
 DEVICE_CODE_URL = f"{ISSUER}/api/accounts/deviceauth/usercode"
 DEVICE_TOKEN_URL = f"{ISSUER}/api/accounts/deviceauth/token"
 TOKEN_URL = f"{ISSUER}/oauth/token"
-CODEX_API_URL = "https://chatgpt.com/backend-api/codex/responses"
+CODEX_API_BASE = "https://chatgpt.com/backend-api/codex"
+CODEX_API_URL = f"{CODEX_API_BASE}/responses"
 
 # Browser OAuth settings
 OAUTH_PORT = 1455
@@ -623,8 +624,14 @@ class OpenAICodexProvider(ProviderAuth):
         arch = platform.machine()
         modified_headers["User-Agent"] = f"esprit/1.0 ({system} {release}; {arch})"
 
-        # Use the standard OpenAI API endpoint (no URL rewriting needed)
-        return url, modified_headers, body
+        modified_url = url
+        if url:
+            parsed = urlparse(url)
+            path = parsed.path.lower()
+            if "/v1/responses" in path or "/chat/completions" in path:
+                modified_url = CODEX_API_URL
+
+        return modified_url, modified_headers, body
 
     def get_auth_methods(self) -> list[dict[str, str]]:
         """Get available authentication methods."""
