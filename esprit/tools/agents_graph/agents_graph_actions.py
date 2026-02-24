@@ -28,6 +28,8 @@ _agent_states: dict[str, Any] = {}
 # When a subagent inherits parent context, long histories are compressed
 # to avoid sending tens of thousands of redundant tokens every turn.
 
+MAX_AGENTS = 10  # Hard cap on total agents to prevent runaway spawning
+
 _INHERIT_SUMMARIZE_THRESHOLD = 15  # Summarize if parent history exceeds this
 _RECENT_MESSAGES_TO_KEEP = 10  # Keep last N messages verbatim after summary
 
@@ -355,6 +357,17 @@ def create_agent(
     skills: str | None = None,
 ) -> dict[str, Any]:
     try:
+        # Guard against runaway agent spawning
+        if len(_agent_graph["nodes"]) >= MAX_AGENTS:
+            return {
+                "success": False,
+                "error": (
+                    f"Agent limit reached ({MAX_AGENTS}). Wait for existing agents "
+                    f"to finish before spawning more."
+                ),
+                "agent_id": None,
+            }
+
         parent_id = agent_state.agent_id
 
         skill_list = []

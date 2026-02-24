@@ -10,7 +10,7 @@ from esprit.interface.theme_tokens import (
 
 
 def test_all_supported_themes_resolve() -> None:
-    assert set(SUPPORTED_THEME_IDS) == {"esprit", "ember", "matrix", "glacier", "crt"}
+    assert set(SUPPORTED_THEME_IDS) == {"esprit", "ember", "matrix", "glacier", "crt", "sakura"}
 
     for theme_id in SUPPORTED_THEME_IDS:
         tokens = get_theme_tokens(theme_id)
