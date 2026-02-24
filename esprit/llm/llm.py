@@ -34,6 +34,11 @@ try:
     )
     from esprit.providers.account_pool import get_account_pool
     from esprit.providers.antigravity import ANTIGRAVITY_MODELS, ENDPOINTS
+    from esprit.providers.config import (
+        get_available_models,
+        get_public_opencode_models,
+        is_public_opencode_model,
+    )
     from esprit.providers.antigravity_format import (
         build_cloudcode_request,
         build_request_headers,
@@ -44,6 +49,27 @@ except ImportError:
     PROVIDERS_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
+
+_OPENCODE_PREFERRED_PUBLIC_FALLBACK_MODELS = [
+    "minimax-m2.5-free",
+    "kimi-k2.5-free",
+    "gpt-5-nano",
+    "minimax-m2.1-free",
+    "trinity-large-preview-free",
+]
+
+_AUTH_ERROR_TEXT_MARKERS = (
+    "invalid api key",
+    "incorrect api key",
+    "api_key client option must be set",
+    "authenticationerror",
+    "unauthorized",
+)
+
+_OPENCODE_UPSTREAM_ERROR_MARKERS = (
+    "prompt_tokens",
+    "upstream model error",
+)
 
 
 def _mask_email(email: str) -> str:
@@ -192,10 +218,19 @@ class LLM:
                 if self._try_rotate_on_rate_limit(e):
                     # Rotated to a new account — retry immediately (don't increment)
                     continue
+                # For OpenCode public models, rate limits/upstream failures should
+                # switch quickly to another public model instead of waiting through
+                # full retry exhaustion on an unhealthy model.
+                if self._should_try_opencode_fallback_early(e) and self._try_opencode_model_fallback(e):
+                    attempt = 0
+                    continue
                 if attempt >= max_retries or not self._should_retry(e):
                     # Before giving up, try auto model fallback for Antigravity
                     if self._is_antigravity() and self._try_model_fallback(e):
                         # Switched to fallback model — restart retry loop
+                        attempt = 0
+                        continue
+                    if self._try_opencode_model_fallback(e):
                         attempt = 0
                         continue
                     self._raise_error(e)
@@ -865,6 +900,91 @@ class LLM:
 
             logger.warning(
                 "Model %s failed (%s), falling back to %s",
+                old_model, type(e).__name__, new_model,
+            )
+            return True
+
+        return False
+
+    def _should_try_opencode_fallback_early(self, e: Exception) -> bool:
+        """Return True when OpenCode fallback should happen immediately."""
+        if not self._is_opencode():
+            return False
+
+        code = getattr(e, "status_code", None) or getattr(
+            getattr(e, "response", None), "status_code", None
+        )
+        if code == 429:
+            return True
+
+        message = str(e).lower()
+        return any(marker in message for marker in _OPENCODE_UPSTREAM_ERROR_MARKERS)
+
+    def _is_opencode(self) -> bool:
+        model = (self.config.model_name or "").strip().lower()
+        return model.startswith("opencode/") or model.startswith("zen/")
+
+    def _is_auth_error(self, e: Exception) -> bool:
+        code = getattr(e, "status_code", None) or getattr(
+            getattr(e, "response", None), "status_code", None
+        )
+        if code in (401, 403):
+            return True
+
+        message = str(e).lower()
+        return any(marker in message for marker in _AUTH_ERROR_TEXT_MARKERS)
+
+    def _try_opencode_model_fallback(self, e: Exception) -> bool:
+        """Switch to another OpenCode public model when the active one is failing."""
+        if str(Config.get("esprit_auto_fallback") or "").lower() in ("false", "0", "no"):
+            return False
+
+        if not PROVIDERS_AVAILABLE or not self._is_opencode():
+            return False
+
+        if self._is_auth_error(e):
+            return False
+
+        current_model = self.config.model_name or ""
+        catalog = get_available_models()
+
+        if not is_public_opencode_model(current_model, catalog):
+            return False
+
+        public_models = get_public_opencode_models(catalog)
+        if not public_models:
+            return False
+
+        current_bare = current_model.split("/", 1)[-1] if "/" in current_model else current_model
+
+        if not hasattr(self, "_tried_opencode_models"):
+            self._tried_opencode_models: set[str] = set()
+        self._tried_opencode_models.add(current_bare)
+
+        fallback_bare_models = [
+            model_id
+            for model_id in _OPENCODE_PREFERRED_PUBLIC_FALLBACK_MODELS
+            if model_id in public_models and model_id != current_bare
+        ]
+        fallback_bare_models.extend(
+            sorted(
+                model_id
+                for model_id in public_models
+                if model_id not in fallback_bare_models and model_id != current_bare
+            )
+        )
+
+        prefix = current_model.split("/", 1)[0] if "/" in current_model else "opencode"
+        for fallback_bare in fallback_bare_models:
+            if fallback_bare in self._tried_opencode_models:
+                continue
+
+            old_model = current_model
+            new_model = f"{prefix}/{fallback_bare}"
+            self.config.model_name = new_model
+            self._tried_opencode_models.add(fallback_bare)
+            logger.warning(
+                "OpenCode model %s failed (%s), falling back to %s",
                 old_model, type(e).__name__, new_model,
             )
             return True
