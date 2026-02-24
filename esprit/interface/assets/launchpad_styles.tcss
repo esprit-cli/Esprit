@@ -3,11 +3,12 @@ Screen {
 }
 
 #launchpad_root {
-    width: 76;
-    max-width: 95%;
+    width: 84;
+    max-width: 96%;
+    min-width: 62;
     height: auto;
-    max-height: 90%;
-    padding: 1 3;
+    max-height: 92%;
+    padding: 1 2;
     align: center middle;
 }
 
@@ -29,7 +30,10 @@ Screen {
 
 #launchpad_title {
     width: 100%;
-    height: auto;
+    min-height: 1;
+    content-align: left middle;
+    text-align: left;
+    padding: 0 2;
     text-style: bold;
     margin-bottom: 1;
 }
@@ -37,26 +41,36 @@ Screen {
 #launchpad_menu {
     width: 100%;
     height: auto;
+    max-height: 16;
     padding: 1 2;
+    overflow-y: auto;
+    scrollbar-size-vertical: 1;
 }
 
 #launchpad_input {
     width: 100%;
+    height: 3;
+    min-height: 3;
+    padding: 0 1;
     margin-top: 1;
 }
 
 #launchpad_status {
     width: 100%;
-    height: auto;
-    margin-top: 1;
     min-height: 1;
+    content-align: left middle;
+    padding: 0 2;
+    margin-top: 1;
 }
 
 #launchpad_hint {
     width: 100%;
-    height: auto;
+    min-height: 1;
+    content-align: left middle;
+    text-align: left;
+    padding: 0 2;
     text-style: italic;
-    margin-top: 1;
+    margin-top: 0;
 }
 
 Screen.theme-esprit {
@@ -72,6 +86,9 @@ Screen.theme-esprit #launchpad_root {
 Screen.theme-esprit #launchpad_menu {
     background: #161616;
     border: round #2a1515;
+    scrollbar-background: #161616;
+    scrollbar-color: #2f0f0f;
+    scrollbar-corner-color: #161616;
 }
 
 Screen.theme-esprit #launchpad_input {
@@ -97,6 +114,9 @@ Screen.theme-ember #launchpad_root {
 Screen.theme-ember #launchpad_menu {
     background: #221913;
     border: round #4b2a16;
+    scrollbar-background: #221913;
+    scrollbar-color: #4b2a16;
+    scrollbar-corner-color: #221913;
 }
 
 Screen.theme-ember #launchpad_input {
@@ -122,6 +142,9 @@ Screen.theme-matrix #launchpad_root {
 Screen.theme-matrix #launchpad_menu {
     background: #0f1811;
     border: round #1f3d27;
+    scrollbar-background: #0f1811;
+    scrollbar-color: #1f3d27;
+    scrollbar-corner-color: #0f1811;
 }
 
 Screen.theme-matrix #launchpad_input {
@@ -147,6 +170,9 @@ Screen.theme-glacier #launchpad_root {
 Screen.theme-glacier #launchpad_menu {
     background: #121d26;
     border: round #1a344d;
+    scrollbar-background: #121d26;
+    scrollbar-color: #1a344d;
+    scrollbar-corner-color: #121d26;
 }
 
 Screen.theme-glacier #launchpad_input {
@@ -172,6 +198,9 @@ Screen.theme-crt #launchpad_root {
 Screen.theme-crt #launchpad_menu {
     background: #051205;
     border: solid #1a801a;
+    scrollbar-background: #051205;
+    scrollbar-color: #1a801a;
+    scrollbar-corner-color: #051205;
 }
 
 Screen.theme-crt #launchpad_input {
@@ -197,6 +226,9 @@ Screen.theme-sakura #launchpad_root {
 Screen.theme-sakura #launchpad_menu {
     background: #281522;
     border: round #5b2a4a;
+    scrollbar-background: #281522;
+    scrollbar-color: #5b2a4a;
+    scrollbar-corner-color: #281522;
 }
 
 Screen.theme-sakura #launchpad_input {

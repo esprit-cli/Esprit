@@ -509,7 +509,7 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
         if message:
             status_widget.update(Text(message, style=Style(color=theme.status)))
         else:
-            status_widget.update("")
+            status_widget.update(Text(" ", style=Style(color=theme.status)))
 
     def _set_view(self, view: str, push: bool = True) -> None:  # noqa: PLR0915
         if push and self._view != view:
@@ -664,7 +664,7 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
         )
 
         if not providers_sorted:
-            entries.append(_MenuEntry("info:no_connected_providers", "  No connected providers", "open Provider Config"))
+            entries.append(_MenuEntry("info:no_connected_providers", "No connected providers", "open Provider Config"))
             entries.append(_MenuEntry("back", "\u2190 Back"))
             return entries
 
@@ -696,7 +696,7 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
                 status_hint = f"[{badge}] public"
             entries.append(_MenuEntry(
                 f"separator:{provider_id}",
-                f"  \u2713 {label}",
+                f"\u2713 {label}",
                 status_hint,
             ))
 
@@ -705,7 +705,7 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
                 marker = "\u25cf" if full_model == current else "\u25cb"
                 entries.append(_MenuEntry(
                     f"model:{full_model}",
-                    f"    {marker} {model_name}",
+                    f"{marker} {model_name}",
                     badge,
                 ))
 
@@ -843,11 +843,11 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
         if providers:
             for idx, (name, auth_type, account) in enumerate(providers, start=1):
                 entries.append(
-                    _MenuEntry(f"info:provider:{idx}", f"  {name}", f"{auth_type} · {account}")
+                    _MenuEntry(f"info:provider:{idx}", f"{name}", f"{auth_type} · {account}")
                 )
         else:
             entries.append(
-                _MenuEntry("info:no_provider", "  No provider configured", "open Provider Config")
+                _MenuEntry("info:no_provider", "No provider configured", "open Provider Config")
             )
 
         model_name = Config.get("esprit_llm")
@@ -941,13 +941,13 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
         title_widget = self.query_one("#launchpad_title", Static)
         if self._current_title:
             title_widget.update(Text(self._current_title, style=Style(color=theme.accent, bold=True)))
-            title_widget.display = True
         else:
-            title_widget.display = False
+            title_widget.update(" ")
+        title_widget.display = True
 
         # Hint
         self.query_one("#launchpad_hint", Static).update(
-            Text(self._current_hint, style=Style(color=theme.menu_hint, italic=True))
+            Text(self._current_hint or " ", style=Style(color=theme.menu_hint, italic=True))
         )
 
         # Menu
@@ -957,7 +957,7 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
         theme = self._active_theme()
         menu_widget = self.query_one("#launchpad_menu", Static)
         if not self._current_entries:
-            menu_widget.update("")
+            menu_widget.update(" ")
             return
 
         menu_text = Text()
@@ -965,23 +965,25 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
             is_selected = idx == self.selected_index
             is_separator = entry.key.startswith("separator:")
             is_info = entry.key.startswith("info:")
+            label = entry.label.strip()
 
             if is_separator:
                 # Provider group header — not selectable
-                menu_text.append(entry.label, style=Style(color=theme.separator, bold=True))
+                menu_text.append("  ", style=Style(color=theme.separator, bold=True))
+                menu_text.append(label, style=Style(color=theme.separator, bold=True))
                 if entry.hint:
                     menu_text.append(f"  {entry.hint}", style=Style(color=theme.menu_hint))
             elif is_info:
                 menu_text.append("  ", style=Style(color=theme.info))
-                menu_text.append(entry.label, style=Style(color=theme.info))
+                menu_text.append(label, style=Style(color=theme.info))
                 if entry.hint:
                     menu_text.append(f"  {entry.hint}", style=Style(color=theme.menu_hint))
             elif is_selected:
-                prefix = "\u276f "
+                prefix = "> "
                 label_style = Style(color=theme.accent, bold=True)
                 hint_style = Style(color=theme.selected_hint)
                 menu_text.append(prefix, style=label_style)
-                menu_text.append(entry.label, style=label_style)
+                menu_text.append(label, style=label_style)
                 if entry.hint:
                     menu_text.append(f"  {entry.hint}", style=hint_style)
             else:
@@ -989,7 +991,7 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
                 label_style = Style(color=theme.menu_label)
                 hint_style = Style(color=theme.menu_hint)
                 menu_text.append(prefix, style=label_style)
-                menu_text.append(entry.label, style=label_style)
+                menu_text.append(label, style=label_style)
                 if entry.hint:
                     menu_text.append(f"  {entry.hint}", style=hint_style)
 
