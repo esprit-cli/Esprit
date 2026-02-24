@@ -48,6 +48,23 @@ function buildAssetName(version, target) {
   return `esprit-${version}-${target}${ext}`;
 }
 
+async function fetchLatestReleaseVersion() {
+  const releasesUrl = `https://api.github.com/repos/${repo}/releases/latest`;
+  const response = await fetch(releasesUrl, {
+    headers: { Accept: "application/vnd.github+json" },
+  });
+  if (!response.ok) {
+    throw new Error(`Failed to resolve latest release (${response.status})`);
+  }
+  const payload = await response.json();
+  const tagName = typeof payload.tag_name === "string" ? payload.tag_name : "";
+  const version = tagName.replace(/^v/, "").trim();
+  if (!version) {
+    throw new Error("Latest release is missing a valid tag_name");
+  }
+  return version;
+}
+
 async function downloadFile(url, destPath) {
   const response = await fetch(url);
   if (!response.ok) {
@@ -124,19 +141,47 @@ function warmSandboxImage() {
 
 async function installBinary() {
   const pkg = JSON.parse(await fs.readFile(packageJsonPath, "utf8"));
-  const version = process.env.ESPRIT_VERSION || pkg.version;
+  const requestedVersion = process.env.ESPRIT_VERSION || pkg.version;
   const { target } = getTarget();
-  const assetName = buildAssetName(version, target);
-  const downloadUrl = `https://github.com/${repo}/releases/download/v${version}/${assetName}`;
 
   const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "esprit-npm-"));
-  const archivePath = path.join(tempRoot, assetName);
   const extractDir = path.join(tempRoot, "extract");
   await ensureDir(extractDir);
 
   try {
+    let version = requestedVersion;
+    let assetName = buildAssetName(version, target);
+    let archivePath = path.join(tempRoot, assetName);
+    let downloadUrl = `https://github.com/${repo}/releases/download/v${version}/${assetName}`;
+
     process.stdout.write(`[esprit] downloading ${assetName}\n`);
-    await downloadFile(downloadUrl, archivePath);
+    try {
+      await downloadFile(downloadUrl, archivePath);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const missingAsset = message.includes("Download failed (404)");
+      const explicitVersionRequested = Boolean(process.env.ESPRIT_VERSION);
+      if (!missingAsset || explicitVersionRequested) {
+        throw error;
+      }
+
+      const latestVersion = await fetchLatestReleaseVersion();
+      if (latestVersion === version) {
+        throw error;
+      }
+
+      version = latestVersion;
+      assetName = buildAssetName(version, target);
+      archivePath = path.join(tempRoot, assetName);
+      downloadUrl = `https://github.com/${repo}/releases/download/v${version}/${assetName}`;
+
+      process.stdout.write(
+        `[esprit] release v${requestedVersion} not found, retrying with latest v${version}\n`,
+      );
+      process.stdout.write(`[esprit] downloading ${assetName}\n`);
+      await downloadFile(downloadUrl, archivePath);
+    }
+
     extractArchive(archivePath, extractDir);
 
     const binaryName = target.startsWith("windows-") ? "esprit.exe" : "esprit";
