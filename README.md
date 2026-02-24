@@ -24,7 +24,7 @@ brew install esprit
 ### Option 3: npm
 
 ```bash
-npm install -g esprit-cli@latest
+npm install -g github:improdead/Esprit
 ```
 
 ### Option 4: From Source
