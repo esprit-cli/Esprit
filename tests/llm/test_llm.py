@@ -114,6 +114,22 @@ class TestExtractNativeToolCalls:
 
 
 class TestSupportsNativeToolCalling:
+    def test_esprit_model_skips_litellm_probe(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        llm = LLM.__new__(LLM)
+        llm.config = SimpleNamespace(model_name="esprit/default")
+        monkeypatch.setattr(LLM, "_is_antigravity", lambda self: False)
+
+        def _fail_probe(*_args, **_kwargs):  # noqa: ANN002
+            raise AssertionError("supports_function_calling should not be called for esprit/* models")
+
+        monkeypatch.setattr(
+            "esprit.llm.llm.litellm.supports_function_calling",
+            _fail_probe,
+            raising=False,
+        )
+
+        assert llm.supports_native_tool_calling() is False
+
     def test_returns_true_for_antigravity_models(self, monkeypatch: pytest.MonkeyPatch) -> None:
         llm = LLM.__new__(LLM)
         llm.config = SimpleNamespace(model_name="antigravity/claude-sonnet-4-5")
@@ -132,6 +148,19 @@ class TestSupportsNativeToolCalling:
         )
 
         assert llm.supports_native_tool_calling() is False
+
+
+class TestSupportsReasoning:
+    def test_esprit_model_bypasses_litellm_probe(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        llm = LLM.__new__(LLM)
+        llm.config = SimpleNamespace(model_name="esprit/default")
+
+        def _fail_probe(*_args, **_kwargs):  # noqa: ANN002
+            raise AssertionError("supports_reasoning should not be called for esprit/* models")
+
+        monkeypatch.setattr("esprit.llm.llm.supports_reasoning", _fail_probe)
+
+        assert llm._supports_reasoning() is True
 
 
 class TestSystemPromptToolGating:

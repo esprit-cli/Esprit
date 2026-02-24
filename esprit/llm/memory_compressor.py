@@ -47,6 +47,16 @@ _TOKEN_COUNTER_MAP: dict[str, str] = {
 def _resolve_model_for_counting(model: str) -> str:
     """Resolve Antigravity model names to litellm-compatible names for token counting."""
     mapped = _TOKEN_COUNTER_MAP.get(model, model)
+    mapped_lower = mapped.lower()
+    if mapped_lower.startswith("esprit/"):
+        # Esprit subscription aliases route to Bedrock models that LiteLLM
+        # token_counter cannot resolve directly. Use a stable Claude tokenizer
+        # approximation to avoid noisy provider errors on every count.
+        return "anthropic/claude-3-5-haiku-latest"
+    if mapped_lower.startswith("bedrock/"):
+        # Token counting for Bedrock model IDs can also trigger provider
+        # resolution noise in LiteLLM; use the same stable approximation.
+        return "anthropic/claude-3-5-haiku-latest"
     return to_litellm_model_name(mapped) or mapped
 
 SUMMARY_PROMPT_TEMPLATE = """You are an agent performing context

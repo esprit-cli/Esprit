@@ -37,3 +37,14 @@ def test_summarize_messages_openai_oauth_sets_store_false(monkeypatch) -> None:
     assert result["role"] == "assistant"
     assert captured["store"] is False
     assert captured["extra_body"]["store"] is False
+
+
+def test_resolve_model_for_counting_maps_esprit_alias() -> None:
+    assert mc._resolve_model_for_counting("esprit/default") == "anthropic/claude-3-5-haiku-latest"
+
+
+def test_resolve_model_for_counting_maps_bedrock_alias() -> None:
+    assert (
+        mc._resolve_model_for_counting("bedrock/us.anthropic.claude-haiku-4-5-20251001-v1:0")
+        == "anthropic/claude-3-5-haiku-latest"
+    )

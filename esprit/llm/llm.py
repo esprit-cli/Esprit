@@ -202,6 +202,11 @@ class LLM:
         if not self.config.model_name:
             return False
 
+        # Esprit subscription models currently use XML tool-calling prompts via
+        # the cloud proxy response path, so skip LiteLLM capability probing.
+        if self._is_esprit_subscription_model():
+            return False
+
         if self._is_antigravity():
             return True
 
@@ -1294,6 +1299,11 @@ class LLM:
             return False
 
     def _supports_reasoning(self) -> bool:
+        # Esprit subscription models are routed via our cloud proxy and should
+        # bypass LiteLLM capability probes (they emit noisy provider warnings
+        # for the esprit/* alias in non-interactive terminals).
+        if self._is_esprit_subscription_model():
+            return True
         try:
             return bool(supports_reasoning(model=self.config.model_name))
         except Exception:  # noqa: BLE001
