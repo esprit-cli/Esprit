@@ -3,6 +3,7 @@ import json
 import logging
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
+from types import SimpleNamespace
 from typing import Any
 
 import httpx
@@ -252,6 +253,11 @@ class LLM:
                 attempt += 1
 
     async def _stream(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None) -> AsyncIterator[LLMResponse]:
+        if self._is_esprit_subscription_model():
+            async for response in self._stream_esprit_proxy(messages, tools=tools):
+                yield response
+            return
+
         accumulated = ""
         chunks: list[Any] = []
         done_streaming = 0
@@ -298,6 +304,148 @@ class LLM:
                 tool_invocations=parse_tool_invocations(accumulated),
                 thinking_blocks=self._extract_thinking(chunks),
             )
+
+    async def _stream_esprit_proxy(
+        self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None
+    ) -> AsyncIterator[LLMResponse]:
+        """Call Esprit subscription proxy directly (no LiteLLM URL rewriting)."""
+        if not self.config.model_name:
+            raise LLMRequestFailedError("LLM request failed: Esprit model not configured")
+
+        from esprit.providers.esprit_subs import (
+            LLM_PROXY_URL,
+            _load_esprit_credentials,
+            resolve_bedrock_model,
+        )
+
+        bare_model = self.config.model_name.split("/", 1)[1]
+        bedrock_model = resolve_bedrock_model(bare_model)
+        credentials = _load_esprit_credentials()
+
+        if not credentials or not credentials.access_token:
+            raise LLMRequestFailedError(
+                "Not logged in to Esprit. Run 'esprit provider login esprit' first.",
+                status_code=401,
+            )
+
+        request_body: dict[str, Any] = {
+            "model": bedrock_model,
+            "messages": messages,
+            "stream": False,
+        }
+        if tools:
+            request_body["tools"] = tools
+        if self._supports_reasoning():
+            request_body["reasoning_effort"] = self._reasoning_effort
+
+        headers = {
+            "Authorization": f"Bearer {credentials.access_token}",
+            "X-Esprit-Provider": "bedrock",
+            "X-Esprit-Model": bedrock_model,
+            "Content-Type": "application/json",
+        }
+
+        self._total_stats.requests += 1
+
+        try:
+            async with httpx.AsyncClient(timeout=self.config.timeout) as client:
+                response = await client.post(LLM_PROXY_URL, headers=headers, json=request_body)
+        except httpx.HTTPError as e:
+            raise LLMRequestFailedError(
+                "LLM request failed: Esprit proxy request failed",
+                details=str(e),
+            ) from e
+
+        if response.status_code >= 400:
+            raise LLMRequestFailedError(
+                f"LLM request failed: Esprit proxy returned HTTP {response.status_code}",
+                details=response.text.strip() or "Empty error response",
+                status_code=response.status_code,
+            )
+
+        try:
+            payload = response.json()
+        except ValueError as e:
+            raise LLMRequestFailedError(
+                "LLM request failed: invalid Esprit proxy response",
+                details=response.text.strip() or "Response body is not valid JSON",
+            ) from e
+
+        response_obj = self._to_namespace(payload)
+        self._update_usage_stats(response_obj)
+
+        native_tool_calls = self._extract_native_tool_calls(response_obj)
+        thinking_blocks = self._extract_thinking_from_payload(payload)
+        content = self._extract_content_from_payload(payload)
+        normalized_content = fix_incomplete_tool_call(_truncate_to_first_function(content))
+
+        yield LLMResponse(
+            content=normalized_content,
+            tool_invocations=native_tool_calls or parse_tool_invocations(normalized_content),
+            thinking_blocks=thinking_blocks,
+        )
+
+    def _is_esprit_subscription_model(self) -> bool:
+        return bool(self.config.model_name and self.config.model_name.lower().startswith("esprit/"))
+
+    def _extract_content_from_payload(self, payload: Any) -> str:
+        if not isinstance(payload, dict):
+            return ""
+
+        choices = payload.get("choices")
+        if not isinstance(choices, list) or not choices:
+            return ""
+
+        first_choice = choices[0]
+        if not isinstance(first_choice, dict):
+            return ""
+
+        message = first_choice.get("message")
+        if not isinstance(message, dict):
+            return ""
+
+        content = message.get("content", "")
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            parts: list[str] = []
+            for item in content:
+                if not isinstance(item, dict):
+                    continue
+                text = item.get("text")
+                if isinstance(text, str):
+                    parts.append(text)
+            return "".join(parts)
+        return ""
+
+    def _extract_thinking_from_payload(self, payload: Any) -> list[dict[str, Any]] | None:
+        if not isinstance(payload, dict):
+            return None
+
+        choices = payload.get("choices")
+        if not isinstance(choices, list) or not choices:
+            return None
+
+        first_choice = choices[0]
+        if not isinstance(first_choice, dict):
+            return None
+
+        message = first_choice.get("message")
+        if not isinstance(message, dict):
+            return None
+
+        thinking_blocks = message.get("thinking_blocks")
+        if isinstance(thinking_blocks, list):
+            normalized = [b for b in thinking_blocks if isinstance(b, dict)]
+            return normalized or None
+        return None
+
+    def _to_namespace(self, value: Any) -> Any:
+        if isinstance(value, dict):
+            return SimpleNamespace(**{k: self._to_namespace(v) for k, v in value.items()})
+        if isinstance(value, list):
+            return [self._to_namespace(item) for item in value]
+        return value
 
     async def _stream_antigravity(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None) -> AsyncIterator[LLMResponse]:
         """Stream responses from the Antigravity Cloud Code API directly."""
