@@ -203,9 +203,10 @@ class LLM:
             return False
 
         # Esprit subscription models currently use XML tool-calling prompts via
-        # the cloud proxy response path, so skip LiteLLM capability probing.
+        # the cloud proxy response path, so skip LiteLLM capability probing and
+        # enable native tool-calling.
         if self._is_esprit_subscription_model():
-            return False
+            return True
 
         if self._is_antigravity():
             return True

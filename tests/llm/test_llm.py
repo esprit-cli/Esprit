@@ -128,7 +128,7 @@ class TestSupportsNativeToolCalling:
             raising=False,
         )
 
-        assert llm.supports_native_tool_calling() is False
+        assert llm.supports_native_tool_calling() is True
 
     def test_returns_true_for_antigravity_models(self, monkeypatch: pytest.MonkeyPatch) -> None:
         llm = LLM.__new__(LLM)
