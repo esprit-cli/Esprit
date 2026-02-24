@@ -24,6 +24,17 @@ SAMPLE_TOOL_XML = '''
 </tool>
 '''
 
+SAMPLE_LIST_PARAM_XML = '''
+<tool name="list_tool">
+  <description>List tool.</description>
+  <parameters>
+    <parameter name="allowlist" type="list" required="false">
+      <description>Allowlist patterns.</description>
+    </parameter>
+  </parameters>
+</tool>
+'''
+
 
 class TestXmlSchemaConversion:
     def test_converts_schema_with_examples_and_unescaped_ampersand(self) -> None:
@@ -55,6 +66,13 @@ class TestXmlSchemaConversion:
         assert schema is not None
         assert schema["function"]["description"] == "Details-only description."
 
+    def test_array_parameters_include_items_schema(self) -> None:
+        schema = _xml_to_json_schema("list_tool", SAMPLE_LIST_PARAM_XML)
+        assert schema is not None
+        allowlist = schema["function"]["parameters"]["properties"]["allowlist"]
+        assert allowlist["type"] == "array"
+        assert allowlist["items"] == {"type": "string"}
+
 
 class TestParamSchemaParsing:
     def test_extracts_parameters_from_schema_with_examples(self) -> None:
@@ -71,3 +89,10 @@ class TestToolJsonExport:
         json_names = {tool["function"]["name"] for tool in get_tools_json()}
 
         assert json_names == tool_names
+
+    def test_all_array_properties_have_items(self) -> None:
+        for tool in get_tools_json():
+            properties = tool["function"]["parameters"].get("properties", {})
+            for schema in properties.values():
+                if isinstance(schema, dict) and schema.get("type") == "array":
+                    assert "items" in schema

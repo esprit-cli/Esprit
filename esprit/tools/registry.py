@@ -165,7 +165,13 @@ def _xml_to_json_schema(tool_name: str, xml_string: str) -> dict[str, Any] | Non
         json_type = _XML_TYPE_TO_JSON.get(param_type, "string")
         param_desc = param.get("description", "")
 
-        properties[param_name] = {"type": json_type, "description": param_desc}
+        param_schema: dict[str, Any] = {"type": json_type, "description": param_desc}
+        if json_type == "array":
+            # OpenAI-compatible function schemas require explicit `items` for arrays.
+            # XML `type="list"` in our tool schemas currently represents list[str].
+            param_schema["items"] = {"type": "string"}
+
+        properties[param_name] = param_schema
 
         if param.get("required", "false").lower() == "true":
             required.append(param_name)
