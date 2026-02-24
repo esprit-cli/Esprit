@@ -7,7 +7,7 @@ from collections import defaultdict
 from typing import Dict, List
 
 import httpx
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, Request, status
 from pydantic import BaseModel
 from supabase import create_client
 
@@ -27,7 +27,7 @@ from app.models.schemas import (
     ScanLogsResponse,
     UsageResponse,
 )
-from app.services.llm_service import llm_service
+from app.services.llm_service import LLMServiceError, llm_service
 from app.services.sandbox_service import sandbox_service
 from app.services.usage_service import usage_service
 
@@ -213,11 +213,12 @@ async def destroy_sandbox(
 # LLM Proxy endpoints
 @router.post("/llm/generate", response_model=LLMGenerateResponse)
 async def generate_llm_response(
-    request: LLMGenerateRequest,
+    payload: LLMGenerateRequest,
     user: CurrentUser,
+    raw_request: Request,
 ):
     """
-    Proxy LLM request using our API key.
+    Proxy LLM request through Esprit's Bedrock-backed cloud models.
 
     This allows users to run scans without needing their own API keys.
     """
@@ -229,7 +230,17 @@ async def generate_llm_response(
             detail="Token quota exceeded. Upgrade your plan for more tokens.",
         )
 
-    result = await llm_service.generate(request, user.sub)
+    provider_hint = raw_request.headers.get("X-Esprit-Provider")
+    model_hint = raw_request.headers.get("X-Esprit-Model")
+    try:
+        result = await llm_service.generate(
+            payload,
+            user.sub,
+            provider_hint=provider_hint,
+            model_hint=model_hint,
+        )
+    except LLMServiceError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
 
     # Track token usage
     await usage_service.add_tokens_used(user.sub, result.tokens_used)
