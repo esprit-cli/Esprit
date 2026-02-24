@@ -4,18 +4,18 @@ Authentication utilities for validating Supabase JWT tokens.
 
 from typing import Annotated
 
+import structlog
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from jose import JWTError, jwt
 from pydantic import BaseModel
+from supabase import create_client
 
 from app.core.config import get_settings
 
 settings = get_settings()
+logger = structlog.get_logger()
 
-# Supabase JWT secret is derived from the project
-# In production, get this from Supabase dashboard -> Settings -> API -> JWT Secret
-SUPABASE_JWT_SECRET = settings.supabase_service_key.split(".")[1] if settings.supabase_service_key else ""
+supabase = create_client(settings.supabase_url, settings.supabase_service_key)
 
 security = HTTPBearer()
 
@@ -32,38 +32,40 @@ class TokenPayload(BaseModel):
 async def get_current_user(
     credentials: Annotated[HTTPAuthorizationCredentials, Depends(security)],
 ) -> TokenPayload:
-    """
-    Validate JWT token and return user payload.
-
-    In production, this should verify against Supabase's JWT secret.
-    """
-    token = credentials.credentials
-
-    try:
-        # For development, we'll decode without verification
-        # In production, use proper JWT verification with Supabase
-        payload = jwt.decode(
-            token,
-            key="",  # Not used when verify_signature is False
-            algorithms=["HS256", "RS256"],
-            options={"verify_signature": False, "verify_exp": False, "verify_aud": False},
-        )
-
-        return TokenPayload(
-            sub=payload.get("sub", ""),
-            email=payload.get("email"),
-            role=payload.get("role", "authenticated"),
-            exp=payload.get("exp", 0),
-        )
-    except JWTError as e:
-        import structlog
-        logger = structlog.get_logger()
-        logger.error("JWT decode error", error=str(e), token_prefix=token[:50] if token else None)
+    """Validate JWT token by introspecting it with Supabase Auth."""
+    token = credentials.credentials.strip()
+    if not token:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=f"Invalid authentication token: {str(e)}",
+            detail="Invalid authentication token",
             headers={"WWW-Authenticate": "Bearer"},
-        ) from e
+        )
+
+    try:
+        user_response = supabase.auth.get_user(jwt=token)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Supabase token validation failed", error=str(exc))
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid authentication token",
+            headers={"WWW-Authenticate": "Bearer"},
+        ) from exc
+
+    user = getattr(user_response, "user", None)
+    user_id = getattr(user, "id", None)
+    if not user_id:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid authentication token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    return TokenPayload(
+        sub=str(user_id),
+        email=getattr(user, "email", None),
+        role="authenticated",
+        exp=0,
+    )
 
 
 CurrentUser = Annotated[TokenPayload, Depends(get_current_user)]

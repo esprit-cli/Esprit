@@ -4,6 +4,7 @@ Usage tracking and rate limiting service.
 Tracks scan counts and token usage per user per month.
 """
 
+import hmac
 from datetime import datetime, timezone
 
 import structlog
@@ -42,6 +43,15 @@ class UsageService:
     def _get_current_month(self) -> str:
         """Get current month in YYYY-MM format."""
         return datetime.now(tz=timezone.utc).strftime("%Y-%m")
+
+    def _is_quota_bypass_allowed(self, bypass_code: str | None) -> bool:
+        """Validate emergency bypass code when explicitly enabled."""
+        if not settings.allow_quota_bypass:
+            return False
+        expected_code = settings.quota_bypass_code.strip()
+        if not expected_code or not bypass_code:
+            return False
+        return hmac.compare_digest(expected_code, bypass_code)
 
     async def get_user_plan(self, user_id: str) -> str:
         """Get user's current plan."""
@@ -91,16 +101,8 @@ class UsageService:
 
     async def check_quota(self, user_id: str, bypass_code: str | None = None) -> QuotaCheckResponse:
         """Check if user has remaining quota for a new scan."""
-        # Bypass codes for unlimited access
-        VALID_BYPASS_CODES = {
-            "ESPRIT-DEMO-2024",
-            "ESPRIT-INVESTOR-VIP",
-            "ESPRIT-TEAM-INTERNAL",
-            "TRYESPRIT",
-        }
-
-        if bypass_code and bypass_code in VALID_BYPASS_CODES:
-            logger.info("Bypass code used", user_id=user_id, code=bypass_code[:10] + "...")
+        if self._is_quota_bypass_allowed(bypass_code):
+            logger.info("Quota bypass approved", user_id=user_id)
             return QuotaCheckResponse(
                 has_quota=True,
                 scans_remaining=999999,

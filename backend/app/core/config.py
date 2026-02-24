@@ -60,6 +60,10 @@ class Settings(BaseSettings):
     # S3 Configuration (for scan results)
     s3_bucket: str = ""
 
+    # Security Controls
+    allow_quota_bypass: bool = False
+    quota_bypass_code: str = ""
+
     # Plan Limits
     free_scans_per_month: int = 0  # No free tier - subscription required
     free_tokens_per_month: int = 0
