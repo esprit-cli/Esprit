@@ -4,10 +4,13 @@ API routes for the Esprit Backend service.
 
 from datetime import datetime, timezone, timedelta
 from collections import defaultdict
-from typing import Dict, List
+import json
+from typing import Any, Dict, List
+from uuid import uuid4
 
 import httpx
 from fastapi import APIRouter, HTTPException, Request, status
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from supabase import create_client
 
@@ -246,6 +249,138 @@ async def generate_llm_response(
     await usage_service.add_tokens_used(user.sub, result.tokens_used)
 
     return result
+
+
+def _normalize_openai_compat_payload(payload: dict[str, Any]) -> LLMGenerateRequest:
+    model = payload.get("model")
+    if isinstance(model, str) and "/" in model:
+        model = model.split("/", 1)[1]
+
+    max_tokens = payload.get("max_tokens", payload.get("max_completion_tokens", 4096))
+    try:
+        max_tokens_int = int(max_tokens)
+    except (TypeError, ValueError):
+        max_tokens_int = 4096
+
+    temperature = payload.get("temperature", 0.7)
+    try:
+        temperature_float = float(temperature)
+    except (TypeError, ValueError):
+        temperature_float = 0.7
+
+    tools = payload.get("tools")
+    if not isinstance(tools, list):
+        tools = None
+
+    reasoning_effort = payload.get("reasoning_effort")
+    if not isinstance(reasoning_effort, str):
+        reasoning_effort = None
+
+    messages = payload.get("messages")
+    if not isinstance(messages, list) or not messages:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Messages cannot be empty.",
+        )
+
+    return LLMGenerateRequest(
+        messages=messages,
+        model=model if isinstance(model, str) else None,
+        temperature=temperature_float,
+        max_tokens=max_tokens_int,
+        scan_id=payload.get("scan_id") if isinstance(payload.get("scan_id"), str) else None,
+        tools=tools,
+        reasoning_effort=reasoning_effort,
+    )
+
+
+def _format_openai_compat_response(result: LLMGenerateResponse) -> dict[str, Any]:
+    message: dict[str, Any] = {
+        "role": "assistant",
+        "content": result.content,
+    }
+    if result.tool_calls:
+        message["tool_calls"] = result.tool_calls
+
+    return {
+        "id": f"chatcmpl-{uuid4().hex}",
+        "object": "chat.completion",
+        "created": int(datetime.now(tz=timezone.utc).timestamp()),
+        "model": result.model,
+        "choices": [
+            {
+                "index": 0,
+                "message": message,
+                "finish_reason": result.finish_reason or "stop",
+            }
+        ],
+        "usage": {
+            "prompt_tokens": 0,
+            "completion_tokens": result.tokens_used,
+            "total_tokens": result.tokens_used,
+        },
+    }
+
+
+@router.post("/llm/generate/chat/completions")
+async def generate_llm_chat_completions_compat(
+    payload: dict[str, Any],
+    user: CurrentUser,
+    raw_request: Request,
+):
+    """
+    Backward-compatible OpenAI chat-completions surface for older CLIs.
+
+    Older Esprit binaries use LiteLLM OpenAI routing against the cloud proxy base URL,
+    which appends /chat/completions. This shim maps that shape to /llm/generate.
+    """
+    llm_payload = _normalize_openai_compat_payload(payload)
+    stream_requested = bool(payload.get("stream"))
+
+    quota = await usage_service.check_quota(user.sub)
+    if quota.tokens_remaining <= 0:
+        raise HTTPException(
+            status_code=status.HTTP_402_PAYMENT_REQUIRED,
+            detail="Token quota exceeded. Upgrade your plan for more tokens.",
+        )
+
+    provider_hint = raw_request.headers.get("X-Esprit-Provider")
+    model_hint = raw_request.headers.get("X-Esprit-Model")
+    try:
+        result = await llm_service.generate(
+            llm_payload,
+            user.sub,
+            provider_hint=provider_hint,
+            model_hint=model_hint,
+        )
+    except LLMServiceError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+
+    await usage_service.add_tokens_used(user.sub, result.tokens_used)
+    completion = _format_openai_compat_response(result)
+
+    if not stream_requested:
+        return completion
+
+    chunk_payload = {
+        "id": completion["id"],
+        "object": "chat.completion.chunk",
+        "created": completion["created"],
+        "model": completion["model"],
+        "choices": [
+            {
+                "index": 0,
+                "delta": completion["choices"][0]["message"],
+                "finish_reason": completion["choices"][0]["finish_reason"],
+            }
+        ],
+    }
+
+    async def _stream() -> Any:
+        yield f"data: {json.dumps(chunk_payload)}\n\n"
+        yield "data: [DONE]\n\n"
+
+    return StreamingResponse(_stream(), media_type="text/event-stream")
 
 
 # Usage endpoints
