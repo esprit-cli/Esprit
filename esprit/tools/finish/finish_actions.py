@@ -5,10 +5,11 @@ from esprit.tools.registry import register_tool
 
 logger = logging.getLogger(__name__)
 
-# Track how many times finish_scan has been bounced for remediation.
+# Track how many times finish_scan has been bounced for remediation,
+# keyed by root agent_id so separate scans don't leak state.
 # After this many bounces, allow finish_scan through with a warning.
 _MAX_REMEDIATION_BOUNCES = 2
-_remediation_bounce_count: int = 0
+_remediation_bounce_counts: dict[str, int] = {}
 
 
 def _validate_root_agent(agent_state: Any) -> dict[str, Any] | None:
@@ -90,11 +91,21 @@ def _check_active_agents(agent_state: Any = None) -> dict[str, Any] | None:
 
 
 def _check_remediation_completeness(agent_state: Any) -> dict[str, Any] | None:
-    """In white-box mode, check that reported vulnerabilities have fixing agents."""
-    global _remediation_bounce_count  # noqa: PLW0603
+    """In white-box mode, check that reported vulnerabilities have fixing agents.
 
+    Coverage logic:
+    - fixing_agents >= vuln_count  → pass (full coverage)
+    - 0 < fixing_agents < vuln_count → bounce asking to cover remaining vulns
+    - fixing_agents == 0            → bounce asking to spawn any fixing agents
+
+    A per-scan bounce counter (keyed by agent_id) prevents infinite loops;
+    after ``_MAX_REMEDIATION_BOUNCES`` bounces the gate allows through with
+    a warning regardless of coverage.
+    """
     if not agent_state or not getattr(agent_state, "is_whitebox", False):
         return None
+
+    scan_key = getattr(agent_state, "agent_id", None) or ""
 
     try:
         from esprit.telemetry.tracer import get_global_tracer
@@ -116,35 +127,53 @@ def _check_remediation_completeness(agent_state: Any) -> dict[str, Any] | None:
             if "fix" in name and status == "finished":
                 fixing_agents.append(node)
 
-        if fixing_agents:
-            # At least some fixing agents ran — allow finish
+        fix_count = len(fixing_agents)
+
+        # Full coverage — pass silently
+        if fix_count >= vuln_count:
             return None
 
-        # No fixing agents found — bounce unless we've hit the limit
-        _remediation_bounce_count += 1
-        if _remediation_bounce_count > _MAX_REMEDIATION_BOUNCES:
+        # Partial or zero coverage — bounce unless limit reached
+        _remediation_bounce_counts[scan_key] = _remediation_bounce_counts.get(scan_key, 0) + 1
+        bounce = _remediation_bounce_counts[scan_key]
+
+        if bounce > _MAX_REMEDIATION_BOUNCES:
             logger.info(
-                "Remediation bounce limit reached (%d), allowing finish_scan",
-                _remediation_bounce_count,
+                "Remediation bounce limit reached (%d) for %s, allowing finish_scan",
+                bounce,
+                scan_key,
             )
             return None
+
+        unfixed = vuln_count - fix_count
+        if fix_count == 0:
+            detail = (
+                f"White-box scan has {vuln_count} reported vulnerabilities but no "
+                f"Fixing Agents have been spawned. In white-box mode, you MUST spawn "
+                f"Fixing Agents (skills=\"remediation,<vuln_type>\") to patch the "
+                f"vulnerable code before finishing the scan."
+            )
+        else:
+            detail = (
+                f"White-box scan has {vuln_count} reported vulnerabilities but only "
+                f"{fix_count} Fixing Agent(s) completed. {unfixed} vulnerability(ies) "
+                f"may still be unpatched. Spawn additional Fixing Agents or call "
+                f"finish_scan again if the remaining issues are unfixable."
+            )
 
         return {
             "success": False,
             "error": "remediation_incomplete",
-            "message": (
-                f"White-box scan has {vuln_count} reported vulnerabilities but no "
-                f"Fixing Agents have been spawned. In white-box mode, you MUST spawn "
-                f"Fixing Agents (with skills: [remediation, <vuln_type>]) to patch the "
-                f"vulnerable code before finishing the scan."
-            ),
+            "message": detail,
             "suggestions": [
                 'Spawn a Fixing Agent: create_agent(name="<Vuln> Fixing Agent", '
                 'task="Fix <vuln> in <file>", skills="remediation,<vuln_type>")',
                 "Each Fixing Agent should use str_replace_editor to patch the code",
                 "After all Fixing Agents complete, call finish_scan again",
             ],
-            "vulnerabilities_without_fixes": vuln_count,
+            "vulnerabilities_reported": vuln_count,
+            "fixing_agents_completed": fix_count,
+            "vulnerabilities_without_fixes": unfixed,
         }
 
     except (ImportError, AttributeError):
