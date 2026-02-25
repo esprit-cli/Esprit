@@ -119,6 +119,18 @@ def extract_and_save_diffs(sandbox_id: str) -> list[dict[str, object]]:
                     for new_line in str(edit.get("file_text", "")).splitlines():
                         lines.append(f"+{new_line}")
                     lines.append("")
+                elif cmd == "insert":
+                    lines.append(f"--- a{path}")
+                    lines.append(f"+++ b{path}")
+                    new_lines = str(edit.get("new_str", "")).splitlines()
+                    insert_line = edit.get("insert_line")
+                    if isinstance(insert_line, int) and insert_line > 0:
+                        lines.append(
+                            f"@@ -{insert_line},0 +{insert_line},{len(new_lines)} @@"
+                        )
+                    for new_line in new_lines:
+                        lines.append(f"+{new_line}")
+                    lines.append("")
             if lines:
                 patch_content = "\n".join(lines)
                 (patches_dir / "remediation.patch").write_text(patch_content)
