@@ -41,10 +41,9 @@ Screen {
 #launchpad_menu {
     width: 100%;
     height: auto;
-    max-height: 16;
+    max-height: 18;
     padding: 1 2;
-    overflow-y: auto;
-    scrollbar-size-vertical: 1;
+    scrollbar-size-vertical: 0;
 }
 
 #launchpad_input {

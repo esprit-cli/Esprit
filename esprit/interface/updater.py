@@ -76,7 +76,7 @@ def check_for_update(force: bool = False) -> UpdateInfo | None:
                         return UpdateInfo(current, latest, cache.get("release_url", ""))
                     return None  # Cache confirms we're up to date
         except Exception:
-            pass  # Cache unreadable — fall through to network check
+            logging.debug("Cache unreadable — falling through to network check", exc_info=True)
 
     try:
         import httpx

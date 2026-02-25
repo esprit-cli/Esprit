@@ -40,6 +40,7 @@ class Config:
     esprit_image = "improdead/esprit-sandbox:latest"
     esprit_docker_platform = None
     esprit_runtime_backend = "docker"
+    esprit_sandbox_timeout = "60"
     esprit_sandbox_execution_timeout = "120"
     esprit_sandbox_connect_timeout = "10"
 

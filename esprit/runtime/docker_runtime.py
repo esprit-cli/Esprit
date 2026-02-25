@@ -20,14 +20,14 @@ from .runtime import AbstractRuntime, SandboxInfo
 
 
 HOST_GATEWAY_HOSTNAME = "host.docker.internal"
-DOCKER_TIMEOUT = 60
 CONTAINER_TOOL_SERVER_PORT = 48081
 
 
 class DockerRuntime(AbstractRuntime):
     def __init__(self) -> None:
         try:
-            self.client = docker.from_env(timeout=DOCKER_TIMEOUT)
+            docker_timeout = int(Config.get("esprit_sandbox_timeout") or "60")
+            self.client = docker.from_env(timeout=docker_timeout)
         except (DockerException, RequestsConnectionError, RequestsTimeout) as e:
             raise SandboxInitializationError(
                 "Docker is not available",
