@@ -80,6 +80,7 @@ tensorboard/
 
 # Agent execution traces
 strix_runs/
+esprit_runs/
 agent_runs/
 
 # Misc
