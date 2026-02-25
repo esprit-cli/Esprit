@@ -27,6 +27,10 @@ STRIP_PATTERNS = [
     ),
 ]
 
+TRUNCATION_MARKER_RE = re.compile(
+    r"\.\.\.\s*\[.*?truncated.*?\](?:\s*\.\.\.)?"
+)
+
 
 @cache
 def _get_style_colors() -> dict[Any, str]:
@@ -262,6 +266,22 @@ class TerminalRenderer(BaseToolRenderer):
         return any(re.search(pattern, message) for pattern in status_patterns)
 
     @classmethod
+    def _render_output_line(cls, text: Text, line: str) -> None:
+        """Render a single output line, styling truncation markers distinctly."""
+        match = TRUNCATION_MARKER_RE.search(line)
+        if match:
+            before = line[: match.start()]
+            if before.strip():
+                text.append(cls._truncate_line(before), style="dim")
+                text.append("\n  ")
+            text.append(
+                f"⚠ {match.group(0)} (use terminal to see full output)",
+                style="bold #eab308",
+            )
+        else:
+            text.append(cls._truncate_line(line), style="dim")
+
+    @classmethod
     def _format_output(cls, output: str) -> Text:
         text = Text()
         lines = output.splitlines()
@@ -280,20 +300,20 @@ class TerminalRenderer(BaseToolRenderer):
             hidden_count = total_lines - head_count - tail_count
 
         for i, line in enumerate(display_lines):
-            truncated_line = cls._truncate_line(line)
             text.append("  ")
-            text.append(truncated_line, style="dim")
+            cls._render_output_line(text, line)
             if i < len(display_lines) - 1 or truncated:
                 text.append("\n")
 
         if truncated:
-            text.append(f"  ... {hidden_count} lines truncated ...", style="dim italic")
+            text.append(
+                f"  ⚠ ... {hidden_count} lines truncated ...", style="bold #eab308"
+            )
             text.append("\n")
             tail_lines = lines[-tail_count:]
             for i, line in enumerate(tail_lines):
-                truncated_line = cls._truncate_line(line)
                 text.append("  ")
-                text.append(truncated_line, style="dim")
+                cls._render_output_line(text, line)
                 if i < len(tail_lines) - 1:
                     text.append("\n")
 
