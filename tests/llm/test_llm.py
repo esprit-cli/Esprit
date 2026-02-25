@@ -107,8 +107,29 @@ class TestExtractNativeToolCalls:
             }
         ]
 
+    def test_returns_none_when_choices_missing(self) -> None:
+        llm = LLM.__new__(LLM)
+        response = SimpleNamespace(model="esprit/default")
+        assert llm._extract_native_tool_calls(response) is None
+
 
 class TestSupportsNativeToolCalling:
+    def test_esprit_model_skips_litellm_probe(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        llm = LLM.__new__(LLM)
+        llm.config = SimpleNamespace(model_name="esprit/default")
+        monkeypatch.setattr(LLM, "_is_antigravity", lambda self: False)
+
+        def _fail_probe(*_args, **_kwargs):  # noqa: ANN002
+            raise AssertionError("supports_function_calling should not be called for esprit/* models")
+
+        monkeypatch.setattr(
+            "esprit.llm.llm.litellm.supports_function_calling",
+            _fail_probe,
+            raising=False,
+        )
+
+        assert llm.supports_native_tool_calling() is True
+
     def test_returns_true_for_antigravity_models(self, monkeypatch: pytest.MonkeyPatch) -> None:
         llm = LLM.__new__(LLM)
         llm.config = SimpleNamespace(model_name="antigravity/claude-sonnet-4-5")
@@ -127,6 +148,19 @@ class TestSupportsNativeToolCalling:
         )
 
         assert llm.supports_native_tool_calling() is False
+
+
+class TestSupportsReasoning:
+    def test_esprit_model_bypasses_litellm_probe(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        llm = LLM.__new__(LLM)
+        llm.config = SimpleNamespace(model_name="esprit/default")
+
+        def _fail_probe(*_args, **_kwargs):  # noqa: ANN002
+            raise AssertionError("supports_reasoning should not be called for esprit/* models")
+
+        monkeypatch.setattr("esprit.llm.llm.supports_reasoning", _fail_probe)
+
+        assert llm._supports_reasoning() is True
 
 
 class TestSystemPromptToolGating:
@@ -229,6 +263,125 @@ class TestRaiseError:
             llm._raise_error(error)
 
         assert exc.value.status_code == 503
+
+    def test_preserves_llm_request_failed_error_details(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        llm = LLM.__new__(LLM)
+        monkeypatch.setattr("esprit.telemetry.posthog.error", lambda *_args, **_kwargs: None)
+
+        with pytest.raises(LLMRequestFailedError) as exc:
+            llm._raise_error(
+                LLMRequestFailedError(
+                    "LLM request failed: Esprit proxy returned HTTP 500",
+                    details="Internal Server Error [request_id: abc123]",
+                    status_code=500,
+                )
+            )
+
+        assert exc.value.status_code == 500
+        assert exc.value.details == "Internal Server Error [request_id: abc123]"
+
+
+class TestEspritProxyRouting:
+    @pytest.mark.asyncio
+    async def test_stream_uses_esprit_proxy_path(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        llm = LLM.__new__(LLM)
+        llm.config = SimpleNamespace(model_name="esprit/default", timeout=120)
+
+        async def fake_esprit_stream(_messages, tools=None):  # noqa: ANN001
+            _ = tools
+            yield SimpleNamespace(content="ok", tool_invocations=None, thinking_blocks=None)
+
+        async def fail_acompletion(*_args, **_kwargs):  # noqa: ANN002
+            raise AssertionError("acompletion should not be used for esprit/* models")
+
+        monkeypatch.setattr(llm, "_stream_esprit_proxy", fake_esprit_stream)
+        monkeypatch.setattr("esprit.llm.llm.acompletion", fail_acompletion)
+
+        outputs: list[str] = []
+        async for item in llm._stream([{"role": "user", "content": "ping"}]):
+            outputs.append(item.content)
+
+        assert outputs == ["ok"]
+
+    @pytest.mark.asyncio
+    async def test_stream_esprit_proxy_accepts_flat_payload_shape(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        llm = LLM.__new__(LLM)
+        llm.config = SimpleNamespace(model_name="esprit/default", timeout=120)
+        llm._total_stats = SimpleNamespace(
+            requests=0,
+            input_tokens=0,
+            output_tokens=0,
+            cached_tokens=0,
+            cost=0.0,
+            last_input_tokens=0,
+        )
+        llm._reasoning_effort = "high"
+
+        monkeypatch.setattr(LLM, "_supports_reasoning", lambda self: False)
+        monkeypatch.setattr(
+            "esprit.providers.esprit_subs._load_esprit_credentials",
+            lambda: SimpleNamespace(access_token="token"),
+        )
+        monkeypatch.setattr(
+            "esprit.providers.esprit_subs.resolve_bedrock_model",
+            lambda _model: "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+        )
+        monkeypatch.setattr(
+            "esprit.providers.esprit_subs.LLM_PROXY_URL",
+            "https://example.test/api/v1/llm/generate",
+        )
+
+        observed: dict[str, int] = {}
+
+        def capture_usage(self: LLM, response: object) -> None:
+            usage = getattr(response, "usage", None)
+            observed["completion_tokens"] = int(getattr(usage, "completion_tokens", 0) or 0)
+
+        monkeypatch.setattr(LLM, "_update_usage_stats", capture_usage)
+
+        class FakeResponse:
+            status_code = 200
+            text = ""
+
+            @staticmethod
+            def json() -> dict[str, object]:
+                return {
+                    "content": "proxy-flat",
+                    "model": "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+                    "tokens_used": 7,
+                    "finish_reason": "stop",
+                }
+
+        class FakeAsyncClient:
+            def __init__(self, timeout: int):  # noqa: D401
+                _ = timeout
+
+            async def __aenter__(self) -> "FakeAsyncClient":
+                return self
+
+            async def __aexit__(self, _exc_type, _exc, _tb) -> None:  # noqa: ANN001
+                return None
+
+            async def post(
+                self, url: str, headers: dict[str, str], json: dict[str, object]  # noqa: A002
+            ) -> FakeResponse:
+                _ = (url, headers, json)
+                return FakeResponse()
+
+        monkeypatch.setattr("esprit.llm.llm.httpx.AsyncClient", FakeAsyncClient)
+
+        outputs: list[str] = []
+        async for item in llm._stream_esprit_proxy([{"role": "user", "content": "ping"}]):
+            outputs.append(item.content)
+
+        assert outputs == ["proxy-flat"]
+        assert observed["completion_tokens"] == 7
 
 
 class TestStreamIdleTimeout:
