@@ -1,0 +1,474 @@
+---
+title: "Mobile + Autonomous Discovery Implementation"
+description: "Detailed implementation plan for mobile pentesting and hypothesis-driven vulnerability discovery, grounded in Esprit's current web pipeline"
+---
+
+## Purpose
+
+This document defines two implementation tracks:
+
+1. Mobile app pentest support (Android/iOS focused).
+2. Autonomous vulnerability discovery (hypothesis-driven, not only instruction-following).
+
+It starts with a detailed as-is walkthrough of the current web pentest pipeline so design changes stay compatible with existing behavior.
+
+## Current Web Pentest Pipeline (As-Is)
+
+### 1) CLI and Target Intake
+
+Current flow starts in `esprit/interface/main.py`.
+
+- CLI target parsing supports only:
+  - `web_application`
+  - `repository`
+  - `local_code`
+  - `ip_address`
+- Classification logic is in `esprit/interface/utils.py` (`infer_target_type`).
+- Target metadata is normalized into `targets_info`, then workspace subdirs are assigned for repositories/local source.
+- Repository targets are cloned pre-scan.
+
+Result: the scan context is built around web/API and source-repo assets. There is no first-class `mobile_app` target type.
+
+### 2) Runtime Selection and Sandbox Boot
+
+Runtime selection happens before agent execution.
+
+- `cloud` runtime for paid Esprit subscriptions using Esprit models.
+- `docker` runtime otherwise.
+
+Root agent sandbox init happens in `BaseAgent._initialize_sandbox_and_state()`.
+
+For Docker runtime (`esprit/runtime/docker_runtime.py`):
+
+- Reuses one scan container (`esprit-scan-<scan_id>`) across all agents.
+- Starts a tool server in-container.
+- Registers each agent with the tool server.
+- Copies local source directories into `/workspace` once per scan.
+
+### 3) Container Startup and Traffic Interception
+
+`containers/docker-entrypoint.sh` sets up core web testing infrastructure.
+
+- Starts Caido CLI on `127.0.0.1:48080`.
+- Creates and selects a temporary Caido project.
+- Sets system-wide proxy env vars (`http_proxy`, `https_proxy`, etc.) to Caido.
+- Injects trusted CA cert into system/browser trust stores.
+- Starts FastAPI tool server (`esprit.runtime.tool_server`) with auth token.
+
+This is why browser traffic and many command-line HTTP tools are visible through proxy tooling.
+
+### 4) Agent Loop and LLM Tool Calling
+
+`BaseAgent.agent_loop()` is the execution kernel.
+
+Per iteration:
+
+1. Build messages via `LLM._prepare_messages()`:
+   - System prompt (`esprit/agents/EspritAgent/system_prompt.jinja`)
+   - Agent identity block
+   - Compressed conversation history (`MemoryCompressor`)
+2. Generate model output (`LLM.generate()`), using:
+   - Native tool calling when supported, or
+   - XML `<function=...>` fallback parsing.
+3. Append assistant response to state.
+4. Execute tool invocations via `process_tool_invocations()`.
+
+Tool execution routing (`esprit/tools/executor.py`):
+
+- Sandbox tools: proxied to in-container `/execute` endpoint.
+- Non-sandbox tools: execute on host process (for orchestration/reporting).
+
+### 5) Current Web Toolchain
+
+Core tools and behavior:
+
+- `browser_action`:
+  - Playwright Chromium automation.
+  - Per-agent browser isolation keyed by agent id.
+  - Screenshots returned with each state update.
+- Proxy tools (`list_requests`, `view_request`, `repeat_request`, `send_request`, sitemap/scope):
+  - Caido GraphQL queries for captured traffic and sitemap.
+  - Replay and mutate requests through proxy.
+- `terminal_execute`:
+  - Per-agent persistent tmux shell in `/workspace`.
+- `python_action`:
+  - Per-agent persistent IPython session.
+  - Proxy functions preloaded for analysis and replay workflows.
+
+This combination is already a strong web/API pentest substrate.
+
+### 6) Multi-Agent Orchestration
+
+Agent orchestration is local-side (`esprit/tools/agents_graph/agents_graph_actions.py`).
+
+- Root and subagents are represented as graph nodes.
+- `create_agent` runs subagents in threads, with inherited context snapshots.
+- Active agent cap: `MAX_AGENTS = 10`.
+- Subagents complete with `agent_finish`, notifying parent through in-memory message bus.
+- Waiting behavior is explicit via `wait_for_message`.
+
+### 7) Findings, Dedup, and Scan Completion
+
+Reporting path:
+
+- `create_vulnerability_report` validates mandatory fields and CVSS vector params.
+- LLM-based dedupe (`esprit/llm/dedupe.py`) runs against existing tracer reports.
+- Accepted reports are persisted to tracer state and disk (`esprit_runs/<run>/vulnerabilities`).
+
+Completion path:
+
+- Root-only `finish_scan` validates:
+  - required final sections,
+  - no active agents,
+  - white-box remediation completeness (with bounce cap).
+
+### 8) Key Gaps for Requested Goals
+
+For mobile pentest:
+
+- No mobile target type in parser/launchpad/scan config.
+- No mobile-specific tools.
+- Sandbox image lacks mobile reverse/dynamic stack.
+- Prompt and scan modes are web/API centric.
+
+For autonomous discovery:
+
+- No persistent hypothesis queue/state machine.
+- No novelty scoring or explicit exploration budget.
+- No experiment scheduler that turns anomalies into new test campaigns.
+- Autonomy depends mostly on prompt wording, not deterministic control logic.
+
+## Track A: Mobile Pentest Implementation
+
+### Goals
+
+- Add first-class mobile target support for `.apk` and `.ipa` artifacts.
+- Reuse existing web/API tooling for backend attack surface discovered from mobile apps.
+- Keep a safe default: static-first, optional dynamic instrumentation.
+
+### Non-Goals (v1)
+
+- Full iOS runtime bypass automation.
+- Device farm orchestration.
+- App store crawling.
+
+### A1. Target Model and Scan Context
+
+#### Required changes
+
+- `esprit/interface/utils.py`
+  - Extend `infer_target_type`:
+    - `.apk` -> `mobile_app` with `platform=android`
+    - `.ipa` -> `mobile_app` with `platform=ios`
+    - optional directory heuristics for unpacked bundles
+- `esprit/interface/main.py`
+  - Accept and build `targets_info` containing mobile entries.
+- `esprit/interface/launchpad.py`
+  - Add mobile preview text and validation guidance.
+- `esprit/agents/EspritAgent/esprit_agent.py`
+  - Include `Mobile Apps:` section in task description.
+
+#### Target schema proposal
+
+```json
+{
+  "type": "mobile_app",
+  "details": {
+    "target_path": "/absolute/path/app.apk",
+    "platform": "android",
+    "workspace_subdir": "app-mobile"
+  },
+  "original": "/absolute/path/app.apk"
+}
+```
+
+### A2. Source/Artifact Staging in Runtime
+
+Current staging only handles directories (`collect_local_sources` + directory copy).
+
+#### Required changes
+
+- `esprit/interface/utils.py`
+  - Add `collect_local_artifacts()` for files and directories.
+- `esprit/runtime/docker_runtime.py`
+  - Add file copy support (`_copy_local_file_to_container`) for APK/IPA artifacts.
+  - Extend `create_sandbox(..., local_sources=...)` semantics to include artifacts list.
+- `esprit/runtime/cloud_runtime.py`
+  - Mirror payload schema for mobile artifact metadata.
+
+### A3. Sandbox Tooling Profile
+
+#### Required changes (phase-gated)
+
+- `containers/Dockerfile`
+  - Phase 1 (static): `apktool`, `jadx`/`jadx-cli`, `aapt`, `binwalk`, `mitmproxy`, `yq`.
+  - Phase 2 (dynamic Android): `adb`, `frida-tools`, `objection`.
+  - iOS dynamic should remain optional and explicitly gated.
+- `docs/tools/sandbox.mdx`
+  - Document mobile tool availability and caveats.
+
+### A4. New Mobile Tool Module
+
+Add a new tool package `esprit/tools/mobile/` to return structured JSON instead of raw shell text.
+
+#### Proposed tool surface
+
+- `mobile_action(action="static_scan", app_path, platform="auto")`
+  - Outputs permissions, exported components, hardcoded hosts, cert pinning indicators, extracted endpoints.
+- `mobile_action(action="extract_endpoints", app_path)`
+  - Returns normalized endpoint candidates for backend testing.
+- `mobile_action(action="dynamic_prepare", app_path, mode="passive")`
+  - Sets up optional runtime instrumentation plan (no bypass automation in v1).
+
+#### Required wiring
+
+- `esprit/tools/mobile/mobile_actions.py`
+- `esprit/tools/mobile/mobile_actions_schema.xml`
+- `esprit/tools/mobile/__init__.py`
+- `esprit/tools/__init__.py` import path updates.
+
+### A5. Prompt and Skill Extensions
+
+#### Required changes
+
+- `esprit/agents/EspritAgent/system_prompt.jinja`
+  - Add mobile workflow instructions:
+    - static extraction
+    - backend correlation
+    - optional dynamic analysis only when explicitly enabled.
+- New skills under `esprit/skills/mobile/`:
+  - `android_static.md`
+  - `ios_static.md`
+  - `mobile_api_correlation.md`
+- Update scan mode skills (`quick`, `standard`, `deep`) to include mobile-specific phases when mobile targets are present.
+
+### A6. Backend Reuse Strategy (Critical)
+
+Mobile should not be isolated. It should feed the existing web/API pipeline.
+
+Pipeline:
+
+1. Extract endpoints/secrets/auth flows from app artifact.
+2. Convert to prioritized API hypotheses.
+3. Use existing proxy/terminal/python tools for replay/fuzz/validation.
+4. Report via existing `create_vulnerability_report`.
+
+This minimizes net-new code while leveraging mature tooling already in Esprit.
+
+### A7. Testing Plan (Mobile)
+
+#### Unit
+
+- Target parsing tests for APK/IPA paths.
+- Tool parser tests for mobile static extractor output.
+
+#### Integration
+
+- Fixture APK in tests (small sample, deterministic expected outputs).
+- End-to-end scan in docker runtime with mobile target and no crashes.
+
+#### Bench
+
+- Lab apps only:
+  - InsecureBankv2 (Android)
+  - DVIA-v2 (iOS static focus initially)
+
+Acceptance for v1:
+
+- App artifact ingested and staged in sandbox.
+- Endpoint extraction returns structured output.
+- At least one extracted endpoint is tested through existing web/API path automatically.
+- Vulnerability report flow remains unchanged and stable.
+
+### A8. Rollout Plan (Mobile)
+
+- Milestone M1: parsing + staging + static extraction tool.
+- Milestone M2: prompt/skills + endpoint-to-API correlation.
+- Milestone M3: optional Android dynamic hooks.
+- Milestone M4: docs polish and CI coverage.
+
+## Track B: Autonomous Vulnerability Discovery Implementation
+
+### Goals
+
+- Make exploration stateful and hypothesis-driven.
+- Reduce repetitive instruction-following loops.
+- Increase novel, validated findings per scan.
+
+### Non-Goals (v1)
+
+- Fully unsupervised exploit synthesis.
+- Reinforcement learning training pipelines.
+
+### B1. New Discovery State Model
+
+Extend `AgentState` with explicit discovery fields.
+
+#### Proposed fields
+
+- `hypotheses: list[Hypothesis]`
+- `experiments: list[Experiment]`
+- `anomaly_events: list[AnomalyEvent]`
+- `discovery_metrics: dict`
+
+`Hypothesis` example:
+
+```json
+{
+  "id": "hyp_0001",
+  "title": "IDOR on invoice endpoint",
+  "source": "proxy_anomaly",
+  "target": "/api/invoices/{id}",
+  "novelty_score": 0.82,
+  "impact_score": 0.70,
+  "confidence": 0.45,
+  "status": "queued"
+}
+```
+
+### B2. Discovery Engine Module
+
+Add `esprit/discovery/` package with deterministic logic.
+
+#### Proposed modules
+
+- `models.py`: dataclasses/pydantic types for hypothesis/experiment/anomaly.
+- `signal_extractor.py`: derive signals from tool results (proxy, terminal, browser).
+- `hypothesis_generator.py`: convert signals to candidate hypotheses.
+- `prioritizer.py`: scoring and ranking.
+- `scheduler.py`: select next experiments/subagent tasks.
+- `tracker.py`: lifecycle transitions and metrics.
+
+### B3. Agent Loop Integration
+
+Hook discovery engine into `BaseAgent` without breaking existing tool flow.
+
+#### Integration points
+
+- Before LLM call in `_process_iteration`:
+  - inject top-N queued hypotheses as structured context block.
+- After tool results in `_execute_actions`:
+  - parse observations and update anomaly/hypothesis state.
+- Before finishing:
+  - verify no high-priority hypotheses remain untested (with configurable ceiling).
+
+### B4. Experiment Scheduling via Existing Agent Graph
+
+Use current `create_agent` orchestration, but with deterministic task generation.
+
+Scheduler behavior:
+
+1. Select top ranked hypotheses.
+2. Generate focused subagent tasks (one hypothesis per subagent).
+3. Attach minimal required skills.
+4. Track outcome (`validated`, `falsified`, `inconclusive`).
+
+This keeps compatibility with current graph/messaging model and avoids a second orchestration system.
+
+### B5. Scoring Model (v1)
+
+Simple weighted score:
+
+`priority = 0.35*novelty + 0.30*impact + 0.20*evidence + 0.15*reachability`
+
+Definitions:
+
+- `novelty`: dissimilar to already tested hypotheses and known findings.
+- `impact`: estimated blast radius/severity potential.
+- `evidence`: strength of anomaly signals.
+- `reachability`: likelihood test can be executed with available tooling.
+
+### B6. Novelty and Duplicate Control
+
+Reuse and extend existing dedupe ideas.
+
+- Keep `create_vulnerability_report` dedupe as report-level final guard.
+- Add pre-report hypothesis dedupe based on:
+  - endpoint
+  - parameter
+  - vulnerability class
+  - root-cause fingerprint
+
+This prevents subagent churn on the same issue.
+
+### B7. Safety and Budget Guards
+
+Add hard controls to avoid autonomous runaway.
+
+- Max new hypotheses per iteration.
+- Max concurrent experiments per root agent.
+- Per-target cooldown when repeated failures occur.
+- Respect existing `MAX_AGENTS` and iteration caps.
+
+### B8. Telemetry and Persistence
+
+Extend tracer persistence for discovery observability.
+
+#### Required changes
+
+- `esprit/telemetry/tracer.py`
+  - Persist `hypotheses.json`, `experiments.json`, `anomalies.json` in run dir.
+  - Add summary metrics:
+    - hypothesis conversion rate
+    - novelty ratio
+    - validated finding rate
+
+### B9. Testing Plan (Autonomous Discovery)
+
+#### Unit
+
+- Signal extraction for proxy/terminal/browser outputs.
+- Prioritizer ordering and dedupe correctness.
+- Scheduler respects agent cap and budget limits.
+
+#### Integration
+
+- Simulated scan traces to verify:
+  - hypotheses created,
+  - experiments spawned,
+  - outcomes fed back,
+  - final reports deduped.
+
+#### Benchmark
+
+Run on controlled labs only (no production targets):
+
+- OWASP Juice Shop
+- InsecureBankv2
+- DVIA-v2 (for static/mobile-driven API hypotheses)
+
+Track over baseline:
+
+- Unique validated vulnerabilities per scan.
+- False positive ratio.
+- Time-to-first-validated finding.
+- Coverage of distinct attack surfaces.
+
+### B10. Rollout Plan (Autonomous Discovery)
+
+- Milestone D1: state model + tracer persistence.
+- Milestone D2: signal extraction + hypothesis generation.
+- Milestone D3: prioritizer + scheduler + subagent task templates.
+- Milestone D4: finish-time guardrails + benchmark gating in CI.
+
+## Combined Delivery Sequence
+
+Recommended execution order to reduce risk:
+
+1. Mobile M1 (target parsing/staging/static extraction).
+2. Discovery D1-D2 (state and signal fundamentals).
+3. Mobile M2 (API correlation into existing web toolchain).
+4. Discovery D3-D4 (true autonomous scheduling and guardrails).
+5. Mobile M3-M4 (optional dynamic Android, docs/CI hardening).
+
+This sequence ensures both tracks reuse and strengthen the existing web pipeline instead of forking architecture.
+
+## Definition of Done
+
+Both tracks are done when:
+
+- Mobile targets run end-to-end without custom operator intervention.
+- Discovery engine autonomously proposes, prioritizes, and executes non-trivial hypotheses.
+- Report quality remains stable (dedupe, reproducibility, CVSS consistency).
+- CI includes unit + integration coverage for new code paths.
+- Existing web/API workflows remain backward compatible.

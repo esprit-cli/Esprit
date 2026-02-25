@@ -63,6 +63,7 @@
             "pages": [
               "advanced/configuration",
               "advanced/skills",
+              "advanced/mobile-autonomous-implementation",
               "contributing"
             ]
           }
