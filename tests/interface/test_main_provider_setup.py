@@ -72,10 +72,6 @@ def test_pull_docker_image_retries_with_amd64_on_arm_manifest_mismatch() -> None
         patch("esprit.interface.main.Console", return_value=console),
         patch("esprit.interface.main.check_docker_connection", return_value=client),
         patch("esprit.interface.main.image_exists", return_value=False),
-        patch(
-            "esprit.interface.main.process_pull_line",
-            side_effect=lambda _line, _layers, _status, last_update: last_update,
-        ),
         patch("esprit.interface.main.platform.machine", return_value="arm64"),
         patch("esprit.interface.main.Config.get", side_effect=config_get),
         patch.dict(interface_main.os.environ, {}, clear=True),
@@ -180,7 +176,6 @@ def test_pull_docker_image_exits_when_image_not_present_after_pull() -> None:
         patch("esprit.interface.main.Console", return_value=console),
         patch("esprit.interface.main.check_docker_connection", return_value=client),
         patch("esprit.interface.main.image_exists", return_value=False),
-        patch("esprit.interface.main.process_pull_line", side_effect=lambda _line, _layers, _status, last: last),
         patch("esprit.interface.main.Config.get", side_effect=config_get),
         patch("esprit.interface.main.time.sleep"),
         patch("esprit.interface.main.sys.exit", side_effect=SystemExit(1)),

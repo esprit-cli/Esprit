@@ -17,7 +17,8 @@ const result = spawnSync("bash", [installerPath], {
   stdio: "inherit",
   env: {
     ...process.env,
-    ESPRIT_SKIP_DOCKER_WARM: process.env.ESPRIT_SKIP_DOCKER_WARM || "1",
+    // npm installs should be fast/predictable; sandbox image is pulled at first scan.
+    ESPRIT_SKIP_DOCKER_WARM: "1",
   },
 });
 

@@ -24,6 +24,16 @@ import litellm
 from docker.errors import DockerException, ImageNotFound
 from rich.console import Console
 from rich.panel import Panel
+from rich.progress import (
+    BarColumn,
+    DownloadColumn,
+    Progress,
+    SpinnerColumn,
+    TaskProgressColumn,
+    TextColumn,
+    TimeRemainingColumn,
+    TransferSpeedColumn,
+)
 from rich.text import Text
 
 from esprit.config import Config, apply_saved_config, save_current_config
@@ -45,7 +55,6 @@ from esprit.interface.utils import (  # noqa: E402
     generate_run_name,
     image_exists,
     infer_target_type,
-    process_pull_line,
     rewrite_localhost_targets,
     validate_config_file,
     validate_llm_response,
@@ -1135,12 +1144,20 @@ def pull_docker_image() -> None:
     console.print("[dim yellow]This only happens on first run and may take a few minutes...[/]")
     console.print()
 
-    def _pull_with_progress(platform_override: str | None = None) -> None:
-        layers_info: dict[str, str] = {}
-        last_update = ""
+    def _pull_with_progress(progress: Progress, task_id: int, platform_override: str | None = None) -> None:
+        layer_progress: dict[str, dict[str, int]] = {}
         pull_kwargs: dict[str, Any] = {"stream": True, "decode": True}
         if platform_override:
             pull_kwargs["platform"] = platform_override
+
+        progress.update(
+            task_id,
+            description="[bold cyan]Downloading image layers...",
+            total=None,
+            completed=0,
+            layers="0/0 layers",
+        )
+
         for line in client.api.pull(image_name, **pull_kwargs):
             if isinstance(line, dict):
                 pull_error = line.get("error")
@@ -1149,7 +1166,60 @@ def pull_docker_image() -> None:
                     if isinstance(error_detail, dict):
                         pull_error = error_detail.get("message", pull_error)
                     raise DockerException(str(pull_error))
-            last_update = process_pull_line(line, layers_info, status, last_update)
+
+                layer_id = line.get("id")
+                status_text = str(line.get("status", ""))
+                if isinstance(layer_id, str):
+                    detail = line.get("progressDetail")
+                    if not isinstance(detail, dict):
+                        detail = {}
+
+                    current_value = detail.get("current")
+                    total_value = detail.get("total")
+
+                    current = int(current_value) if isinstance(current_value, int) and current_value >= 0 else None
+                    total = int(total_value) if isinstance(total_value, int) and total_value > 0 else None
+
+                    entry = layer_progress.setdefault(layer_id, {"current": 0, "total": 0})
+                    if total is not None:
+                        entry["total"] = max(entry["total"], total)
+                    if current is not None:
+                        if entry["total"] > 0:
+                            entry["current"] = min(current, entry["total"])
+                        else:
+                            entry["current"] = current
+
+                    if status_text in {"Pull complete", "Already exists"} and entry["total"] > 0:
+                        entry["current"] = entry["total"]
+                elif status_text:
+                    normalized = status_text.lower()
+                    if "pulling from" in normalized:
+                        progress.update(task_id, description="[bold cyan]Fetching image manifest...")
+                    elif "digest:" in normalized:
+                        progress.update(task_id, description="[bold cyan]Verifying image...")
+                    elif "status:" in normalized:
+                        progress.update(task_id, description="[bold cyan]Finalizing image...")
+
+            aggregate_current = 0
+            aggregate_total = 0
+            complete_layers = 0
+            known_layers = 0
+            for entry in layer_progress.values():
+                layer_current = max(0, entry["current"])
+                layer_total = max(0, entry["total"])
+                if layer_total > 0:
+                    known_layers += 1
+                    aggregate_total += layer_total
+                    aggregate_current += min(layer_current, layer_total)
+                    if layer_current >= layer_total:
+                        complete_layers += 1
+
+            progress.update(
+                task_id,
+                total=aggregate_total if aggregate_total > 0 else None,
+                completed=aggregate_current,
+                layers=f"{complete_layers}/{known_layers} layers" if known_layers > 0 else "resolving layers",
+            )
 
     def _verify_image_ready(max_retries: int = 3) -> bool:
         for attempt in range(max_retries):
@@ -1166,9 +1236,22 @@ def pull_docker_image() -> None:
     pull_error: DockerException | None = None
     fallback_platform: str | None = None
 
-    with console.status("[bold cyan]Downloading image layers...", spinner="dots") as status:
+    with Progress(
+        SpinnerColumn(style="bold cyan"),
+        TextColumn("{task.description}"),
+        BarColumn(bar_width=32, complete_style="cyan", finished_style="green"),
+        TaskProgressColumn(),
+        DownloadColumn(binary_units=True),
+        TransferSpeedColumn(),
+        TimeRemainingColumn(compact=True),
+        TextColumn("[dim]{task.fields[layers]}[/]"),
+        console=console,
+        transient=True,
+    ) as progress:
+        task_id = progress.add_task("[bold cyan]Downloading image layers...", total=None, layers="0/0 layers")
+
         try:
-            _pull_with_progress(preferred_platform)
+            _pull_with_progress(progress, task_id, preferred_platform)
         except DockerException as e:
             pull_error = e
             error_text = str(e).lower()
@@ -1180,11 +1263,15 @@ def pull_docker_image() -> None:
 
             if can_fallback:
                 fallback_platform = "linux/amd64"
-                status.update(
-                    "[bold yellow]No arm64 manifest found; retrying with linux/amd64 emulation...[/]"
+                progress.update(
+                    task_id,
+                    description="[bold yellow]No arm64 manifest; retrying linux/amd64 emulation...[/]",
+                    total=None,
+                    completed=0,
+                    layers="0/0 layers",
                 )
                 try:
-                    _pull_with_progress(fallback_platform)
+                    _pull_with_progress(progress, task_id, fallback_platform)
                 except DockerException as fallback_error:
                     pull_error = fallback_error
                 else:
