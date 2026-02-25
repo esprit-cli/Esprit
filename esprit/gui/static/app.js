@@ -21,7 +21,8 @@ class EspritDashboard {
     this._reconnectDelay = 1000;
     this._maxReconnectDelay = 30000;
     this.theme = { id: 'esprit', tokens: {} };
-    this.themeMode = localStorage.getItem('esprit_dashboard_mode') || 'dark';
+    const savedTheme = localStorage.getItem('esprit-theme');
+    this.themeMode = savedTheme || 'dark';
     this._vulnWorkspaceIndex = 0;
     this._healthIndex = 0;
 
@@ -211,6 +212,7 @@ class EspritDashboard {
     if (tab === 'terminal') this._renderTerminal();
     if (tab === 'tools') this._renderToolsTimeline();
     if (tab === 'report') this._renderReport();
+    if (tab === 'history') this._renderHistory();
   }
 
   // ------- Browser zoom -------
@@ -240,7 +242,7 @@ class EspritDashboard {
 
   _toggleThemeMode() {
     this.themeMode = this.themeMode === 'dark' ? 'light' : 'dark';
-    localStorage.setItem('esprit_dashboard_mode', this.themeMode);
+    localStorage.setItem('esprit-theme', this.themeMode);
     this._applyTheme();
   }
 
@@ -943,6 +945,69 @@ class EspritDashboard {
     this._refreshIcons();
   }
 
+  // ------- Scan History -------
+
+  _renderHistory() {
+    if (this.activeTab !== 'history') return;
+    const container = document.getElementById('history-content');
+    if (!container) return;
+    this._clearEl(container);
+
+    const loading = this._el('div', { className: 'empty-state' });
+    loading.appendChild(this._icon('loader', 'icon-lg ghost-icon spin-icon'));
+    loading.appendChild(this._el('div', { textContent: 'Loading scan history...' }));
+    container.appendChild(loading);
+    this._refreshIcons();
+
+    fetch('/api/scan-history')
+      .then(r => r.json())
+      .then(data => {
+        this._clearEl(container);
+        if (!data || data.length === 0) {
+          const empty = this._el('div', { className: 'empty-state' });
+          empty.appendChild(this._icon('clock', 'icon-lg ghost-icon'));
+          empty.appendChild(this._el('div', { textContent: 'No past scans found' }));
+          container.appendChild(empty);
+          this._refreshIcons();
+          return;
+        }
+        const table = this._el('table', { className: 'history-table' });
+        const thead = this._el('thead');
+        const headRow = this._el('tr');
+        ['Date', 'Target', 'Status', 'Findings'].forEach(h => {
+          headRow.appendChild(this._el('th', { textContent: h }));
+        });
+        thead.appendChild(headRow);
+        table.appendChild(thead);
+        const tbody = this._el('tbody');
+        data.forEach(run => {
+          const tr = this._el('tr');
+          const d = new Date(run.date * 1000);
+          tr.appendChild(this._el('td', { textContent: d.toLocaleString() }));
+          tr.appendChild(this._el('td', { textContent: run.target }));
+          const statusTd = this._el('td');
+          statusTd.appendChild(this._el('span', {
+            className: 'history-status history-status--' + run.status,
+            textContent: run.status,
+          }));
+          tr.appendChild(statusTd);
+          tr.appendChild(this._el('td', { textContent: String(run.findings) }));
+          tbody.appendChild(tr);
+        });
+        table.appendChild(tbody);
+        container.appendChild(table);
+        this._refreshIcons();
+      })
+      .catch(() => {
+        this._clearEl(container);
+        const err = this._el('div', { className: 'empty-state' });
+        err.appendChild(this._icon('alert-triangle', 'icon-lg ghost-icon'));
+        err.appendChild(this._el('div', { textContent: 'Failed to load scan history' }));
+        container.appendChild(err);
+        this._refreshIcons();
+      });
+  }
+
   // ------- Browser Tabs -------
 
   _renderBrowserTabs() {
@@ -990,24 +1055,103 @@ class EspritDashboard {
     );
 
     sorted.forEach(v => {
-      const el = this._el('div', {
-        className: 'vuln-item vuln-' + (v.severity || 'info'),
-        onclick: () => this._showVulnDetail(v),
-      });
+      const sev = v.severity || 'info';
+      const card = this._el('div', { className: 'vuln-card severity-' + sev });
 
-      el.appendChild(this._el('span', { className: 'vuln-dot' }));
-      el.appendChild(this._el('span', { className: 'vuln-title', textContent: v.title || 'Unknown' }));
+      // --- Header (always visible) ---
+      const header = this._el('div', { className: 'vuln-card-header' });
+      header.onclick = () => card.classList.toggle('expanded');
 
+      header.appendChild(this._icon('chevron-right', 'icon-xs vuln-card-chevron'));
+      header.appendChild(this._el('span', { className: 'vuln-card-title', textContent: v.title || 'Unknown' }));
+
+      const badges = this._el('span', { className: 'vuln-card-badges' });
       if (v.cvss) {
-        el.appendChild(this._el('span', { className: 'vuln-cvss-score', textContent: v.cvss }));
+        badges.appendChild(this._el('span', { className: 'vuln-card-cvss', textContent: 'CVSS ' + v.cvss }));
+      }
+      badges.appendChild(this._el('span', {
+        className: 'vuln-severity-badge sev-' + sev,
+        textContent: sev.toUpperCase(),
+      }));
+      header.appendChild(badges);
+      card.appendChild(header);
+
+      // --- Body (shown on expand) ---
+      const body = this._el('div', { className: 'vuln-card-body' });
+
+      if (v.description) {
+        const desc = v.description.length > 300 ? v.description.substring(0, 297) + '...' : v.description;
+        body.appendChild(this._el('div', { className: 'vuln-card-desc', textContent: desc }));
       }
 
-      el.appendChild(this._el('span', {
-        className: 'vuln-severity',
-        textContent: (v.severity || '').toUpperCase(),
-      }));
+      const fieldEntries = [
+        ['Target', v.target],
+        ['Endpoint', v.endpoint],
+        ['Method', v.method],
+        ['CVE', v.cve],
+      ];
+      const hasFields = fieldEntries.some(([, val]) => val);
+      if (hasFields) {
+        const fields = this._el('div', { className: 'vuln-card-fields' });
+        fieldEntries.forEach(([label, val]) => {
+          if (val) {
+            const f = this._el('span', { className: 'vuln-card-field' });
+            f.appendChild(this._el('strong', { textContent: label + ': ' }));
+            f.appendChild(document.createTextNode(String(val)));
+            fields.appendChild(f);
+          }
+        });
+        body.appendChild(fields);
+      }
 
-      container.appendChild(el);
+      if (v.remediation_steps) {
+        const remBox = this._el('div', { className: 'vuln-card-remediation' });
+        const remHeader = this._el('div', { className: 'vuln-card-remediation-header' });
+        remHeader.appendChild(this._el('span', { className: 'vuln-card-remediation-label', textContent: 'Remediation' }));
+
+        const copyBtn = this._el('button', {
+          className: 'copy-btn',
+          onclick: (e) => {
+            e.stopPropagation();
+            navigator.clipboard.writeText(v.remediation_steps).then(() => {
+              copyBtn.classList.add('copied');
+              this._clearEl(copyBtn);
+              copyBtn.appendChild(this._icon('check', 'icon-xs'));
+              copyBtn.appendChild(document.createTextNode(' Copied'));
+              this._refreshIcons();
+              setTimeout(() => {
+                copyBtn.classList.remove('copied');
+                this._clearEl(copyBtn);
+                copyBtn.appendChild(this._icon('copy', 'icon-xs'));
+                copyBtn.appendChild(document.createTextNode(' Copy'));
+                this._refreshIcons();
+              }, 2000);
+            });
+          },
+        });
+        copyBtn.appendChild(this._icon('copy', 'icon-xs'));
+        copyBtn.appendChild(document.createTextNode(' Copy'));
+        remHeader.appendChild(copyBtn);
+        remBox.appendChild(remHeader);
+
+        const remText = v.remediation_steps.length > 500 ? v.remediation_steps.substring(0, 497) + '...' : v.remediation_steps;
+        remBox.appendChild(this._el('div', { className: 'vuln-card-remediation-text', textContent: remText }));
+        body.appendChild(remBox);
+      }
+
+      // "View full details" link opens the modal
+      const footer = this._el('div', { className: 'vuln-card-footer' });
+      const detailLink = this._el('button', {
+        className: 'vuln-card-detail-link',
+        onclick: (e) => { e.stopPropagation(); this._showVulnDetail(v); },
+      });
+      detailLink.appendChild(this._icon('external-link', 'icon-xs'));
+      detailLink.appendChild(document.createTextNode('Full details'));
+      footer.appendChild(detailLink);
+      body.appendChild(footer);
+
+      card.appendChild(body);
+      container.appendChild(card);
     });
 
     this._refreshIcons();
