@@ -526,17 +526,7 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
         self._input_mode = None
 
         if view == "main":
-            entries = list(self.MAIN_OPTIONS)
-            # Dynamically set scan hint with project info
-            project_hint = self._project_name
-            if self._project_type:
-                project_hint += f" ({self._project_type})"
-            for i, e in enumerate(entries):
-                if e.key == "scan":
-                    entries[i] = _MenuEntry("scan", "Scan", project_hint)
-                elif e.key == "theme":
-                    entries[i] = _MenuEntry("theme", "Theme", self._active_theme().label)
-            self._current_entries = entries
+            self._current_entries = self._build_main_entries()
             self._current_title = ""
             self._current_hint = "up/down to navigate  enter to select  q to quit"
         elif view == "scan_choose":
@@ -616,6 +606,57 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
             input_widget.focus()
 
         self._render_panel()
+
+    @staticmethod
+    def _shorten_hint(value: str, max_length: int = 42) -> str:
+        if len(value) <= max_length:
+            return value
+        return value[: max_length - 3].rstrip() + "..."
+
+    def _connected_provider_hint(self) -> str:
+        rows = self._configured_provider_rows()
+        if not rows:
+            return "none connected"
+
+        provider_names: list[str] = []
+        for name, _auth_type, _account in rows:
+            if name not in provider_names:
+                provider_names.append(name)
+
+        head = ", ".join(provider_names[:2])
+        if len(provider_names) > 2:
+            head = f"{head} +{len(provider_names) - 2}"
+        return f"{len(provider_names)} connected: {head}"
+
+    def _current_model_hint(self) -> str:
+        model_name = Config.get("esprit_llm")
+        if not model_name:
+            return "not selected"
+        if "/" in model_name:
+            return model_name.split("/", 1)[1]
+        return model_name
+
+    def _build_main_entries(self) -> list[_MenuEntry]:
+        entries: list[_MenuEntry] = []
+        project_hint = self._project_name
+        if self._project_type:
+            project_hint += f" ({self._project_type})"
+
+        provider_hint = self._shorten_hint(self._connected_provider_hint())
+        model_hint = self._shorten_hint(f"selected: {self._current_model_hint()}")
+
+        for option in self.MAIN_OPTIONS:
+            hint = option.hint
+            if option.key == "scan":
+                hint = project_hint
+            elif option.key == "provider":
+                hint = provider_hint
+            elif option.key == "model":
+                hint = model_hint
+            elif option.key == "theme":
+                hint = self._active_theme().label
+            entries.append(_MenuEntry(option.key, option.label, hint))
+        return entries
 
     def _build_model_entries(self, filter_text: str = "") -> list[_MenuEntry]:
         current = Config.get("esprit_llm") or DEFAULT_MODEL
@@ -999,6 +1040,44 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
                 menu_text.append("\n")
 
         menu_widget.update(menu_text)
+        self._ensure_selected_entry_visible(menu_widget)
+
+    @staticmethod
+    def _get_menu_visible_rows(menu_widget: Static) -> int:
+        content_height = int(getattr(getattr(menu_widget, "content_region", None), "height", 0))
+        if content_height > 0:
+            return content_height
+
+        height = int(getattr(getattr(menu_widget, "size", None), "height", 0))
+        # launchpad_menu has vertical padding of 1 on top and bottom
+        visible_rows = height - 2
+        return visible_rows if visible_rows > 0 else 14
+
+    @staticmethod
+    def _get_menu_scroll_target(selected_index: int, top_row: int, visible_rows: int) -> int | None:
+        if visible_rows <= 0:
+            return None
+        bottom_row = top_row + visible_rows - 1
+        if selected_index < top_row:
+            return selected_index
+        if selected_index > bottom_row:
+            return selected_index - visible_rows + 1
+        return None
+
+    def _ensure_selected_entry_visible(self, menu_widget: Static) -> None:
+        if not self._current_entries or self.selected_index >= len(self._current_entries):
+            return
+
+        visible_rows = self._get_menu_visible_rows(menu_widget)
+        top_row = int(getattr(menu_widget, "scroll_y", 0))
+        target_top = self._get_menu_scroll_target(self.selected_index, top_row, visible_rows)
+        if target_top is None:
+            return
+
+        max_scroll = int(getattr(menu_widget, "max_scroll_y", target_top))
+        target_top = max(0, min(target_top, max_scroll))
+        if target_top != top_row:
+            menu_widget.scroll_to(y=target_top, animate=False)
 
     # ── Actions (bound to keys via BINDINGS) ──────────────────────────
 

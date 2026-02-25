@@ -16,11 +16,12 @@ import os
 import platform
 import shutil
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
 import litellm
-from docker.errors import DockerException
+from docker.errors import DockerException, ImageNotFound
 from rich.console import Console
 from rich.panel import Panel
 from rich.text import Text
@@ -1141,7 +1142,26 @@ def pull_docker_image() -> None:
         if platform_override:
             pull_kwargs["platform"] = platform_override
         for line in client.api.pull(image_name, **pull_kwargs):
+            if isinstance(line, dict):
+                pull_error = line.get("error")
+                if pull_error:
+                    error_detail = line.get("errorDetail")
+                    if isinstance(error_detail, dict):
+                        pull_error = error_detail.get("message", pull_error)
+                    raise DockerException(str(pull_error))
             last_update = process_pull_line(line, layers_info, status, last_update)
+
+    def _verify_image_ready(max_retries: int = 3) -> bool:
+        for attempt in range(max_retries):
+            try:
+                client.images.get(image_name)
+            except (ImageNotFound, DockerException):
+                if attempt == max_retries - 1:
+                    return False
+                time.sleep(2**attempt)
+            else:
+                return True
+        return False
 
     pull_error: DockerException | None = None
     fallback_platform: str | None = None
@@ -1170,6 +1190,11 @@ def pull_docker_image() -> None:
                 else:
                     os.environ["ESPRIT_DOCKER_PLATFORM"] = fallback_platform
                     pull_error = None
+
+    if pull_error is None and not _verify_image_ready():
+        pull_error = DockerException(
+            f"Pull completed but image is not available locally: {image_name}"
+        )
 
     if pull_error is not None:
         console.print()

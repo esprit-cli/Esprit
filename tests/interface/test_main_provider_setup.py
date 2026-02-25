@@ -119,3 +119,73 @@ def test_pull_docker_image_exits_without_fallback_on_non_arm_host() -> None:
             interface_main.pull_docker_image()
 
     client.api.pull.assert_called_once()
+
+
+def test_pull_docker_image_exits_on_stream_error_payload() -> None:
+    client = MagicMock()
+    client.api.pull.return_value = iter(
+        [
+            {"status": "Pulling from improdead/esprit-sandbox"},
+            {"error": "unauthorized: authentication required"},
+        ]
+    )
+
+    console = MagicMock()
+    status_ctx = MagicMock()
+    status_widget = MagicMock()
+    status_ctx.__enter__.return_value = status_widget
+    status_ctx.__exit__.return_value = False
+    console.status.return_value = status_ctx
+
+    def config_get(name: str) -> str | None:
+        if name == "esprit_image":
+            return "improdead/esprit-sandbox:latest"
+        if name == "esprit_docker_platform":
+            return None
+        return None
+
+    with (
+        patch("esprit.interface.main.Console", return_value=console),
+        patch("esprit.interface.main.check_docker_connection", return_value=client),
+        patch("esprit.interface.main.image_exists", return_value=False),
+        patch("esprit.interface.main.Config.get", side_effect=config_get),
+        patch("esprit.interface.main.sys.exit", side_effect=SystemExit(1)),
+    ):
+        with pytest.raises(SystemExit):
+            interface_main.pull_docker_image()
+
+    client.images.get.assert_not_called()
+
+
+def test_pull_docker_image_exits_when_image_not_present_after_pull() -> None:
+    client = MagicMock()
+    client.api.pull.return_value = iter([{"status": "Status: Downloaded newer image"}])
+    client.images.get.side_effect = interface_main.ImageNotFound("missing")
+
+    console = MagicMock()
+    status_ctx = MagicMock()
+    status_widget = MagicMock()
+    status_ctx.__enter__.return_value = status_widget
+    status_ctx.__exit__.return_value = False
+    console.status.return_value = status_ctx
+
+    def config_get(name: str) -> str | None:
+        if name == "esprit_image":
+            return "improdead/esprit-sandbox:latest"
+        if name == "esprit_docker_platform":
+            return None
+        return None
+
+    with (
+        patch("esprit.interface.main.Console", return_value=console),
+        patch("esprit.interface.main.check_docker_connection", return_value=client),
+        patch("esprit.interface.main.image_exists", return_value=False),
+        patch("esprit.interface.main.process_pull_line", side_effect=lambda _line, _layers, _status, last: last),
+        patch("esprit.interface.main.Config.get", side_effect=config_get),
+        patch("esprit.interface.main.time.sleep"),
+        patch("esprit.interface.main.sys.exit", side_effect=SystemExit(1)),
+    ):
+        with pytest.raises(SystemExit):
+            interface_main.pull_docker_image()
+
+    assert client.images.get.call_count == 3
