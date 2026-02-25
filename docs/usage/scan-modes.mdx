@@ -8,7 +8,7 @@ Esprit offers three scan modes to balance speed and thoroughness.
 ## Quick
 
 ```bash
-esprit --target ./app --scan-mode quick
+esprit scan ./app -m quick
 ```
 
 Fast checks for obvious vulnerabilities. Best for:
@@ -21,7 +21,7 @@ Fast checks for obvious vulnerabilities. Best for:
 ## Standard
 
 ```bash
-esprit --target ./app --scan-mode standard
+esprit scan ./app -m standard
 ```
 
 Balanced testing for routine security reviews. Best for:
@@ -34,7 +34,7 @@ Balanced testing for routine security reviews. Best for:
 ## Deep
 
 ```bash
-esprit --target ./app --scan-mode deep
+esprit scan ./app -m deep
 ```
 
 Thorough penetration testing. Best for:

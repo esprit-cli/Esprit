@@ -24,7 +24,7 @@ brew install esprit
 ### Option 3: npm
 
 ```bash
-npm install -g github:improdead/Esprit
+npm install -g esprit-cli@latest
 ```
 
 ### Option 4: From Source
@@ -40,7 +40,7 @@ poetry install
 
 ## Interactive Onboarding
 
-Run `esprit` with no arguments to open the launchpad onboarding UI.
+Run `esprit` with no arguments to open the interactive launchpad UI.
 
 - Guided setup for provider, model, target, and scan mode
 - Unified theme across onboarding and scanning TUI

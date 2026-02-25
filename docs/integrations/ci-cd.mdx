@@ -10,7 +10,7 @@ Esprit runs in headless mode for automated pipelines.
 Use the `-n` or `--non-interactive` flag:
 
 ```bash
-esprit -n --target ./app --scan-mode quick
+esprit scan ./app -n -m quick
 ```
 
 ## Exit Codes
@@ -32,8 +32,8 @@ security-scan:
     ESPRIT_LLM: $ESPRIT_LLM
     LLM_API_KEY: $LLM_API_KEY
   script:
-    - curl -sSL https://raw.githubusercontent.com/improdead/Esprit/refs/heads/main/scripts/install.sh | bash
-    - esprit -n -t ./ --scan-mode quick
+    - curl -fsSL https://raw.githubusercontent.com/improdead/Esprit/main/scripts/install.sh | bash
+    - esprit scan ./ -n -m quick
 ```
 
 ## Jenkins
@@ -48,8 +48,8 @@ pipeline {
     stages {
         stage('Security Scan') {
             steps {
-                sh 'curl -sSL https://raw.githubusercontent.com/improdead/Esprit/refs/heads/main/scripts/install.sh | bash'
-                sh 'esprit -n -t ./ --scan-mode quick'
+                sh 'curl -fsSL https://raw.githubusercontent.com/improdead/Esprit/main/scripts/install.sh | bash'
+                sh 'esprit scan ./ -n -m quick'
             }
         }
     }
@@ -69,10 +69,10 @@ jobs:
       - setup_remote_docker
       - run:
           name: Install Esprit
-          command: curl -sSL https://raw.githubusercontent.com/improdead/Esprit/refs/heads/main/scripts/install.sh | bash
+          command: curl -fsSL https://raw.githubusercontent.com/improdead/Esprit/main/scripts/install.sh | bash
       - run:
           name: Run Scan
-          command: esprit -n -t ./ --scan-mode quick
+          command: esprit scan ./ -n -m quick
 ```
 
 <Note>

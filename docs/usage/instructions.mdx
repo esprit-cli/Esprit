@@ -8,7 +8,7 @@ Use instructions to provide context, credentials, or focus areas for your scan.
 ## Inline Instructions
 
 ```bash
-esprit --target https://app.com --instruction "Focus on authentication vulnerabilities"
+esprit scan https://app.com --instruction "Focus on authentication vulnerabilities"
 ```
 
 ## File-Based Instructions
@@ -16,7 +16,7 @@ esprit --target https://app.com --instruction "Focus on authentication vulnerabi
 For complex instructions, use a file:
 
 ```bash
-esprit --target https://app.com --instruction-file ./pentest-instructions.md
+esprit scan https://app.com --instruction-file ./pentest-instructions.md
 ```
 
 ## Common Use Cases
@@ -24,28 +24,28 @@ esprit --target https://app.com --instruction-file ./pentest-instructions.md
 ### Authenticated Testing
 
 ```bash
-esprit --target https://app.com \
+esprit scan https://app.com \
   --instruction "Login with email: test@example.com, password: TestPass123"
 ```
 
 ### Focused Scope
 
 ```bash
-esprit --target https://api.example.com \
+esprit scan https://api.example.com \
   --instruction "Focus on IDOR vulnerabilities in the /api/users endpoints"
 ```
 
 ### Exclusions
 
 ```bash
-esprit --target https://app.com \
+esprit scan https://app.com \
   --instruction "Do not test /admin or /internal endpoints"
 ```
 
 ### API Testing
 
 ```bash
-esprit --target https://api.example.com \
+esprit scan https://api.example.com \
   --instruction "Use API key header: X-API-Key: abc123. Focus on rate limiting bypass."
 ```
 

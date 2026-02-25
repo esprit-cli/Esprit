@@ -10,13 +10,13 @@ esprit scan <target> [options]
 ```
 
 ```bash
-# Open interactive launchpad onboarding
+# Open interactive launchpad
 esprit
 ```
 
 ## Interactive Launchpad
 
-Running `esprit` with no arguments opens the onboarding launchpad.
+Running `esprit` with no arguments opens the interactive launchpad.
 
 - Select provider, model, target, and scan mode interactively
 - Local-path target input supports directory autocomplete
@@ -24,8 +24,12 @@ Running `esprit` with no arguments opens the onboarding launchpad.
 
 ## Options
 
-<ParamField path="--target, -t" type="string" required>
-  Target to test. Accepts URLs, repositories, local directories, domains, or IP addresses. Can be specified multiple times.
+<ParamField path="target (positional)" type="string" required>
+  Target(s) to test with `esprit scan`. Accepts URLs, repositories, local directories, domains, or IP addresses.
+</ParamField>
+
+<ParamField path="--target, -t" type="string">
+  Legacy target flag. Still supported for backward compatibility, but `esprit scan <target>` is recommended.
 </ParamField>
 
 <ParamField path="--instruction" type="string">
@@ -61,7 +65,7 @@ esprit scan https://app.com --instruction "Use credentials: user:pass"
 esprit scan api.example.com --instruction "Focus on IDOR and auth bypass"
 
 # CI/CD mode
-esprit scan ./ -n --scan-mode quick
+esprit scan ./ -n -m quick
 
 # Multi-target white-box testing
 esprit scan https://github.com/org/app https://staging.example.com

@@ -16,7 +16,7 @@ description: "Install Esprit and run your first security scan"
 <Tabs>
   <Tab title="curl">
     ```bash
-    curl -sSL https://raw.githubusercontent.com/improdead/Esprit/refs/heads/main/scripts/install.sh | bash
+    curl -fsSL https://raw.githubusercontent.com/improdead/Esprit/main/scripts/install.sh | bash
     ```
   </Tab>
   <Tab title="pipx">
@@ -26,7 +26,7 @@ description: "Install Esprit and run your first security scan"
   </Tab>
   <Tab title="npm">
     ```bash
-    npm install -g esprit-cli
+    npm install -g esprit-cli@latest
     ```
   </Tab>
 </Tabs>
@@ -58,7 +58,7 @@ esprit scan ./your-app
 ```
 
 <Note>
-First run pulls the Docker sandbox image automatically. Results are saved to `esprit_runs/<run-name>`.
+In local mode, the first run pulls the Docker sandbox image automatically. Esprit Cloud mode does not require Docker. Results are saved to `esprit_runs/<run-name>`.
 </Note>
 
 ## Target Types
