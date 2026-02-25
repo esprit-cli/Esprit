@@ -1,3 +1,4 @@
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from esprit.interface.launchpad import LaunchpadApp, _MenuEntry
@@ -48,6 +49,7 @@ def test_ensure_selected_entry_visible_scrolls_to_selection() -> None:
     app.selected_index = 10
 
     menu_widget = MagicMock()
+    menu_widget.content_region = SimpleNamespace(height=0)
     menu_widget.size.height = 6
     menu_widget.scroll_y = 0
     menu_widget.max_scroll_y = 30
@@ -63,6 +65,7 @@ def test_ensure_selected_entry_visible_skips_scroll_when_visible() -> None:
     app.selected_index = 3
 
     menu_widget = MagicMock()
+    menu_widget.content_region = SimpleNamespace(height=0)
     menu_widget.size.height = 6
     menu_widget.scroll_y = 0
     menu_widget.max_scroll_y = 30
