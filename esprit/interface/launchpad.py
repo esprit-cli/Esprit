@@ -557,10 +557,12 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
             self._current_hint = "choose an action  esc to go back"
         elif view == "scan_mode":
             self._current_entries = self._build_scan_mode_entries()
+            self._select_entry_by_key(f"scan_mode:{self._scan_mode}")
             self._current_title = "Scan Mode"
             self._current_hint = "quick = fast  deep = thorough  esc to go back"
         elif view == "theme":
             self._current_entries = self._build_theme_entries()
+            self._select_entry_by_key(f"theme:{self._theme_id}")
             self._current_title = "Theme"
             self._current_hint = "choose a launchpad theme  esc to go back"
         elif view == "scan_target":
@@ -606,6 +608,13 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
             input_widget.focus()
 
         self._render_panel()
+
+    def _select_entry_by_key(self, key: str) -> bool:
+        for idx, entry in enumerate(self._current_entries):
+            if entry.key == key and not self._is_non_selectable(entry):
+                self.selected_index = idx
+                return True
+        return False
 
     @staticmethod
     def _shorten_hint(value: str, max_length: int = 42) -> str:
@@ -653,6 +662,8 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
                 hint = provider_hint
             elif option.key == "model":
                 hint = model_hint
+            elif option.key == "scan_mode":
+                hint = self._shorten_hint(f"selected: {self._scan_mode}")
             elif option.key == "theme":
                 hint = self._active_theme().label
             entries.append(_MenuEntry(option.key, option.label, hint))
