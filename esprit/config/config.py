@@ -1,6 +1,7 @@
 import contextlib
 import json
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -51,6 +52,16 @@ class Config:
     _UI_SECTION_KEY = "ui"
     _LAUNCHPAD_THEME_KEY = "launchpad_theme"
     _DEFAULT_LAUNCHPAD_THEME = "esprit"
+    _ONBOARDING_SECTION_KEY = "onboarding"
+    _ONBOARDING_STATE_KEY = "state"
+    _ONBOARDING_VERSION_KEY = "version"
+    _ONBOARDING_LAST_SEEN_AT_KEY = "last_seen_at"
+    _ONBOARDING_COMPLETED_AT_KEY = "completed_at"
+    _ONBOARDING_SKIP_COUNT_KEY = "skip_count"
+    _ONBOARDING_STATE_PENDING = "pending"
+    _ONBOARDING_STATE_SKIPPED = "skipped"
+    _ONBOARDING_STATE_COMPLETED = "completed"
+    _DEFAULT_ONBOARDING_VERSION = 1
 
     @classmethod
     def _tracked_names(cls) -> list[str]:
@@ -210,6 +221,120 @@ class Config:
         ui[cls._LAUNCHPAD_THEME_KEY] = theme
         saved[cls._UI_SECTION_KEY] = ui
         return cls.save(saved)
+
+    @classmethod
+    def _utc_now_iso(cls) -> str:
+        return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+    @classmethod
+    def get_onboarding_state(cls) -> dict[str, Any]:
+        saved = cls.load()
+        if not isinstance(saved, dict):
+            saved = {}
+        ui = saved.get(cls._UI_SECTION_KEY, {})
+        if not isinstance(ui, dict):
+            ui = {}
+        raw_state = ui.get(cls._ONBOARDING_SECTION_KEY, {})
+        if not isinstance(raw_state, dict):
+            raw_state = {}
+
+        version = raw_state.get(cls._ONBOARDING_VERSION_KEY)
+        if not isinstance(version, int):
+            version = cls._DEFAULT_ONBOARDING_VERSION
+
+        state = raw_state.get(cls._ONBOARDING_STATE_KEY)
+        if not isinstance(state, str):
+            state = cls._ONBOARDING_STATE_PENDING
+
+        completed_at = raw_state.get(cls._ONBOARDING_COMPLETED_AT_KEY)
+        if not isinstance(completed_at, str):
+            completed_at = None
+
+        last_seen_at = raw_state.get(cls._ONBOARDING_LAST_SEEN_AT_KEY)
+        if not isinstance(last_seen_at, str):
+            last_seen_at = None
+
+        skip_count = raw_state.get(cls._ONBOARDING_SKIP_COUNT_KEY)
+        if not isinstance(skip_count, int) or skip_count < 0:
+            skip_count = 0
+
+        return {
+            cls._ONBOARDING_VERSION_KEY: version,
+            cls._ONBOARDING_STATE_KEY: state,
+            cls._ONBOARDING_COMPLETED_AT_KEY: completed_at,
+            cls._ONBOARDING_LAST_SEEN_AT_KEY: last_seen_at,
+            cls._ONBOARDING_SKIP_COUNT_KEY: skip_count,
+        }
+
+    @classmethod
+    def _save_onboarding_state(cls, onboarding_state: dict[str, Any]) -> bool:
+        saved = cls.load()
+        if not isinstance(saved, dict):
+            saved = {}
+        ui = saved.get(cls._UI_SECTION_KEY, {})
+        if not isinstance(ui, dict):
+            ui = {}
+        ui[cls._ONBOARDING_SECTION_KEY] = onboarding_state
+        saved[cls._UI_SECTION_KEY] = ui
+        return cls.save(saved)
+
+    @classmethod
+    def is_onboarding_required(cls, version: int | None = None) -> bool:
+        target_version = (
+            version
+            if isinstance(version, int) and version > 0
+            else cls._DEFAULT_ONBOARDING_VERSION
+        )
+        state = cls.get_onboarding_state()
+
+        state_value = str(
+            state.get(cls._ONBOARDING_STATE_KEY) or cls._ONBOARDING_STATE_PENDING
+        ).lower()
+        completed = state_value == cls._ONBOARDING_STATE_COMPLETED
+        seen_version = state.get(cls._ONBOARDING_VERSION_KEY)
+        if not isinstance(seen_version, int):
+            seen_version = cls._DEFAULT_ONBOARDING_VERSION
+
+        return not completed or seen_version < target_version
+
+    @classmethod
+    def mark_onboarding_completed(cls, version: int | None = None) -> bool:
+        target_version = (
+            version
+            if isinstance(version, int) and version > 0
+            else cls._DEFAULT_ONBOARDING_VERSION
+        )
+        now_iso = cls._utc_now_iso()
+        existing = cls.get_onboarding_state()
+
+        onboarding_state = {
+            cls._ONBOARDING_VERSION_KEY: target_version,
+            cls._ONBOARDING_STATE_KEY: cls._ONBOARDING_STATE_COMPLETED,
+            cls._ONBOARDING_COMPLETED_AT_KEY: now_iso,
+            cls._ONBOARDING_LAST_SEEN_AT_KEY: now_iso,
+            cls._ONBOARDING_SKIP_COUNT_KEY: int(existing.get(cls._ONBOARDING_SKIP_COUNT_KEY, 0)),
+        }
+        return cls._save_onboarding_state(onboarding_state)
+
+    @classmethod
+    def mark_onboarding_skipped(cls, version: int | None = None) -> bool:
+        target_version = (
+            version
+            if isinstance(version, int) and version > 0
+            else cls._DEFAULT_ONBOARDING_VERSION
+        )
+        now_iso = cls._utc_now_iso()
+        existing = cls.get_onboarding_state()
+        skip_count = int(existing.get(cls._ONBOARDING_SKIP_COUNT_KEY, 0)) + 1
+
+        onboarding_state = {
+            cls._ONBOARDING_VERSION_KEY: target_version,
+            cls._ONBOARDING_STATE_KEY: cls._ONBOARDING_STATE_SKIPPED,
+            cls._ONBOARDING_COMPLETED_AT_KEY: existing.get(cls._ONBOARDING_COMPLETED_AT_KEY),
+            cls._ONBOARDING_LAST_SEEN_AT_KEY: now_iso,
+            cls._ONBOARDING_SKIP_COUNT_KEY: skip_count,
+        }
+        return cls._save_onboarding_state(onboarding_state)
 
 
 def apply_saved_config(force: bool = False) -> dict[str, str]:

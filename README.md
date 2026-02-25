@@ -38,11 +38,17 @@ poetry install
 
 ---
 
-## Interactive Onboarding
+## First-Run Onboarding
 
-Run `esprit` with no arguments to open the launchpad onboarding UI.
+On first use, Esprit opens a one-time onboarding wizard before any Docker checks.
 
-- Guided setup for provider, model, target, and scan mode
+- Ghost-themed first-run setup flow
+- Guided setup for theme, providers, and preferred model
+- Skippable with reminder until completed
+
+After onboarding, run `esprit` to open the interactive launchpad UI.
+
+- Guided setup for target and scan mode
 - Unified theme across onboarding and scanning TUI
 - Local directory scan input with tab autocomplete
 

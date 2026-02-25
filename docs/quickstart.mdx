@@ -44,13 +44,13 @@ esprit provider login opencode
 ```
 
 <Tip>
-You can run `esprit` with no arguments to open the interactive launchpad and configure provider, model, target, and scan mode in one flow.
+On first use, `esprit` opens a one-time onboarding wizard (theme, provider, model) before the launchpad.
 </Tip>
 
 ## Run Your First Scan
 
 ```bash
-# Interactive onboarding + launchpad
+# First run: one-time onboarding, then launchpad
 esprit
 
 # Direct scan command
@@ -58,7 +58,7 @@ esprit scan ./your-app
 ```
 
 <Note>
-First run pulls the Docker sandbox image automatically. Results are saved to `esprit_runs/<run-name>`.
+Docker image pull happens when the first local scan starts. Results are saved to `esprit_runs/<run-name>`.
 </Note>
 
 ## Target Types

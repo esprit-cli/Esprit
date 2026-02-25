@@ -43,6 +43,7 @@ apply_saved_config()
 
 from esprit.interface.cli import run_cli  # noqa: E402
 from esprit.interface.launchpad import LaunchpadResult, run_launchpad  # noqa: E402
+from esprit.interface.onboarding import run_onboarding  # noqa: E402
 from esprit.interface.tui import run_tui  # noqa: E402
 from esprit.interface.updater import apply_update, has_pending_update  # noqa: E402
 from esprit.interface.utils import (  # noqa: E402
@@ -67,6 +68,7 @@ from esprit.telemetry.tracer import get_global_tracer  # noqa: E402
 logging.getLogger().setLevel(logging.ERROR)
 
 _PAID_SUBSCRIPTION_PLANS = {"pro", "team", "enterprise"}
+_ONBOARDING_VERSION = 1
 
 
 def _is_paid_subscription_plan(plan: str | None) -> bool:
@@ -1029,6 +1031,42 @@ Supported providers:
     return args
 
 
+def _should_bypass_onboarding(argv: list[str]) -> bool:
+    if not argv:
+        return False
+
+    bypass_flags = {"-h", "--help", "-v", "--version"}
+    if any(arg in bypass_flags for arg in argv):
+        return True
+
+    command = argv[0].strip().lower()
+    return command == "uninstall"
+
+
+def _run_first_time_onboarding(argv: list[str]) -> bool:
+    if _should_bypass_onboarding(argv):
+        return True
+
+    try:
+        required = Config.is_onboarding_required(version=_ONBOARDING_VERSION)
+    except Exception:  # noqa: BLE001
+        required = False
+
+    if not required:
+        return True
+
+    onboarding_result = asyncio.run(run_onboarding())
+    action = onboarding_result.action if onboarding_result else "exit"
+
+    if action == "completed":
+        Config.mark_onboarding_completed(version=_ONBOARDING_VERSION)
+        return True
+    if action == "skipped":
+        Config.mark_onboarding_skipped(version=_ONBOARDING_VERSION)
+        return True
+    return False
+
+
 def _build_targets_info(
     targets: list[str], parser: argparse.ArgumentParser | None = None
 ) -> list[dict[str, Any]]:
@@ -1357,6 +1395,8 @@ def main() -> None:
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
     console = Console()
+    if not _run_first_time_onboarding(sys.argv[1:]):
+        return
     args = parse_arguments()
 
     if args.config:

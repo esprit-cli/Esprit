@@ -1,0 +1,82 @@
+#onboarding_root {
+    width: 100%;
+    height: 100%;
+    align: center middle;
+    padding: 1 2;
+}
+
+#onboarding_ghost {
+    width: 100%;
+    height: auto;
+    content-align: center middle;
+    margin: 0 0 1 0;
+}
+
+#onboarding_brand {
+    width: 100%;
+    height: auto;
+    content-align: center middle;
+    margin: 0 0 1 0;
+}
+
+#onboarding_title {
+    width: 100%;
+    height: auto;
+    content-align: center middle;
+    margin: 0 0 1 0;
+}
+
+#onboarding_menu {
+    width: 72;
+    max-width: 100%;
+    height: 1fr;
+    padding: 1 2;
+    margin: 0 0 1 0;
+    border: round $boost;
+    overflow-y: auto;
+}
+
+#onboarding_input {
+    width: 72;
+    max-width: 100%;
+    margin: 0 0 1 0;
+}
+
+#onboarding_status {
+    width: 72;
+    max-width: 100%;
+    height: auto;
+    content-align: center middle;
+    margin: 0 0 1 0;
+}
+
+#onboarding_hint {
+    width: 72;
+    max-width: 100%;
+    height: auto;
+    content-align: center middle;
+}
+
+Screen.theme-esprit #onboarding_menu {
+    border: round #22d3ee;
+}
+
+Screen.theme-ember #onboarding_menu {
+    border: round #f97316;
+}
+
+Screen.theme-matrix #onboarding_menu {
+    border: round #22c55e;
+}
+
+Screen.theme-glacier #onboarding_menu {
+    border: round #38bdf8;
+}
+
+Screen.theme-crt #onboarding_menu {
+    border: round #33ff33;
+}
+
+Screen.theme-sakura #onboarding_menu {
+    border: round #f472b6;
+}
