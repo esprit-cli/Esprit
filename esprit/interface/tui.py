@@ -367,6 +367,55 @@ class HelpScreen(ModalScreen):  # type: ignore[misc]
         self.app.pop_screen()
 
 
+class HelpOverlay(ModalScreen):  # type: ignore[misc]
+    """Modal overlay listing all keyboard shortcuts."""
+
+    def compose(self) -> ComposeResult:
+        help_text = Text()
+        help_text.append("  Keyboard Shortcuts\n", style="bold underline")
+        help_text.append("\n")
+        help_text.append("  Navigation              Actions\n", style="bold")
+        help_text.append("  ─────────              ───────\n", style="dim")
+        help_text.append("  Ctrl+V  ", style="bold cyan")
+        help_text.append("Vulnerabilities    ")
+        help_text.append("Ctrl+L  ", style="bold cyan")
+        help_text.append("Clear chat\n")
+        help_text.append("  Ctrl+H  ", style="bold cyan")
+        help_text.append("Agent health       ")
+        help_text.append("Ctrl+U  ", style="bold cyan")
+        help_text.append("Check updates\n")
+        help_text.append("  Ctrl+Q  ", style="bold cyan")
+        help_text.append("Quit               ")
+        help_text.append("Escape  ", style="bold cyan")
+        help_text.append("Stop agent\n")
+        help_text.append("  B       ", style="bold cyan")
+        help_text.append("Browser preview    ")
+        help_text.append("?       ", style="bold cyan")
+        help_text.append("This help\n")
+        help_text.append("  F1      ", style="bold cyan")
+        help_text.append("Help bar           ")
+        help_text.append("Enter   ", style="bold cyan")
+        help_text.append("Send message\n")
+        help_text.append("                           ")
+        help_text.append("Shift+Enter  ", style="bold cyan")
+        help_text.append("New line\n")
+        help_text.append("\n")
+        help_text.append("  Press Escape or ? to close", style="dim italic")
+
+        panel = Panel(
+            Align.center(help_text),
+            title="Esprit Help",
+            border_style="cyan",
+            padding=(1, 2),
+        )
+        yield Static(Align.center(panel), id="help_overlay_content")
+
+    def on_key(self, event: events.Key) -> None:
+        if event.key in ("escape", "question_mark"):
+            self.app.pop_screen()
+            event.prevent_default()
+
+
 class StopAgentScreen(ModalScreen):  # type: ignore[misc]
     def __init__(self, agent_name: str, agent_id: str):
         super().__init__()
@@ -389,8 +438,8 @@ class StopAgentScreen(ModalScreen):  # type: ignore[misc]
         )
 
     def on_mount(self) -> None:
-        cancel_button = self.query_one("#cancel_stop", Button)
-        cancel_button.focus()
+        stop_button = self.query_one("#stop_agent", Button)
+        stop_button.focus()
 
     def on_key(self, event: events.Key) -> None:
         if event.key in ("left", "right", "up", "down"):
@@ -726,7 +775,8 @@ class VulnerabilityDetailScreen(ModalScreen):  # type: ignore[misc]
 
             copy_button = self.query_one("#copy_vuln_detail", Button)
             copy_button.label = "Copied!"
-            self.set_timer(1.5, lambda: setattr(copy_button, "label", "Copy"))
+            copy_button.variant = "success"
+            self.set_timer(2.5, lambda: (setattr(copy_button, "label", "Copy"), setattr(copy_button, "variant", "default")))
         elif event.button.id == "close_vuln_detail":
             self.app.pop_screen()
 
@@ -799,7 +849,7 @@ class BrowserPreviewScreen(ModalScreen):  # type: ignore[misc]
             if result is not None:
                 return result
         except Exception:
-            pass
+            logging.debug("Browser preview render failed", exc_info=True)
         text = Text()
         text.append("Unable to render browser preview", style="dim")
         return text
@@ -896,10 +946,17 @@ class VulnerabilityOverlayScreen(ModalScreen):  # type: ignore[misc]
         "info": "#0284c7",
     }
 
+    _SEVERITY_CYCLE: ClassVar[list[str]] = [
+        "all", "critical", "high", "medium", "low", "info",
+    ]
+
     def __init__(self) -> None:
         super().__init__()
         self._selected_index = 0
         self._refresh_timer: Timer | None = None
+        self._severity_filter: str = "all"
+        self._search_active: bool = False
+        self._search_text: str = ""
 
     def compose(self) -> ComposeResult:
         yield Grid(
@@ -960,8 +1017,25 @@ class VulnerabilityOverlayScreen(ModalScreen):  # type: ignore[misc]
             return []
         return app._get_enriched_vulnerabilities()
 
+    def _get_filtered_vulnerabilities(self) -> list[dict[str, Any]]:
+        """Return vulnerabilities filtered by severity and search text."""
+        vulns = self._get_vulnerabilities()
+        if self._severity_filter != "all":
+            vulns = [
+                v for v in vulns
+                if str(v.get("severity", "info")).lower() == self._severity_filter
+            ]
+        if self._search_text:
+            query = self._search_text.lower()
+            vulns = [
+                v for v in vulns
+                if query in str(v.get("title", "")).lower()
+                or query in str(v.get("description", "")).lower()
+            ]
+        return vulns
+
     def _selected_vulnerability(self) -> dict[str, Any] | None:
-        vulnerabilities = self._get_vulnerabilities()
+        vulnerabilities = self._get_filtered_vulnerabilities()
         if not vulnerabilities:
             self._selected_index = 0
             return None
@@ -977,7 +1051,10 @@ class VulnerabilityOverlayScreen(ModalScreen):  # type: ignore[misc]
         total = len(vulnerabilities)
         text.append(" VULNERABILITIES ", style="bold reverse #f97316")
         if total == 0:
-            text.append("  None found yet", style="#d4d4d4")
+            if self._severity_filter != "all" or self._search_text:
+                text.append("  No matches", style="#d4d4d4")
+            else:
+                text.append("  None found yet", style="#d4d4d4")
             return text
 
         text.append(f"  {total} found", style="bold white")
@@ -1007,10 +1084,25 @@ class VulnerabilityOverlayScreen(ModalScreen):  # type: ignore[misc]
     def _build_keyhints(self) -> Text:
         """Build keyboard shortcut hints for the footer."""
         text = Text()
+        if self._search_active:
+            text.append(" / ", style="bold #22d3ee")
+            text.append("search: ", style="#b8b8b8")
+            text.append(self._search_text or "", style="bold white")
+            text.append("▏", style="bold white")
+            text.append("  ", style="")
+            text.append(" esc ", style="bold #22d3ee")
+            text.append("cancel", style="#b8b8b8")
+            text.append("  ", style="")
+            text.append(" enter ", style="bold #22d3ee")
+            text.append("apply", style="#b8b8b8")
+            return text
         hints = [
             ("\u2191\u2193/jk", "navigate"),
             ("c", "copy"),
             ("a", "copy all"),
+            ("f", f"filter:{self._severity_filter}"),
+            ("e", "export"),
+            ("/", "search"),
             ("esc", "close"),
         ]
         for i, (key, desc) in enumerate(hints):
@@ -1029,7 +1121,7 @@ class VulnerabilityOverlayScreen(ModalScreen):  # type: ignore[misc]
         except (ValueError, Exception):
             return
 
-        vulnerabilities = self._get_vulnerabilities()
+        vulnerabilities = self._get_filtered_vulnerabilities()
         header.update(self._build_header(vulnerabilities))
         keyhints.update(self._build_keyhints())
         list_content.update(self._render_list(vulnerabilities))
@@ -1270,7 +1362,7 @@ class VulnerabilityOverlayScreen(ModalScreen):  # type: ignore[misc]
         return text
 
     def _move_selection(self, step: int) -> None:
-        vulnerabilities = self._get_vulnerabilities()
+        vulnerabilities = self._get_filtered_vulnerabilities()
         if not vulnerabilities:
             return
         self._selected_index = max(0, min(len(vulnerabilities) - 1, self._selected_index + step))
@@ -1285,7 +1377,7 @@ class VulnerabilityOverlayScreen(ModalScreen):  # type: ignore[misc]
         self._show_button_feedback("copy_overlay_selected", "Copied!")
 
     def _copy_all(self) -> None:
-        vulnerabilities = self._get_vulnerabilities()
+        vulnerabilities = self._get_filtered_vulnerabilities()
         if not vulnerabilities:
             return
         reports = [VulnerabilityDetailScreen(vuln)._get_markdown_report() for vuln in vulnerabilities]
@@ -1301,7 +1393,48 @@ class VulnerabilityOverlayScreen(ModalScreen):  # type: ignore[misc]
         button.label = label
         self.set_timer(1.5, lambda: setattr(button, "label", original_label))
 
+    def _cycle_severity_filter(self) -> None:
+        """Cycle severity filter: all → critical → high → medium → low → info → all."""
+        idx = self._SEVERITY_CYCLE.index(self._severity_filter)
+        self._severity_filter = self._SEVERITY_CYCLE[(idx + 1) % len(self._SEVERITY_CYCLE)]
+        self._selected_index = 0
+        self._refresh_view()
+
+    def _export_visible(self) -> None:
+        """Export all visible (filtered) vulnerabilities as formatted text."""
+        vulnerabilities = self._get_filtered_vulnerabilities()
+        if not vulnerabilities:
+            self.notify("No vulnerabilities to export.", severity="warning")
+            return
+        reports = [VulnerabilityDetailScreen(vuln)._get_markdown_report() for vuln in vulnerabilities]
+        combined = "\n\n---\n\n".join(reports)
+        try:
+            self.app.copy_to_clipboard(combined)
+            self.notify(f"Exported {len(vulnerabilities)} vulnerabilities to clipboard.")
+        except Exception:
+            self.notify(combined[:500] + "\n..." if len(combined) > 500 else combined)
+
     def on_key(self, event: events.Key) -> None:
+        # Search mode: capture typed characters
+        if self._search_active:
+            if event.key == "escape":
+                self._search_active = False
+                self._search_text = ""
+                self._selected_index = 0
+                self._refresh_view()
+            elif event.key == "enter":
+                self._search_active = False
+                self._refresh_view()
+            elif event.key == "backspace":
+                self._search_text = self._search_text[:-1]
+                self._selected_index = 0
+                self._refresh_view()
+            elif event.character and event.character.isprintable():
+                self._search_text += event.character
+                self._selected_index = 0
+                self._refresh_view()
+            event.prevent_default()
+            return
         if event.key in ("escape", "v"):
             self.app.pop_screen()
             event.prevent_default()
@@ -1321,6 +1454,21 @@ class VulnerabilityOverlayScreen(ModalScreen):  # type: ignore[misc]
         if event.key == "a":
             self._copy_all()
             event.prevent_default()
+            return
+        if event.key == "f":
+            self._cycle_severity_filter()
+            event.prevent_default()
+            return
+        if event.key == "e":
+            self._export_visible()
+            event.prevent_default()
+            return
+        if event.key == "slash":
+            self._search_active = True
+            self._search_text = ""
+            self._refresh_view()
+            event.prevent_default()
+            return
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "copy_overlay_selected":
@@ -1498,8 +1646,10 @@ class AgentHealthPopupScreen(ModalScreen):  # type: ignore[misc]
         except (ValueError, Exception):
             return
         original_label = str(button.label)
+        original_variant = button.variant
         button.label = label
-        self.set_timer(1.5, lambda: setattr(button, "label", original_label))
+        button.variant = "success"
+        self.set_timer(2.5, lambda: (setattr(button, "label", original_label), setattr(button, "variant", original_variant)))
 
     def on_key(self, event: events.Key) -> None:
         if event.key in ("escape", "h"):
@@ -1544,8 +1694,8 @@ class QuitScreen(ModalScreen):  # type: ignore[misc]
         )
 
     def on_mount(self) -> None:
-        cancel_button = self.query_one("#cancel", Button)
-        cancel_button.focus()
+        quit_button = self.query_one("#quit", Button)
+        quit_button.focus()
 
     def on_key(self, event: events.Key) -> None:
         if event.key in ("left", "right", "up", "down"):
@@ -1684,7 +1834,7 @@ class UpdateScreen(ModalScreen):  # type: ignore[misc]
                 msg.append("Update scheduled — will apply on next launch", style="dim")
                 keymap.update(msg)
             except Exception:
-                pass
+                logging.debug("Update application failed", exc_info=True)
         else:  # skip or ok
             self.app.pop_screen()
 
@@ -1710,6 +1860,8 @@ class EspritTUIApp(App):  # type: ignore[misc]
         Binding("ctrl+v", "toggle_vulnerability_overlay", "Vulnerabilities", priority=False),
         Binding("ctrl+h", "toggle_agent_health_popup", "Agent Health", priority=False),
         Binding("ctrl+u", "check_for_updates", "Updates", priority=True),
+        Binding("question_mark", "show_help_overlay", "Help Shortcuts", priority=True),
+        Binding("ctrl+l", "clear_chat", "Clear Chat", priority=True),
     ]
 
     def __init__(self, args: argparse.Namespace, gui_server: _GUIServerType = None):
@@ -1731,6 +1883,8 @@ class EspritTUIApp(App):  # type: ignore[misc]
 
         self._streaming_render_cache: dict[str, tuple[int, Any]] = {}
         self._last_streaming_len: dict[str, int] = {}
+        self._streaming_start_time: dict[str, float] = {}
+        self._streaming_start_output_tokens: dict[str, int] = {}
 
         self._scan_thread: threading.Thread | None = None
         self._scan_stop_event = threading.Event()
@@ -1746,6 +1900,9 @@ class EspritTUIApp(App):  # type: ignore[misc]
         self._shimmer_colors: list[str] = list(palette.get("shimmer_colors", []))
         self._sweep_dot_color = str(palette.get("sweep_dot_color", "#0a3d1f"))
         self._dot_animation_timer: Any | None = None
+
+        self._previously_compacting: set[str] = set()
+        self._compaction_done_until: dict[str, float] = {}
 
         self._setup_cleanup_handlers()
 
@@ -1958,7 +2115,29 @@ class EspritTUIApp(App):  # type: ignore[misc]
                 time.sleep(3.0)  # Let the TUI fully render before interrupting
                 self.call_from_thread(self._show_update_notification, info)
         except Exception:
-            pass
+            logging.debug("Update check failed", exc_info=True)
+
+    def _show_error_notification(self, error_message: str) -> None:
+        """Display an error notification as a red-bordered panel in the chat area."""
+        logging.error("UI error notification: %s", error_message)
+        try:
+            chat_history = self.query_one("#chat_history", VerticalScroll)
+            panel = Panel(
+                Text(error_message, style="bold red"),
+                border_style="red",
+                title="Error",
+                expand=True,
+            )
+            error_widget = Static(panel)
+            try:
+                is_at_bottom = chat_history.scroll_y >= (chat_history.max_scroll_y - 50)
+            except (AttributeError, ValueError):
+                is_at_bottom = True
+            chat_history.mount(error_widget)
+            if is_at_bottom:
+                self.call_later(chat_history.scroll_end, animate=False)
+        except Exception:
+            logging.debug("Failed to display error notification in UI", exc_info=True)
 
     def _show_update_notification(self, info: "UpdateInfo") -> None:
         """Called on the main thread after a background update check finds a new version."""
@@ -2000,6 +2179,10 @@ class EspritTUIApp(App):  # type: ignore[misc]
             self._expand_new_agent_nodes()
 
         self._update_chat_view()
+
+        self._update_streaming_timing()
+
+        self._track_compaction_transitions()
 
         self._update_agent_status_display()
 
@@ -2152,7 +2335,7 @@ class EspritTUIApp(App):  # type: ignore[misc]
             return
 
         try:
-            is_at_bottom = chat_history.scroll_y >= chat_history.max_scroll_y
+            is_at_bottom = chat_history.scroll_y >= (chat_history.max_scroll_y - 50)
         except (AttributeError, ValueError):
             is_at_bottom = True
 
@@ -2232,6 +2415,16 @@ class EspritTUIApp(App):  # type: ignore[misc]
         text.append("  ·  ", style="dim")
         text.append("summarizing older messages to free context", style="dim")
         return text
+
+    def _track_compaction_transitions(self) -> None:
+        """Detect agents that just finished compaction and schedule a 2s done message."""
+        import time as _time
+
+        current = set(self.tracer.compacting_agents)
+        just_finished = self._previously_compacting - current
+        for agent_id in just_finished:
+            self._compaction_done_until[agent_id] = _time.monotonic() + 2.0
+        self._previously_compacting = current
 
     # ------------------------------------------------------------------
     # Shimmer text + subagent dashboard
@@ -2422,7 +2615,15 @@ class EspritTUIApp(App):  # type: ignore[misc]
         if status in {"failed", "llm_failed", "error", "sandbox_failed"}:
             return "Agent failed. Review logs and retry."
         if agent_id in self.tracer.compacting_agents:
-            return "Compacting memory to recover context budget."
+            return "🔄 Compacting memory..."
+
+        import time as _time
+
+        _done_until = getattr(self, "_compaction_done_until", {})
+        if agent_id in _done_until:
+            if _time.monotonic() < _done_until[agent_id]:
+                return "✓ Memory compacted"
+            _done_until.pop(agent_id, None)
 
         snippet = self._get_agent_snippet(agent_id)
         if snippet:
@@ -2450,12 +2651,27 @@ class EspritTUIApp(App):  # type: ignore[misc]
             text.append("[run] ", style=self._marker_style("run"))
 
         dim_style = f"dim {str(palette.get('muted', '#9ca3af'))}"
+        info_style = str(palette.get("info", "#60a5fa"))
         text.append(elapsed, style=dim_style)
         text.append(" · ", style=dim_style)
         text.append(f"{format_token_count(token_count)} tok", style=dim_style)
         if cost > 0:
             text.append(" · ", style=dim_style)
             text.append(f"${cost:.2f}", style=dim_style)
+
+        # Streaming tok/s and elapsed time
+        if agent_id in self._streaming_start_time:
+            stream_elapsed = time.monotonic() - self._streaming_start_time[agent_id]
+            if stream_elapsed >= 0.5:
+                stream_content = self.tracer.get_streaming_content(agent_id) or ""
+                # Estimate tokens from streaming content (~4 chars per token)
+                estimated_tokens = max(1, len(stream_content) // 4)
+                tps = estimated_tokens / stream_elapsed
+                text.append(" │ ", style=dim_style)
+                text.append(f"{stream_elapsed:.0f}s", style=f"dim {info_style}")
+                text.append(" │ ", style=dim_style)
+                text.append(f"~{tps:.0f} tok/s", style=f"dim {info_style}")
+
         text.append(" · ", style=dim_style)
         text.append(snippet, style=str(palette.get("text", "#e8d5d5")))
         return text
@@ -2745,6 +2961,27 @@ class EspritTUIApp(App):  # type: ignore[misc]
         text.append("]", style=running_style)
         text.append(" ", style=muted_style)
         return text
+
+    def _update_streaming_timing(self) -> None:
+        """Track streaming start time and baseline output tokens per agent."""
+        active_streaming: set[str] = set()
+        for agent_id in list(self.tracer.agents):
+            content = self.tracer.get_streaming_content(agent_id)
+            if content and content.strip():
+                active_streaming.add(agent_id)
+                if agent_id not in self._streaming_start_time:
+                    self._streaming_start_time[agent_id] = time.monotonic()
+                    _, _ = self._get_agent_token_snapshot(agent_id)
+                    by_agent = self.tracer.get_total_llm_stats().get("by_agent", {})
+                    agent_stats = by_agent.get(str(agent_id), {})
+                    self._streaming_start_output_tokens[agent_id] = int(
+                        agent_stats.get("output_tokens", 0)
+                    )
+        # Clear timing for agents that stopped streaming
+        for agent_id in list(self._streaming_start_time):
+            if agent_id not in active_streaming:
+                self._streaming_start_time.pop(agent_id, None)
+                self._streaming_start_output_tokens.pop(agent_id, None)
 
     def _update_agent_status_display(self) -> None:
         try:
@@ -3148,6 +3385,8 @@ class EspritTUIApp(App):  # type: ignore[misc]
         self._displayed_events.clear()
         self._streaming_render_cache.clear()
         self._last_streaming_len.clear()
+        self._streaming_start_time.clear()
+        self._streaming_start_output_tokens.clear()
 
         self.call_later(self._update_chat_view)
         self._update_agent_status_display()
@@ -3578,6 +3817,40 @@ class EspritTUIApp(App):  # type: ignore[misc]
             return
 
         self.push_screen(HelpScreen())
+
+    def action_show_help_overlay(self) -> None:
+        if self.show_splash or not self.is_mounted:
+            return
+
+        # Don't open when chat input is focused (user might be typing '?')
+        try:
+            chat_input = self.query_one("#chat_input", ChatTextArea)
+            if self.focused == chat_input:
+                return
+        except (ValueError, Exception):
+            pass
+
+        if isinstance(self.screen, HelpOverlay):
+            self.pop_screen()
+            return
+
+        if len(self.screen_stack) > 1:
+            return
+
+        self.push_screen(HelpOverlay())
+
+    def action_clear_chat(self) -> None:
+        if self.show_splash or not self.is_mounted:
+            return
+
+        if len(self.screen_stack) > 1:
+            return
+
+        try:
+            chat_display = self.query_one("#chat_display", Static)
+            chat_display.update("")
+        except (ValueError, Exception):
+            return
 
     def action_show_browser_preview(self) -> None:
         """Show enlarged browser preview for the selected agent."""

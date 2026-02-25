@@ -27,7 +27,13 @@ brew install esprit
 npm install -g esprit-cli@latest
 ```
 
-### Option 4: From Source
+### Option 4: pip (PyPI)
+
+```bash
+pip install esprit-cli
+```
+
+### Option 5: From Source
 
 ```bash
 git clone https://github.com/improdead/Esprit.git

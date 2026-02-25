@@ -48,6 +48,35 @@ require_command() {
   fi
 }
 
+verify_signature() {
+    if ! command -v gpg &> /dev/null; then
+        echo "⚠ gpg not found — skipping signature verification"
+        return 0
+    fi
+
+    # Import the Esprit public key
+    local key_url="https://raw.githubusercontent.com/improdead/Esprit/main/keys/esprit-release.pub"
+    if curl -fsSL "$key_url" | gpg --import 2>/dev/null; then
+        echo "✓ Esprit release key imported"
+    else
+        echo "⚠ Could not import release key — skipping verification"
+        return 0
+    fi
+
+    # Verify if a signature file exists
+    if [ -f "$1.sig" ]; then
+        if gpg --verify "$1.sig" "$1" 2>/dev/null; then
+            echo "✓ Signature verified"
+        else
+            echo "⚠ Signature verification failed"
+            echo "  The download may have been tampered with."
+            echo "  Continue anyway? (y/N)"
+            read -r response
+            [ "$response" = "y" ] || exit 1
+        fi
+    fi
+}
+
 choose_python() {
   local candidate
   for candidate in python3.13 python3.12 python3; do
@@ -235,6 +264,7 @@ main() {
   print_message info "${MUTED}Install root:${NC} $INSTALL_ROOT"
 
   sync_runtime_repo
+  verify_signature "$RUNTIME_DIR"
   install_python_runtime "$py_bin"
   write_launcher
   setup_path

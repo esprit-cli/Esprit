@@ -15,7 +15,9 @@ import logging
 import os
 import platform
 import shutil
+import signal
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -237,6 +239,77 @@ def validate_environment() -> None:  # noqa: PLR0912, PLR0915
         sys.exit(1)
 
 
+def _docker_health_check(console: Console, config: type) -> bool:
+    """Consolidated pre-scan Docker health check.
+
+    Returns True if all checks pass, False otherwise.
+    """
+    import docker as docker_lib
+
+    failures: list[tuple[str, str]] = []
+
+    # 1. Docker daemon running
+    try:
+        client = docker_lib.from_env()
+        client.ping()
+    except Exception:
+        failures.append(
+            ("Docker daemon is not running", "Start Docker Desktop or run: sudo systemctl start docker"),
+        )
+
+    # 2. Sandbox image exists
+    if not failures:
+        image_name = config.get("esprit_image")
+        if not image_exists(client, image_name):
+            failures.append(
+                (
+                    f"Sandbox image '{image_name}' not found",
+                    f"Run: docker pull {image_name}",
+                ),
+            )
+
+    # 3. Sufficient disk space (≥ 2 GB on Docker data-root)
+    if not failures:
+        try:
+            info = client.info()
+            docker_root = info.get("DockerRootDir", "/var/lib/docker")
+            usage = shutil.disk_usage(docker_root)
+            min_free = 2 * 1024 * 1024 * 1024  # 2 GB
+            if usage.free < min_free:
+                free_gb = usage.free / (1024 ** 3)
+                failures.append(
+                    (
+                        f"Low disk space on Docker data-root ({free_gb:.1f} GB free, need ≥ 2 GB)",
+                        f"Free up disk space in {docker_root}",
+                    ),
+                )
+        except OSError:
+            pass  # non-fatal: skip check if path is inaccessible
+
+    if failures:
+        error_text = Text()
+        error_text.append("DOCKER HEALTH CHECK FAILED", style="bold red")
+        error_text.append("\n", style="white")
+        for problem, fix in failures:
+            error_text.append(f"\n✗ {problem}\n", style="red")
+            error_text.append(f"  ➜ {fix}\n", style="dim white")
+
+        console.print(
+            "\n",
+            Panel(
+                error_text,
+                title="[bold white]ESPRIT",
+                title_align="left",
+                border_style="red",
+                padding=(1, 2),
+            ),
+            "\n",
+        )
+        return False
+
+    return True
+
+
 def check_docker_installed() -> None:
     if shutil.which("docker") is None:
         console = Console()
@@ -292,16 +365,26 @@ def ensure_docker_running() -> None:
             sys.exit(1)
 
         # Wait for Docker to become available
-        with console.status("[bold cyan]Waiting for Docker to start...", spinner="dots"):
-            for _ in range(60):  # Wait up to 60 seconds
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[bold cyan]Waiting for Docker to start..."),
+            BarColumn(),
+            TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
+            TimeRemainingColumn(),
+            console=console,
+        ) as progress:
+            task = progress.add_task("docker", total=60)
+            for i in range(60):
                 time.sleep(1)
+                progress.update(task, advance=1)
                 try:
                     import docker as docker_lib
                     docker_lib.from_env()
-                    console.print("[green]Docker started.[/]")
+                    progress.update(task, completed=60)
+                    console.print("[green]✓ Docker started.[/]")
                     return
-                except Exception:
-                    continue
+                except Exception:  # noqa: BLE001
+                    pass
 
         console.print("[red]Docker did not start in time.[/]")
         console.print("[dim]Please start Docker Desktop manually and try again.[/]")
@@ -972,6 +1055,7 @@ Supported providers:
         action="version",
         version=f"esprit {get_version()}",
     )
+    parser.add_argument("--self-update", action="store_true", help="Update Esprit to the latest version")
 
     args = parser.parse_args()
     args.skip_pre_scan_checks = False
@@ -1359,6 +1443,22 @@ def main() -> None:
     console = Console()
     args = parse_arguments()
 
+    if args.self_update:
+        import subprocess
+        console.print("[bold cyan]Updating Esprit...[/]")
+        try:
+            if platform.system() == "Windows":
+                cmd = ["powershell", "-ExecutionPolicy", "Bypass", "-Command",
+                       "irm https://raw.githubusercontent.com/improdead/Esprit/main/scripts/install.ps1 | iex"]
+            else:
+                cmd = ["bash", "-c",
+                       "curl -fsSL https://raw.githubusercontent.com/improdead/Esprit/main/scripts/install.sh | bash"]
+            subprocess.run(cmd, check=True)
+            console.print("[green]✓ Update complete![/]")
+        except subprocess.CalledProcessError:
+            console.print("[red]✗ Update failed. Try manually: curl -fsSL https://raw.githubusercontent.com/improdead/Esprit/main/scripts/install.sh | bash[/]")
+        sys.exit(0)
+
     if args.config:
         apply_config_override(args.config)
 
@@ -1393,9 +1493,42 @@ def main() -> None:
         console.print()
     else:
         os.environ["ESPRIT_RUNTIME_BACKEND"] = "docker"
-        check_docker_installed()
-        ensure_docker_running()
-        pull_docker_image()
+
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[bold]{task.description}"),
+            BarColumn(),
+            TaskProgressColumn(),
+            console=console,
+        ) as progress:
+            init_task = progress.add_task("Initializing scan...", total=4)
+
+            # Step 1: Check Docker installation
+            progress.update(init_task, description="Checking Docker installation...")
+            check_docker_installed()
+            progress.advance(init_task)
+
+            # Step 2: Ensure Docker engine is running
+            progress.update(init_task, description="Starting Docker engine...")
+            progress.stop()
+            ensure_docker_running()
+            progress.start()
+            progress.advance(init_task)
+
+            # Step 3: Docker health check
+            progress.update(init_task, description="Running Docker health check...")
+            progress.stop()
+            if not _docker_health_check(console, Config):
+                sys.exit(1)
+            progress.start()
+            progress.advance(init_task)
+
+            # Step 4: Pull/verify sandbox image
+            progress.update(init_task, description="Verifying sandbox image...")
+            progress.stop()
+            pull_docker_image()
+            progress.start()
+            progress.advance(init_task)
 
     validate_environment()
     asyncio.run(warm_up_llm())
@@ -1458,13 +1591,41 @@ def main() -> None:
             tui_result = asyncio.run(run_tui(args, gui_server=gui_server))
     except KeyboardInterrupt:
         exit_reason = "interrupted"
+
+        # Force-quit watchdog: if cleanup hangs longer than 10s, bail out.
+        def _force_quit() -> None:
+            console.print("\n[bold red]Force quitting...[/bold red]")
+            os._exit(1)
+
+        watchdog = threading.Timer(10.0, _force_quit)
+        watchdog.daemon = True
+        watchdog.start()
+
+        with console.status(
+            "[bold yellow]⏳ Cancelling scan... saving partial results[/bold yellow]",
+            spinner="dots",
+        ):
+            tracer = get_global_tracer()
+            if tracer:
+                posthog.end(tracer, exit_reason=exit_reason)
+
+        watchdog.cancel()
+
+        results_path = Path("esprit_runs") / args.run_name
+        if results_path.exists():
+            console.print(
+                f"[green]✓[/green] Scan cancelled. Partial results saved to [bold]{results_path}[/bold]"
+            )
+        else:
+            console.print("[green]✓[/green] Scan cancelled.")
+        return
     except Exception as e:
         exit_reason = "error"
         posthog.error("unhandled_exception", str(e))
         raise
     finally:
         tracer = get_global_tracer()
-        if tracer:
+        if tracer and exit_reason != "interrupted":
             posthog.end(tracer, exit_reason=exit_reason)
 
     # "Update Now" was chosen inside the TUI — apply immediately now that

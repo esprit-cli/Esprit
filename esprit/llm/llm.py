@@ -57,6 +57,16 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
+# Dedicated logger for model-fallback notifications so they remain visible
+# even when the root logger is set to ERROR (the default in CLI/TUI mode).
+_fallback_logger = logging.getLogger("esprit.llm.fallback")
+if not _fallback_logger.handlers:
+    _fbh = logging.StreamHandler()
+    _fbh.setFormatter(logging.Formatter("%(levelname)s: %(message)s"))
+    _fallback_logger.addHandler(_fbh)
+    _fallback_logger.propagate = False
+_fallback_logger.setLevel(logging.WARNING)
+
 _OPENCODE_PREFERRED_PUBLIC_FALLBACK_MODELS = [
     "minimax-m2.5-free",
     "kimi-k2.5-free",
@@ -255,6 +265,13 @@ class LLM:
                         continue
                     self._raise_error(e)
                 wait = min(10, 2 * (2**attempt))
+                status_code = getattr(e, "status_code", None) or getattr(
+                    getattr(e, "response", None), "status_code", None
+                )
+                if status_code:
+                    logger.warning(f"Rate limited (HTTP {status_code}), retrying in {wait:.0f}s...")
+                else:
+                    logger.warning(f"LLM request failed, retrying in {wait:.0f}s...")
                 await asyncio.sleep(wait)
                 attempt += 1
 
@@ -616,7 +633,9 @@ class LLM:
                     retried = False
                     last_retry_error = e
                     for retry in range(2):
-                        await asyncio.sleep(2 * (retry + 1))
+                        wait_time = 2 * (retry + 1)
+                        logger.warning(f"Rate limited (HTTP 400), retrying in {wait_time:.0f}s...")
+                        await asyncio.sleep(wait_time)
                         try:
                             async for response in self._do_antigravity_stream(url, headers, request_body):
                                 yield response
@@ -1200,9 +1219,13 @@ class LLM:
             self.config.model_name = new_model
             self._tried_models.add(fallback)
 
-            logger.warning(
-                "Model %s failed (%s), falling back to %s",
-                old_model, type(e).__name__, new_model,
+            _status = getattr(e, "status_code", None) or getattr(
+                getattr(e, "response", None), "status_code", None
+            )
+            _reason = f"{type(e).__name__} (HTTP {_status})" if _status else type(e).__name__
+            _fallback_logger.warning(
+                "Switched from %s to %s due to %s",
+                old_model, new_model, _reason,
             )
             return True
 
@@ -1285,9 +1308,13 @@ class LLM:
             new_model = f"{prefix}/{fallback_bare}"
             self.config.model_name = new_model
             self._tried_opencode_models.add(fallback_bare)
-            logger.warning(
-                "OpenCode model %s failed (%s), falling back to %s",
-                old_model, type(e).__name__, new_model,
+            _status = getattr(e, "status_code", None) or getattr(
+                getattr(e, "response", None), "status_code", None
+            )
+            _reason = f"{type(e).__name__} (HTTP {_status})" if _status else type(e).__name__
+            _fallback_logger.warning(
+                "Switched from %s to %s due to %s",
+                old_model, new_model, _reason,
             )
             return True
 

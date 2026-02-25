@@ -1,0 +1,25 @@
+name: Version Sync Check
+
+on:
+  pull_request:
+
+jobs:
+  version-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check version consistency
+        run: |
+          pyproject_version=$(grep '^version' pyproject.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
+          package_version=$(node -p "require('./package.json').version")
+
+          echo "pyproject.toml version: $pyproject_version"
+          echo "package.json version:   $package_version"
+
+          if [ "$pyproject_version" != "$package_version" ]; then
+            echo "::error::Version mismatch: pyproject.toml ($pyproject_version) != package.json ($package_version)"
+            exit 1
+          fi
+
+          echo "Versions match: $pyproject_version"

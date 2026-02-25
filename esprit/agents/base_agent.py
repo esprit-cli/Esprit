@@ -297,6 +297,17 @@ class BaseAgent(metaclass=AgentMeta):
                 if self._last_llm_error_status_code is not None
                 else ""
             )
+            if self._last_llm_error_status_code is not None:
+                logger.warning(
+                    f"Rate limited (HTTP {self._last_llm_error_status_code}), "
+                    f"retrying in {self._llm_auto_resume_cooldown:.0f}s... "
+                    f"(attempt {attempt}/{self._max_llm_auto_resume_attempts})"
+                )
+            else:
+                logger.warning(
+                    f"LLM request failed, retrying in {self._llm_auto_resume_cooldown:.0f}s... "
+                    f"(attempt {attempt}/{self._max_llm_auto_resume_attempts})"
+                )
             self.state.resume_from_waiting()
             self.state.add_message(
                 "user",

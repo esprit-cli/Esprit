@@ -9,25 +9,34 @@ const isWindows = process.platform === "win32";
 const binaryName = isWindows ? "esprit.exe" : "esprit";
 const installDir = path.join(os.homedir(), ".esprit", "bin");
 const binaryPath = path.join(installDir, binaryName);
-const installerPath = path.resolve(__dirname, "..", "scripts", "install.sh");
+const installerPath = path.resolve(
+  __dirname,
+  "..",
+  "scripts",
+  isWindows ? "install.ps1" : "install.sh"
+);
 
 function ensureInstalled() {
   if (fs.existsSync(binaryPath)) {
     return;
   }
 
-  if (isWindows) {
-    console.error("[esprit] installer currently supports macOS/Linux. Use WSL on Windows.");
-    process.exit(1);
-  }
+  const bootstrapEnv = {
+    ...process.env,
+    ESPRIT_SKIP_DOCKER_WARM: process.env.ESPRIT_SKIP_DOCKER_WARM || "1",
+  };
 
-  const bootstrap = spawnSync("bash", [installerPath], {
-    stdio: "inherit",
-    env: {
-      ...process.env,
-      ESPRIT_SKIP_DOCKER_WARM: process.env.ESPRIT_SKIP_DOCKER_WARM || "1",
-    },
-  });
+  const bootstrap = isWindows
+    ? spawnSync(
+        "powershell",
+        ["-ExecutionPolicy", "Bypass", "-File", installerPath],
+        { stdio: "inherit", env: bootstrapEnv }
+      )
+    : spawnSync("bash", [installerPath], {
+        stdio: "inherit",
+        env: bootstrapEnv,
+      });
+
   if (bootstrap.status !== 0) {
     process.exit(bootstrap.status || 1);
   }
