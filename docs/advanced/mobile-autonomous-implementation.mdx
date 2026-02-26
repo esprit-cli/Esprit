@@ -151,6 +151,7 @@ For autonomous discovery:
 - Full iOS runtime bypass automation.
 - Device farm orchestration.
 - App store crawling.
+- Automated certificate pinning bypass or exploit synthesis.
 
 ### A1. Target Model and Scan Context
 
@@ -207,6 +208,50 @@ Current staging only handles directories (`collect_local_sources` + directory co
 - `docs/tools/sandbox.mdx`
   - Document mobile tool availability and caveats.
 
+### A3b. Mobile Traffic Plumbing (Minimum Viable Dynamic Path)
+
+Static-only analysis is not enough for realistic mobile pentesting because many request shapes
+exist only after authenticated runtime flows.
+
+#### Required v1 behavior
+
+- Add a `mobile proxy mode` with clear operator workflow:
+  - user routes device/emulator traffic to scanner proxy,
+  - scanner captures traffic into the same Caido request/sitemap store used for web scans.
+- Persist captured mobile request templates (method/url/headers/body shape/auth context) so
+  replay/mutate uses existing `list_requests`, `view_request`, `repeat_request`, `send_request`.
+- Keep this operator-assisted in v1 (no bypass automation).
+
+This preserves one unified backend testing substrate instead of creating a separate mobile replay system.
+
+### A3c. iOS Dynamic Constraints (Explicit)
+
+iOS dynamic testing is not symmetric with Android in this architecture.
+
+- Linux sandbox can support iOS static artifact processing, but iOS runtime instrumentation
+  generally requires external device/macOS-side tooling.
+- In v1:
+  - Android dynamic path can be introduced earlier.
+  - iOS dynamic remains explicitly gated as external/operator-assisted.
+
+Docs and UX should state this directly to avoid false expectations.
+
+### A3d. MobSF Integration Decision
+
+MobSF can be introduced in two patterns:
+
+1. CLI-only v1:
+   - Use `apktool`/`jadx`/custom parsers in current sandbox image.
+   - Lowest operational complexity, easiest CI.
+2. MobSF sidecar service:
+   - Run MobSF independently and integrate via API.
+   - Richer analysis but higher infra complexity.
+
+Recommendation:
+
+- Keep v1 CLI-only.
+- Treat MobSF sidecar as v2+, so primary scan container stays lean and independently testable.
+
 ### A4. New Mobile Tool Module
 
 Add a new tool package `esprit/tools/mobile/` to return structured JSON instead of raw shell text.
@@ -216,7 +261,7 @@ Add a new tool package `esprit/tools/mobile/` to return structured JSON instead 
 - `mobile_action(action="static_scan", app_path, platform="auto")`
   - Outputs permissions, exported components, hardcoded hosts, cert pinning indicators, extracted endpoints.
 - `mobile_action(action="extract_endpoints", app_path)`
-  - Returns normalized endpoint candidates for backend testing.
+  - Returns normalized endpoint candidates with confidence scores and provenance.
 - `mobile_action(action="dynamic_prepare", app_path, mode="passive")`
   - Sets up optional runtime instrumentation plan (no bypass automation in v1).
 
@@ -249,9 +294,12 @@ Mobile should not be isolated. It should feed the existing web/API pipeline.
 Pipeline:
 
 1. Extract endpoints/secrets/auth flows from app artifact.
-2. Convert to prioritized API hypotheses.
-3. Use existing proxy/terminal/python tools for replay/fuzz/validation.
-4. Report via existing `create_vulnerability_report`.
+2. Score endpoint candidates by confidence/provenance:
+   - observed in proxy traffic > decoded literal > inferred/constructed.
+3. Enforce in-scope host filtering before auto-testing.
+4. Convert qualified candidates to prioritized API hypotheses.
+5. Use existing proxy/terminal/python tools for replay/fuzz/validation.
+6. Report via existing `create_vulnerability_report`.
 
 This minimizes net-new code while leveraging mature tooling already in Esprit.
 
@@ -277,6 +325,7 @@ Acceptance for v1:
 
 - App artifact ingested and staged in sandbox.
 - Endpoint extraction returns structured output.
+- Captured mobile runtime traffic (if provided) is queryable through existing proxy tools.
 - At least one extracted endpoint is tested through existing web/API path automatically.
 - Vulnerability report flow remains unchanged and stable.
 
@@ -310,6 +359,7 @@ Extend `AgentState` with explicit discovery fields.
 - `experiments: list[Experiment]`
 - `anomaly_events: list[AnomalyEvent]`
 - `discovery_metrics: dict`
+- `evidence_index: dict[str, EvidenceRef]`
 
 `Hypothesis` example:
 
@@ -322,6 +372,7 @@ Extend `AgentState` with explicit discovery fields.
   "novelty_score": 0.82,
   "impact_score": 0.70,
   "confidence": 0.45,
+  "evidence_refs": ["proxy:req_1842", "browser:shot_117", "terminal:exec_77"],
   "status": "queued"
 }
 ```
@@ -338,6 +389,8 @@ Add `esprit/discovery/` package with deterministic logic.
 - `prioritizer.py`: scoring and ranking.
 - `scheduler.py`: select next experiments/subagent tasks.
 - `tracker.py`: lifecycle transitions and metrics.
+- `evidence_store.py`: normalized references to raw artifacts (request IDs, tool execution IDs, screenshots).
+- `event_bus.py`: append-only discovery events consumed by root aggregator.
 
 ### B3. Agent Loop Integration
 
@@ -348,7 +401,7 @@ Hook discovery engine into `BaseAgent` without breaking existing tool flow.
 - Before LLM call in `_process_iteration`:
   - inject top-N queued hypotheses as structured context block.
 - After tool results in `_execute_actions`:
-  - parse observations and update anomaly/hypothesis state.
+  - parse structured observations into events and update anomaly/hypothesis state.
 - Before finishing:
   - verify no high-priority hypotheses remain untested (with configurable ceiling).
 
@@ -391,6 +444,18 @@ Reuse and extend existing dedupe ideas.
 
 This prevents subagent churn on the same issue.
 
+### B6b. Evidence-First Reproducibility
+
+Each hypothesis and experiment must reference raw evidence artifacts.
+
+- Required evidence pointers:
+  - proxy request IDs,
+  - tool execution IDs,
+  - screenshots / terminal outputs where relevant.
+- Discovery summaries should be renderings of evidence-backed events, not free-text-only judgments.
+
+This keeps the autonomy loop auditable and reduces \"LLM vibe\" drift.
+
 ### B7. Safety and Budget Guards
 
 Add hard controls to avoid autonomous runaway.
@@ -399,6 +464,17 @@ Add hard controls to avoid autonomous runaway.
 - Max concurrent experiments per root agent.
 - Per-target cooldown when repeated failures occur.
 - Respect existing `MAX_AGENTS` and iteration caps.
+
+### B7b. Tool-Layer Scope Enforcement (Mandatory)
+
+Autonomy should not rely only on prompt instructions for scope.
+
+- Enforce scope in execution layer for outbound testing tools:
+  - `send_request`,
+  - `repeat_request`,
+  - any new mobile correlation/replay tool.
+- Block or warn on out-of-scope hosts unless explicitly allowed by scan config.
+- Prefer deriving allowed hosts from target definitions + proxy scope rules.
 
 ### B8. Telemetry and Persistence
 
@@ -412,6 +488,13 @@ Extend tracer persistence for discovery observability.
     - hypothesis conversion rate
     - novelty ratio
     - validated finding rate
+  - Persist evidence index and event logs.
+
+Concurrency note:
+
+- Do not let every subagent write discovery JSON directly.
+- Use append-only in-memory events per agent and root-agent aggregation for persistence.
+- Add locking around shared tracer structures where needed.
 
 ### B9. Testing Plan (Autonomous Discovery)
 
@@ -420,6 +503,7 @@ Extend tracer persistence for discovery observability.
 - Signal extraction for proxy/terminal/browser outputs.
 - Prioritizer ordering and dedupe correctness.
 - Scheduler respects agent cap and budget limits.
+- Scope enforcement checks reject out-of-scope replay attempts.
 
 #### Integration
 
@@ -427,7 +511,8 @@ Extend tracer persistence for discovery observability.
   - hypotheses created,
   - experiments spawned,
   - outcomes fed back,
-  - final reports deduped.
+  - final reports deduped,
+  - evidence refs remain valid end-to-end.
 
 #### Benchmark
 
