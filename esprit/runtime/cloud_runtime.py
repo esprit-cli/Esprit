@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 
@@ -41,15 +42,52 @@ class CloudRuntime(AbstractRuntime):
             if not source_path:
                 continue
 
-            target_name = source.get("workspace_subdir") or Path(source_path).name or f"target_{index}"
+            sanitized_source_path = Path(source_path).name
+            if not sanitized_source_path:
+                continue
+
+            target_name = CloudRuntime._sanitize_workspace_subdir(
+                source.get("workspace_subdir"), fallback=f"target_{index}"
+            )
             sanitized.append(
                 {
-                    "source_path": source_path,
+                    "source_path": sanitized_source_path,
                     "workspace_subdir": target_name,
                 }
             )
 
         return sanitized
+
+    @staticmethod
+    def _sanitize_workspace_subdir(raw_subdir: str | None, fallback: str) -> str:
+        if not raw_subdir:
+            return fallback
+
+        normalized = raw_subdir.replace("\\", "/").strip()
+        parts = [part for part in normalized.split("/") if part and part not in {".", ".."}]
+        if not parts:
+            return fallback
+
+        return "/".join(parts)
+
+    @staticmethod
+    def _effective_domain(host: str) -> str:
+        segments = [segment for segment in host.lower().strip().split(".") if segment]
+        if len(segments) >= 2:
+            return ".".join(segments[-2:])
+        return host.lower().strip()
+
+    @classmethod
+    def _is_trusted_runtime_host(cls, runtime_host: str, api_host: str) -> bool:
+        runtime = runtime_host.lower().strip()
+        base = api_host.lower().strip()
+        if not runtime or not base:
+            return False
+
+        if runtime == base or runtime.endswith(f".{base}"):
+            return True
+
+        return cls._effective_domain(runtime) == cls._effective_domain(base)
 
     async def create_sandbox(
         self,
@@ -91,11 +129,25 @@ class CloudRuntime(AbstractRuntime):
             )
 
         api_url = str(data.get("api_url") or f"{self.api_base}/sandbox/{sandbox_id}").rstrip("/")
+        runtime_host = urlparse(api_url).hostname or ""
+        api_host = urlparse(self.api_base).hostname or ""
+        if runtime_host and api_host and not self._is_trusted_runtime_host(runtime_host, api_host):
+            raise SandboxInitializationError(
+                "Invalid cloud sandbox response.",
+                f"untrusted api_url host: {runtime_host}",
+            )
+
         tool_server_port = int(data.get("tool_server_port") or _DEFAULT_CLOUD_TOOL_PORT)
-        auth_token = data.get("auth_token") or existing_token or self.access_token
+        auth_token = data.get("auth_token") or data.get("sandbox_token") or existing_token
+        if not auth_token:
+            raise SandboxInitializationError(
+                "Invalid cloud sandbox response.",
+                "Response did not include sandbox auth token.",
+            )
 
         self._sandboxes[sandbox_id] = {
             "api_url": api_url,
+            "auth_token": str(auth_token),
             "tool_server_port": tool_server_port,
             "agent_id": agent_id,
         }
@@ -103,7 +155,7 @@ class CloudRuntime(AbstractRuntime):
         return {
             "workspace_id": sandbox_id,
             "api_url": api_url,
-            "auth_token": str(auth_token) if auth_token else None,
+            "auth_token": str(auth_token),
             "tool_server_port": tool_server_port,
             "agent_id": agent_id,
         }
