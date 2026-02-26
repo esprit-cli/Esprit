@@ -50,9 +50,10 @@ def _normalize_payload(payload: dict[str, object]) -> TokenPayload:
         raise _unauthorized("Authentication token expired.")
     if aud not in ("authenticated", None):
         raise _unauthorized("Authentication token audience is invalid.")
-    if isinstance(iss, str) and iss.strip() and iss not in {"esprit-cli"}:
-        # Keep strict issuer allowlist for CLI-issued access tokens.
-        raise _unauthorized("Authentication token issuer is invalid.")
+    if isinstance(iss, str) and iss.strip():
+        normalized_iss = iss.strip().rstrip("/")
+        if normalized_iss not in _allowed_issuers():
+            raise _unauthorized("Authentication token issuer is invalid.")
 
     role = payload.get("role", "authenticated")
     email = payload.get("email")
@@ -62,6 +63,16 @@ def _normalize_payload(payload: dict[str, object]) -> TokenPayload:
         role=role if isinstance(role, str) else "authenticated",
         exp=int(exp),
     )
+
+
+def _allowed_issuers() -> set[str]:
+    allowed = {"esprit-cli"}
+    supabase_url = settings.supabase_url.strip().rstrip("/")
+    if not supabase_url:
+        return allowed
+    allowed.add(supabase_url)
+    allowed.add(f"{supabase_url}/auth/v1")
+    return allowed
 
 
 def _candidate_jwt_secrets() -> list[str]:

@@ -94,6 +94,55 @@ async def test_get_current_user_rejects_expired_token(monkeypatch: pytest.Monkey
     assert excinfo.value.status_code == 401
 
 
+@pytest.mark.asyncio
+async def test_get_current_user_accepts_supabase_issuer(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(auth_module.settings, "auth_jwt_secret", "supabase-test-secret")
+    monkeypatch.setattr(auth_module.settings, "supabase_jwt_secret", "")
+    monkeypatch.setattr(auth_module.settings, "supabase_service_key", "")
+    monkeypatch.setattr(auth_module.settings, "supabase_url", "https://abcxyz.supabase.co")
+    token = jwt.encode(
+        {
+            "sub": "user-2",
+            "email": "web@esprit.dev",
+            "role": "authenticated",
+            "iss": "https://abcxyz.supabase.co/auth/v1",
+            "aud": "authenticated",
+            "exp": int(time.time()) + 3600,
+        },
+        key="supabase-test-secret",
+        algorithm="HS256",
+    )
+    creds = HTTPAuthorizationCredentials(scheme="Bearer", credentials=token)
+    user = await auth_module.get_current_user(creds)
+    assert user.sub == "user-2"
+    assert user.email == "web@esprit.dev"
+
+
+@pytest.mark.asyncio
+async def test_get_current_user_rejects_unknown_issuer(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(auth_module.settings, "auth_jwt_secret", "supabase-test-secret")
+    monkeypatch.setattr(auth_module.settings, "supabase_jwt_secret", "")
+    monkeypatch.setattr(auth_module.settings, "supabase_service_key", "")
+    monkeypatch.setattr(auth_module.settings, "supabase_url", "https://abcxyz.supabase.co")
+    token = jwt.encode(
+        {
+            "sub": "user-2",
+            "email": "web@esprit.dev",
+            "role": "authenticated",
+            "iss": "https://malicious.example/auth/v1",
+            "aud": "authenticated",
+            "exp": int(time.time()) + 3600,
+        },
+        key="supabase-test-secret",
+        algorithm="HS256",
+    )
+    creds = HTTPAuthorizationCredentials(scheme="Bearer", credentials=token)
+    with pytest.raises(HTTPException) as excinfo:
+        await auth_module.get_current_user(creds)
+    assert excinfo.value.status_code == 401
+    assert excinfo.value.detail == "Authentication token issuer is invalid."
+
+
 def test_quota_bypass_disabled_by_default() -> None:
     usage = UsageService()
     assert usage._is_quota_bypass_allowed("ESPRIT-DEMO-2024") is False
