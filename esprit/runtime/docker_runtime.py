@@ -311,11 +311,37 @@ class DockerRuntime(AbstractRuntime):
         except (OSError, DockerException):
             pass
 
+    def _copy_local_file_to_container(
+        self, container: Container, local_path: str, target_name: str | None = None
+    ) -> None:
+        import tarfile
+        from io import BytesIO
+
+        try:
+            local_path_obj = Path(local_path).resolve()
+            if not local_path_obj.exists() or not local_path_obj.is_file():
+                return
+
+            tar_buffer = BytesIO()
+            with tarfile.open(fileobj=tar_buffer, mode="w") as tar:
+                arcname = Path(target_name) / local_path_obj.name if target_name else local_path_obj.name
+                tar.add(local_path_obj, arcname=arcname)
+
+            tar_buffer.seek(0)
+            container.put_archive("/workspace", tar_buffer.getvalue())
+            container.exec_run(
+                "chown -R pentester:pentester /workspace && chmod -R 755 /workspace",
+                user="root",
+            )
+        except (OSError, DockerException):
+            pass
+
     async def create_sandbox(
         self,
         agent_id: str,
         existing_token: str | None = None,
         local_sources: list[dict[str, str]] | None = None,
+        artifacts: list[dict[str, str]] | None = None,
     ) -> SandboxInfo:
         scan_id = self._get_scan_id(agent_id)
         container = self._get_or_create_container(scan_id)
@@ -332,6 +358,18 @@ class DockerRuntime(AbstractRuntime):
                 )
                 self._copy_local_directory_to_container(container, source_path, target_name)
             setattr(self, source_copied_key, True)
+
+        artifact_copied_key = f"_artifact_copied_{scan_id}"
+        if artifacts and not hasattr(self, artifact_copied_key):
+            for index, artifact in enumerate(artifacts, start=1):
+                source_path = artifact.get("source_path")
+                if not source_path:
+                    continue
+                target_name = (
+                    artifact.get("workspace_subdir") or f"mobile_{index}"
+                )
+                self._copy_local_file_to_container(container, source_path, target_name)
+            setattr(self, artifact_copied_key, True)
 
         if container.id is None:
             raise RuntimeError("Docker container ID is unexpectedly None")

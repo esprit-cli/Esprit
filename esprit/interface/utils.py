@@ -799,6 +799,13 @@ def _derive_target_label_for_run_name(targets_info: list[dict[str, Any]] | None)
     if target_type == "ip_address":
         return str(details.get("target_ip", original) or original)
 
+    if target_type == "mobile_app":
+        path_str = details.get("target_path", original)
+        try:
+            return str(Path(path_str).name or path_str)
+        except Exception:  # noqa: BLE001
+            return str(path_str)
+
     return str(original or "pentest")
 
 
@@ -859,6 +866,15 @@ def infer_target_type(target: str) -> tuple[str, dict[str, str]]:  # noqa: PLR09
         return "ip_address", {"target_ip": str(ip_obj)}
 
     path = Path(target).expanduser()
+
+    if path.suffix.lower() in (".apk", ".ipa"):
+        try:
+            if path.exists() and path.is_file():
+                platform = "android" if path.suffix.lower() == ".apk" else "ios"
+                return "mobile_app", {"target_path": str(path.resolve()), "platform": platform}
+        except (OSError, RuntimeError) as e:
+            raise ValueError(f"Invalid path: {target} - {e!s}") from e
+
     try:
         if path.exists():
             if path.is_dir():
@@ -889,6 +905,7 @@ def infer_target_type(target: str) -> tuple[str, dict[str, str]]:  # noqa: PLR09
         "- A valid URL (http:// or https://)\n"
         "- A Git repository URL (https://host/org/repo or git@host:org/repo.git)\n"
         "- A local directory path\n"
+        "- A mobile app file (.apk or .ipa)\n"
         "- A domain name (e.g., example.com)\n"
         "- An IP address (e.g., 192.168.1.10)"
     )
@@ -935,6 +952,8 @@ def assign_workspace_subdirs(targets_info: list[dict[str, Any]]) -> None:
             base_name = derive_repo_base_name(details["target_repo"])
         elif target_type == "local_code":
             base_name = derive_local_base_name(details.get("target_path", "local"))
+        elif target_type == "mobile_app":
+            base_name = derive_local_base_name(details.get("target_path", "mobile"))
 
         if base_name is None:
             continue
@@ -971,6 +990,22 @@ def collect_local_sources(targets_info: list[dict[str, Any]]) -> list[dict[str, 
             )
 
     return local_sources
+
+
+def collect_local_artifacts(targets_info: list[dict[str, Any]]) -> list[dict[str, str]]:
+    """Collect mobile app artifacts (APK/IPA files) for staging in sandbox."""
+    artifacts: list[dict[str, str]] = []
+    for target_info in targets_info:
+        if target_info["type"] != "mobile_app":
+            continue
+        details = target_info["details"]
+        target_path = details.get("target_path")
+        if target_path:
+            artifacts.append({
+                "source_path": target_path,
+                "workspace_subdir": details.get("workspace_subdir", "mobile"),
+            })
+    return artifacts
 
 
 def _is_localhost_host(host: str) -> bool:
