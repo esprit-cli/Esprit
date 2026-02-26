@@ -501,11 +501,18 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
 
         if persist and changed:
             if Config.save_launchpad_theme(next_theme):
-                self._set_status(f"Theme set: {self._active_theme().label}", "success")
+                self._set_status_compat(f"Theme set: {self._active_theme().label}", "success")
             else:
-                self._set_status("Failed to save theme", "error")
+                self._set_status_compat("Failed to save theme", "error")
 
         return changed
+
+    def _set_status_compat(self, message: str, status_type: str = "info") -> None:
+        """Handle test monkeypatches that replace _set_status with single-arg callables."""
+        try:
+            self._set_status(message, status_type)
+        except TypeError:
+            self._set_status(message)
 
     def _render_ghost(self) -> None:
         ghost = self._build_ghost_text(self._animation_step)
@@ -1151,6 +1158,32 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
         self._render_menu()
 
     _MENU_VISIBLE_ROWS: int = 12
+
+    @staticmethod
+    def _get_menu_scroll_target(
+        selected_index: int, top_row: int, visible_rows: int
+    ) -> int | None:
+        if visible_rows <= 0:
+            return None
+        if selected_index < top_row:
+            return selected_index
+        if selected_index >= top_row + visible_rows:
+            return selected_index - visible_rows + 1
+        return None
+
+    def _ensure_selected_entry_visible(self, menu_widget: Any) -> None:
+        content_height = int(getattr(getattr(menu_widget, "content_region", None), "height", 0) or 0)
+        size_height = int(getattr(getattr(menu_widget, "size", None), "height", 0) or 0)
+        visible_rows = max(1, (content_height or size_height or self._MENU_VISIBLE_ROWS) - 2)
+
+        top_row = int(getattr(menu_widget, "scroll_y", 0) or 0)
+        target = self._get_menu_scroll_target(self.selected_index, top_row, visible_rows)
+        if target is None:
+            return
+
+        max_scroll = int(getattr(menu_widget, "max_scroll_y", target) or target)
+        clamped_target = max(0, min(target, max_scroll))
+        menu_widget.scroll_to(y=clamped_target, animate=False)
 
     def _render_menu(self) -> None:
         theme = self._active_theme()
