@@ -2,6 +2,7 @@ import argparse
 import asyncio
 import atexit
 import logging
+import random
 import signal
 import sys
 import threading
@@ -135,50 +136,26 @@ class SplashScreen(Static):  # type: ignore[misc]
         "██           ██ ██      ██   ██ ██    ██",
         "███████ ███████ ██      ██   ██ ██    ██",
     )
-    GHOST_FRAMES: ClassVar[list[tuple[str, ...]]] = [
-        (
-            "        *               *       ",
-            "         [][][][][][][]         ",
-            "       [][][][][][][][][]       ",
-            "      [][][][][][][][][][][]    ",
-            "      [][]  [][][][][]  [][]    ",
-            "      [][][][][][][][][][][]    ",
-            "      [][][][][][][][][][][]    ",
-            "      [][][][][][][][][][][]    ",
-            "      [][]  [][][][][]  [][]    ",
-            "        [][][][][][][][][]      ",
-            "        [][]  [][]  [][]        ",
-            "      [][]          [][]        ",
-        ),
-        (
-            "      *               *         ",
-            "          [][][][][][][]        ",
-            "        [][][][][][][][][]      ",
-            "      [][][][][][][][][][][]    ",
-            "      [][]   [][][][]   [][]    ",
-            "      [][][][][][][][][][][]    ",
-            "      [][][][][][][][][][][]    ",
-            "      [][][][][][][][][][][]    ",
-            "      [][]   [][][][]   [][]    ",
-            "        [][][][][][][][][]      ",
-            "       [][]  [][]  [][]         ",
-            "       [][]          [][]       ",
-        ),
-        (
-            "         *               *      ",
-            "        [][][][][][][]          ",
-            "      [][][][][][][][][]        ",
-            "    [][][][][][][][][][][]      ",
-            "    [][]  [][][][][]  [][]      ",
-            "    [][][][][][][][][][][]      ",
-            "    [][][][][][][][][][][]      ",
-            "    [][][][][][][][][][][]      ",
-            "    [][]  [][][][][]  [][]      ",
-            "      [][][][][][][][][]        ",
-            "       [][]  [][]  [][]         ",
-            "     [][]          [][]         ",
-        ),
-    ]
+    GHOST: ClassVar[tuple[str, ...]] = (
+        "         ▄▄█████████▄▄",
+        "        ██▀         ▀▀█▄",
+        "      ▄▀▄██   ██▄      ▀█▄",
+        "      █ ███   █████▄     ▀█",
+        "      █ ▀██   █████▀      ▀█",
+        " ▄▄▄▄▄█    ▄▄▄▄   ▄▄▄▄▄    ▀█",
+        "██▄██ ▀█▄   ▀█▀ ▄██   ▀██   ▀█▄",
+        "██████▄ ▀▀    ▄▄▀             █▄",
+        "  ▀▀████▄▄█▄  ██▄▄▄█▄▄        ▀█",
+        "     ▀██████    ▀██████▄       ▀█▄",
+        "        ▀▀███▄   ▀▀▀█▀██         ▀▄",
+        "           ▀███▄                  ██▄",
+        "             ▀▀██▄▄   ▄▄▄          ▀▀█▄▄",
+        "                ▀▀███████▄ ███         ▀▀█",
+        "                   ▀▀▀███████████▄▄▀███▄█▀",
+        "                       ▀▀▀▀▀█████▀▀▀▀",
+    )
+    GLITCH_CHARS: ClassVar[str] = "█▓▒░╔╗╚╝║═╬╣╠╩╦@#$%&*"
+    _GLITCH_RESOLVE_STEPS: ClassVar[int] = 12
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
@@ -202,7 +179,7 @@ class SplashScreen(Static):  # type: ignore[misc]
         yield panel_static
 
     def on_mount(self) -> None:
-        self._animation_timer = self.set_interval(0.12, self._animate_start_line)
+        self._animation_timer = self.set_interval(0.08, self._animate_start_line)
 
     def on_unmount(self) -> None:
         if self._animation_timer is not None:
@@ -262,6 +239,8 @@ class SplashScreen(Static):  # type: ignore[misc]
         )
         highlight = str(tokens.get("text", "#ecfeff"))
         bright = str(tokens.get("info", "#bae6fd"))
+        muted_color = str(tokens.get("muted", "#9ca3af"))
+        progress = min(1.0, phase / self._GLITCH_RESOLVE_STEPS)
         sweep = (phase * 2) % 56
         wordmark = Text(justify="center")
 
@@ -273,14 +252,23 @@ class SplashScreen(Static):  # type: ignore[misc]
                     row_text.append(char)
                     continue
 
-                dist = abs(col_index - sweep)
-                if dist <= 1:
-                    style = Style(color=highlight, bold=True)
-                elif dist <= 3:
-                    style = Style(color=bright, bold=True)
+                if random.random() < progress:
+                    dist = abs(col_index - sweep)
+                    if dist <= 1:
+                        style = Style(color=highlight, bold=True)
+                    elif dist <= 3:
+                        style = Style(color=bright, bold=True)
+                    else:
+                        style = Style(color=base, bold=True)
+                    row_text.append(char, style=style)
                 else:
-                    style = Style(color=base, bold=True)
-                row_text.append(char, style=style)
+                    gc = random.choice(self.GLITCH_CHARS)
+                    gs = random.choice([
+                        Style(color=muted_color, dim=True),
+                        Style(color=base),
+                        Style(color=base, bold=True),
+                    ])
+                    row_text.append(gc, style=gs)
 
             wordmark.append_text(row_text)
             if row_index < len(self.WORDMARK) - 1:
@@ -290,31 +278,27 @@ class SplashScreen(Static):  # type: ignore[misc]
     def _build_ghost_text(self, phase: int) -> Text:
         tokens = self._theme_tokens()
         body_color = str(tokens.get("accent", "#22d3ee"))
-        sparkle_a = str(tokens.get("info", "#a5f3fc"))
-        sparkle_b = str(tokens.get("accent", "#38bdf8"))
-        frame = self.GHOST_FRAMES[phase % len(self.GHOST_FRAMES)]
+        muted_color = str(tokens.get("muted", "#9ca3af"))
+        progress = min(1.0, phase / self._GLITCH_RESOLVE_STEPS)
         ghost = Text()
 
-        for line_index, line in enumerate(frame):
+        for line_index, line in enumerate(self.GHOST):
             line_text = Text()
-            i = 0
-            while i < len(line):
-                chunk = line[i : i + 2]
-                if chunk == "[]":
-                    line_text.append("██", style=Style(color=body_color, bold=True))
-                    i += 2
-                    continue
-
-                char = line[i]
-                if char == "*":
-                    sparkle = sparkle_a if (phase + line_index + i) % 2 == 0 else sparkle_b
-                    line_text.append(char, style=Style(color=sparkle, bold=True))
-                else:
+            for char in line:
+                if char == " ":
                     line_text.append(char)
-                i += 1
-
+                elif random.random() < progress:
+                    line_text.append(char, style=Style(color=body_color, bold=True))
+                else:
+                    gc = random.choice(self.GLITCH_CHARS)
+                    gs = random.choice([
+                        Style(color=muted_color, dim=True),
+                        Style(color=body_color),
+                        Style(color=body_color, bold=True),
+                    ])
+                    line_text.append(gc, style=gs)
             ghost.append_text(line_text)
-            if line_index < len(frame) - 1:
+            if line_index < len(self.GHOST) - 1:
                 ghost.append("\n")
 
         return ghost

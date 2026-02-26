@@ -1,4 +1,5 @@
 import os
+import random
 import time
 import webbrowser
 from dataclasses import dataclass
@@ -220,51 +221,27 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
         Binding("ctrl+q", "quit_app", "Quit", show=False),
     ]
 
-    # Ghost pixel art: [] = cyan body, .. = dark (eyes/mouth), * = sparkle
-    GHOST_FRAMES: ClassVar[list[tuple[str, ...]]] = [
-        (
-            "            *             *        ",
-            "            [][][][][][][]         ",
-            "         [][][][][][][][][][]      ",
-            "       [][][][][][][][][][][][][]  ",
-            "       [][]..[][][][]..[][][][]    ",
-            "       [][]..[][][][]..[][][][]    ",
-            "       [][][][][][][][][][][][]    ",
-            "       [][][][][]..[][][][][]      ",
-            "       [][][][][][][][][][]        ",
-            "         [][][][][][][][][]        ",
-            "       [][]  [][][]  [][][]        ",
-            "       []      [][]    []         ",
-        ),
-        (
-            "         *             *           ",
-            "            [][][][][][][]         ",
-            "         [][][][][][][][][][]      ",
-            "       [][][][][][][][][][][][][]  ",
-            "       [][]..[][][][]..[][][][]    ",
-            "       [][]..[][][][]..[][][][]    ",
-            "       [][][][][][][][][][][][]    ",
-            "       [][][][][]..[][][][][]      ",
-            "       [][][][][][][][][][]        ",
-            "         [][][][][][][][][]        ",
-            "         [][]  [][][]  [][]        ",
-            "           []    []      []       ",
-        ),
-        (
-            "              *             *      ",
-            "            [][][][][][][]         ",
-            "         [][][][][][][][][][]      ",
-            "       [][][][][][][][][][][][][]  ",
-            "       [][]..[][][][]..[][][][]    ",
-            "       [][]..[][][][]..[][][][]    ",
-            "       [][][][][][][][][][][][]    ",
-            "       [][][][][]..[][][][][]      ",
-            "       [][][][][][][][][][]        ",
-            "         [][][][][][][][][]        ",
-            "       [][][]  [][]  [][][]        ",
-            "       []        [][]  []         ",
-        ),
-    ]
+    # Ghost pixel art: the Esprit flying ghost mascot
+    GHOST: ClassVar[tuple[str, ...]] = (
+        "         ▄▄█████████▄▄",
+        "        ██▀         ▀▀█▄",
+        "      ▄▀▄██   ██▄      ▀█▄",
+        "      █ ███   █████▄     ▀█",
+        "      █ ▀██   █████▀      ▀█",
+        " ▄▄▄▄▄█    ▄▄▄▄   ▄▄▄▄▄    ▀█",
+        "██▄██ ▀█▄   ▀█▀ ▄██   ▀██   ▀█▄",
+        "██████▄ ▀▀    ▄▄▀             █▄",
+        "  ▀▀████▄▄█▄  ██▄▄▄█▄▄        ▀█",
+        "     ▀██████    ▀██████▄       ▀█▄",
+        "        ▀▀███▄   ▀▀▀█▀██         ▀▄",
+        "           ▀███▄                  ██▄",
+        "             ▀▀██▄▄   ▄▄▄          ▀▀█▄▄",
+        "                ▀▀███████▄ ███         ▀▀█",
+        "                   ▀▀▀███████████▄▄▀███▄█▀",
+        "                       ▀▀▀▀▀█████▀▀▀▀",
+    )
+    GLITCH_CHARS: ClassVar[str] = "█▓▒░╔╗╚╝║═╬╣╠╩╦@#$%&*"
+    _GLITCH_RESOLVE_STEPS: ClassVar[int] = 12
 
     MAIN_OPTIONS: ClassVar[list[_MenuEntry]] = [
         _MenuEntry("scan", "Scan", ""),  # hint filled dynamically with CWD info
@@ -436,7 +413,7 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
             self._set_view("wizard_welcome", push=False)
         else:
             self._set_view("main", push=False)
-        self._ghost_timer = self.set_interval(0.15, self._tick_animation)
+        self._ghost_timer = self.set_interval(0.10, self._tick_animation)
 
     def on_unmount(self) -> None:
         if self._ghost_timer is not None:
@@ -513,34 +490,25 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
 
     def _build_ghost_text(self, phase: int) -> Text:
         theme = self._active_theme()
-        frame = self.GHOST_FRAMES[phase % len(self.GHOST_FRAMES)]
+        progress = min(1.0, phase / self._GLITCH_RESOLVE_STEPS)
         ghost = Text()
-        for line_index, line in enumerate(frame):
+        for line_index, line in enumerate(self.GHOST):
             line_text = Text()
-            i = 0
-            while i < len(line):
-                chunk = line[i : i + 2]
-                if chunk == "[]":
-                    line_text.append("  ", style=Style(bgcolor=theme.ghost_body))
-                    i += 2
-                    continue
-                if chunk == "..":
-                    line_text.append("  ", style=Style(bgcolor=theme.ghost_face))
-                    i += 2
-                    continue
-
-                char = line[i]
-                if char == "*":
-                    sparkle = theme.sparkle_a if (phase + line_index + i) % 2 == 0 else theme.sparkle_b
-                    line_text.append("\u2727", style=Style(color=sparkle, bold=True))
-                elif char == " ":
-                    line_text.append(" ")
-                else:
+            for char in line:
+                if char == " ":
                     line_text.append(char)
-                i += 1
-
+                elif random.random() < progress:
+                    line_text.append(char, style=Style(color=theme.ghost_body, bold=True))
+                else:
+                    gc = random.choice(self.GLITCH_CHARS)
+                    gs = random.choice([
+                        Style(color=theme.brand_dim, dim=True),
+                        Style(color=theme.ghost_body),
+                        Style(color=theme.ghost_body, bold=True),
+                    ])
+                    line_text.append(gc, style=gs)
             ghost.append_text(line_text)
-            if line_index < len(frame) - 1:
+            if line_index < len(self.GHOST) - 1:
                 ghost.append("\n")
         return ghost
 

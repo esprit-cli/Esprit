@@ -15,6 +15,7 @@ Screen {
 #launchpad_ghost {
     width: 100%;
     height: auto;
+    min-height: 16;
     content-align: center middle;
     text-align: center;
     margin-bottom: 0;
