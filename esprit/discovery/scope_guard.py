@@ -61,7 +61,16 @@ class ScopeGuard:
             self._allowed_hosts.add(normalized)
 
     def add_allowed_hosts_from_proxy(self, requests_data: list[dict[str, Any]]) -> int:
-        """Add hosts seen in proxy traffic to allowed scope."""
+        """Add in-scope hosts seen in proxy traffic to allowed scope.
+
+        Only hosts already in scope or strict subdomains of existing scope
+        are accepted. This prevents passive capture of third-party hosts
+        from widening active testing scope.
+        """
+        seed_scope = set(self._allowed_hosts)
+        if not seed_scope:
+            return 0
+
         count = 0
         for req in requests_data:
             if not isinstance(req, dict):
@@ -69,9 +78,12 @@ class ScopeGuard:
             host = req.get("host", "")
             if host:
                 normalized = host.lower().strip()
-                if normalized not in self._allowed_hosts:
-                    self._allowed_hosts.add(normalized)
-                    count += 1
+                if normalized in self._allowed_hosts:
+                    continue
+                if not self._is_host_in_or_below_scope(normalized, seed_scope):
+                    continue
+                self._allowed_hosts.add(normalized)
+                count += 1
         return count
 
     def check_url(self, url: str) -> ScopeCheckResult:
@@ -140,6 +152,13 @@ class ScopeGuard:
         except (ValueError, AttributeError):
             pass
         return None
+
+    @staticmethod
+    def _is_host_in_or_below_scope(host: str, scope_hosts: set[str]) -> bool:
+        for allowed in scope_hosts:
+            if host == allowed or host.endswith(f".{allowed}"):
+                return True
+        return False
 
 
 class ScopeCheckResult:

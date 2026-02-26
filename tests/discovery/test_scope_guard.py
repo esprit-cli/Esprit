@@ -83,12 +83,22 @@ class TestScopeGuard:
 
     def test_add_hosts_from_proxy(self):
         guard = ScopeGuard(mode="block")
+        guard.add_allowed_host("example.com")
         count = guard.add_allowed_hosts_from_proxy([
             {"host": "api.example.com", "path": "/v1/users"},
             {"host": "cdn.example.com", "path": "/assets/logo.png"},
+            {"host": "thirdparty.net", "path": "/tracking.js"},
         ])
         assert count == 2
         assert "api.example.com" in guard.allowed_hosts
+        assert "thirdparty.net" not in guard.allowed_hosts
+
+    def test_add_hosts_from_proxy_requires_seed_scope(self):
+        guard = ScopeGuard(mode="block")
+        count = guard.add_allowed_hosts_from_proxy([
+            {"host": "api.example.com", "path": "/v1/users"},
+        ])
+        assert count == 0
 
     def test_invalid_url(self):
         guard = ScopeGuard(mode="block")

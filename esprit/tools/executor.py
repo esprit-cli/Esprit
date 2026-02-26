@@ -31,6 +31,17 @@ SANDBOX_CONNECT_TIMEOUT = float(Config.get("esprit_sandbox_connect_timeout") or 
 _SCOPE_GUARD_CACHE: dict[str, Any] = {}
 
 
+def _resolve_scope_guard_mode() -> str:
+    mode = str(
+        Config.get("scope_guard_mode")
+        or Config.get("esprit_scope_guard_mode")
+        or "block"
+    ).lower().strip()
+    if mode not in {"block", "warn"}:
+        mode = "block"
+    return mode
+
+
 def _resolve_scope_guard(agent_state: Any | None) -> Any | None:
     if agent_state is not None and hasattr(agent_state, "context"):
         ctx = getattr(agent_state, "context", {}) or {}
@@ -48,10 +59,7 @@ def _resolve_scope_guard(agent_state: Any | None) -> Any | None:
     cache_key = tracer.run_id if tracer else "default"
     guard = _SCOPE_GUARD_CACHE.get(cache_key)
     if guard is None:
-        mode = str(Config.get("esprit_scope_guard_mode") or "block").lower().strip()
-        if mode not in {"block", "warn"}:
-            mode = "block"
-        guard = ScopeGuard(mode=mode)
+        guard = ScopeGuard(mode=_resolve_scope_guard_mode())
         if tracer and tracer.scan_config:
             targets = tracer.scan_config.get("targets", [])
             if isinstance(targets, list):

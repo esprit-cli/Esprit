@@ -198,7 +198,11 @@ class BaseAgent(metaclass=AgentMeta):
 
         self._discovery_integration = DiscoveryIntegration(enabled=True)
 
-        scope_mode = str(config.get("scope_guard_mode") or "block").lower().strip()
+        scope_mode = str(
+            config.get("scope_guard_mode")
+            or config.get("esprit_scope_guard_mode")
+            or "block"
+        ).lower().strip()
         if scope_mode not in {"block", "warn"}:
             scope_mode = "block"
 
