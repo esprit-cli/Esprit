@@ -41,8 +41,9 @@ Screen {
 #launchpad_menu {
     width: 100%;
     height: auto;
-    max-height: 18;
+    max-height: 16;
     padding: 1 2;
+    overflow-y: auto;
     scrollbar-size-vertical: 0;
 }
 

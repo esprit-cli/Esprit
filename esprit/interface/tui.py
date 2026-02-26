@@ -2663,8 +2663,9 @@ class EspritTUIApp(App):  # type: ignore[misc]
             text.append(f"${cost:.2f}", style=dim_style)
 
         # Streaming tok/s and elapsed time
-        if agent_id in self._streaming_start_time:
-            stream_elapsed = time.monotonic() - self._streaming_start_time[agent_id]
+        streaming_start_time = getattr(self, "_streaming_start_time", {})
+        if agent_id in streaming_start_time:
+            stream_elapsed = time.monotonic() - streaming_start_time[agent_id]
             if stream_elapsed >= 0.5:
                 stream_content = self.tracer.get_streaming_content(agent_id) or ""
                 # Estimate tokens from streaming content (~4 chars per token)
