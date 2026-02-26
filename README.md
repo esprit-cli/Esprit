@@ -11,7 +11,7 @@ Esprit is an autonomous security assessment tool that uses AI agents to perform 
 ### Option 1: Install with curl
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/improdead/Esprit/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/esprit-cli/Esprit/main/scripts/install.sh | bash
 ```
 
 ### Option 2: Homebrew
@@ -36,7 +36,7 @@ pip install esprit-cli
 ### Option 5: From Source
 
 ```bash
-git clone https://github.com/improdead/Esprit.git
+git clone https://github.com/esprit-cli/Esprit.git
 cd Esprit
 pip install poetry
 poetry install
@@ -263,7 +263,7 @@ OpenCode notes:
 ## Development
 
 ```bash
-git clone https://github.com/improdead/Esprit.git
+git clone https://github.com/esprit-cli/Esprit.git
 cd Esprit
 poetry install
 
@@ -298,5 +298,5 @@ MIT License - see [LICENSE](LICENSE) for details.
 
 ## Support
 
-- **Issues**: https://github.com/improdead/Esprit/issues
+- **Issues**: https://github.com/esprit-cli/Esprit/issues
 - **Website**: https://esprit.dev

@@ -15,7 +15,7 @@ Thank you for your interest in contributing to Esprit! This guide will help you 
 
 1. **Clone the repository**
    ```bash
-   git clone https://github.com/improdead/Esprit.git
+   git clone https://github.com/esprit-cli/Esprit.git
    cd Esprit/cli
    ```
 
@@ -102,7 +102,7 @@ We welcome feature ideas! Please:
 ## Community
 
 - **Discord**: [Join our community](https://discord.gg/esprit-ai)
-- **Issues**: [GitHub Issues](https://github.com/improdead/Esprit/issues)
+- **Issues**: [GitHub Issues](https://github.com/esprit-cli/Esprit/issues)
 
 ## Recognition
 

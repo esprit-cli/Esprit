@@ -1,15 +1,15 @@
 {
   "name": "esprit-cli",
-  "version": "0.7.4",
+  "version": "0.7.5",
   "description": "AI-powered penetration testing agent",
   "license": "Apache-2.0",
   "homepage": "https://esprit.dev",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/improdead/Esprit.git"
+    "url": "git+https://github.com/esprit-cli/Esprit.git"
   },
   "bugs": {
-    "url": "https://github.com/improdead/Esprit/issues"
+    "url": "https://github.com/esprit-cli/Esprit/issues"
   },
   "bin": {
     "esprit": "bin/esprit.js"

@@ -19,7 +19,7 @@ param(
 $ErrorActionPreference = 'Stop'
 
 $APP          = 'esprit'
-$REPO_URL     = if ($env:ESPRIT_REPO_URL)  { $env:ESPRIT_REPO_URL }  else { 'https://github.com/improdead/Esprit.git' }
+$REPO_URL     = if ($env:ESPRIT_REPO_URL)  { $env:ESPRIT_REPO_URL }  else { 'https://github.com/esprit-cli/Esprit.git' }
 $REPO_REF     = if ($env:ESPRIT_REPO_REF)  { $env:ESPRIT_REPO_REF }  else { 'main' }
 $INSTALL_ROOT = if ($env:ESPRIT_HOME)      { $env:ESPRIT_HOME }      else { Join-Path $env:USERPROFILE '.esprit' }
 $BIN_DIR      = Join-Path $INSTALL_ROOT 'bin'

@@ -1449,14 +1449,14 @@ def main() -> None:
         try:
             if platform.system() == "Windows":
                 cmd = ["powershell", "-ExecutionPolicy", "Bypass", "-Command",
-                       "irm https://raw.githubusercontent.com/improdead/Esprit/main/scripts/install.ps1 | iex"]
+                       "irm https://raw.githubusercontent.com/esprit-cli/Esprit/main/scripts/install.ps1 | iex"]
             else:
                 cmd = ["bash", "-c",
-                       "curl -fsSL https://raw.githubusercontent.com/improdead/Esprit/main/scripts/install.sh | bash"]
+                       "curl -fsSL https://raw.githubusercontent.com/esprit-cli/Esprit/main/scripts/install.sh | bash"]
             subprocess.run(cmd, check=True)
             console.print("[green]✓ Update complete![/]")
         except subprocess.CalledProcessError:
-            console.print("[red]✗ Update failed. Try manually: curl -fsSL https://raw.githubusercontent.com/improdead/Esprit/main/scripts/install.sh | bash[/]")
+            console.print("[red]✗ Update failed. Try manually: curl -fsSL https://raw.githubusercontent.com/esprit-cli/Esprit/main/scripts/install.sh | bash[/]")
         sys.exit(0)
 
     if args.config:

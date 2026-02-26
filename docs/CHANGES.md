@@ -2,7 +2,7 @@
 
 ## Overview
 
-The AWS-hosted web version (`junaid-mahmood/Esprit`, serving esprit.dev) has been synced to full parity with the opensource CLI (`improdead/Esprit`). This document covers everything that changed, how the hosted deployment works, and how to revert.
+The AWS-hosted web version (`junaid-mahmood/Esprit`, serving esprit.dev) has been synced to full parity with the opensource CLI (`esprit-cli/Esprit`). This document covers everything that changed, how the hosted deployment works, and how to revert.
 
 ---
 

@@ -17,8 +17,8 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-_GITHUB_API = "https://api.github.com/repos/improdead/Esprit/releases/latest"
-_INSTALL_SCRIPT = "https://raw.githubusercontent.com/improdead/Esprit/main/scripts/install.sh"
+_GITHUB_API = "https://api.github.com/repos/esprit-cli/Esprit/releases/latest"
+_INSTALL_SCRIPT = "https://raw.githubusercontent.com/esprit-cli/Esprit/main/scripts/install.sh"
 _ESPRIT_DIR = Path.home() / ".esprit"
 _CACHE_FILE = _ESPRIT_DIR / "update_check.json"
 _PENDING_FILE = _ESPRIT_DIR / "pending_update"

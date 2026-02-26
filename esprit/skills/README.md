@@ -57,7 +57,7 @@ Skills focus on deep, specialized knowledge to significantly enhance agent capab
 
 ## Contributing
 
-Community contributions are more than welcome — contribute new skills via [pull requests](https://github.com/improdead/Esprit/pulls) or [GitHub issues](https://github.com/improdead/Esprit/issues) to help expand the collection and improve extensibility for Esprit agents.
+Community contributions are more than welcome — contribute new skills via [pull requests](https://github.com/esprit-cli/Esprit/pulls) or [GitHub issues](https://github.com/esprit-cli/Esprit/issues) to help expand the collection and improve extensibility for Esprit agents.
 
 ---
 

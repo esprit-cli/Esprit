@@ -96,7 +96,7 @@ if command -v esprit >/dev/null 2>&1; then
       return 1
     }
 
-    local repo="improdead/Esprit"
+    local repo="esprit-cli/Esprit"
     local installed
     installed=$(esprit --version 2>/dev/null | awk '{print $2}' || echo "")
     [ -z "$installed" ] && return

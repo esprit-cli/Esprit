@@ -3,7 +3,7 @@
 set -euo pipefail
 
 APP="esprit"
-REPO_URL="${ESPRIT_REPO_URL:-https://github.com/improdead/Esprit.git}"
+REPO_URL="${ESPRIT_REPO_URL:-https://github.com/esprit-cli/Esprit.git}"
 REPO_REF="${ESPRIT_REPO_REF:-main}"
 INSTALL_ROOT="${ESPRIT_HOME:-$HOME/.esprit}"
 BIN_DIR="$INSTALL_ROOT/bin"
@@ -55,7 +55,7 @@ verify_signature() {
     fi
 
     # Import the Esprit public key
-    local key_url="https://raw.githubusercontent.com/improdead/Esprit/main/keys/esprit-release.pub"
+    local key_url="https://raw.githubusercontent.com/esprit-cli/Esprit/main/keys/esprit-release.pub"
     if curl -fsSL "$key_url" | gpg --import 2>/dev/null; then
         echo "✓ Esprit release key imported"
     else

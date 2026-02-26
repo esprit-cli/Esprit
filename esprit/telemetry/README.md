@@ -2,7 +2,7 @@
 
 To help make Esprit better for everyone, we collect anonymized data that helps us understand how to better improve our AI security agent for our users, guide the addition of new features, and fix common errors and bugs. This feedback loop is crucial for improving Esprit's capabilities and user experience.
 
-We use [PostHog](https://posthog.com), an open-source analytics platform, for data collection and analysis. Our telemetry implementation is fully transparent - you can review the [source code](https://github.com/improdead/Esprit/blob/main/esprit/telemetry/posthog.py) to see exactly what we track.
+We use [PostHog](https://posthog.com), an open-source analytics platform, for data collection and analysis. Our telemetry implementation is fully transparent - you can review the [source code](https://github.com/esprit-cli/Esprit/blob/main/esprit/telemetry/posthog.py) to see exactly what we track.
 
 ### Telemetry Policy
 
@@ -18,7 +18,7 @@ We collect only very **basic** usage data including:
 **Model Usage:** Which LLM model is being used (not prompts or responses)\
 **Aggregate Metrics:** Vulnerability counts by severity, agent/tool counts, token usage and cost estimates
 
-For complete transparency, you can inspect our [telemetry implementation](https://github.com/improdead/Esprit/blob/main/esprit/telemetry/posthog.py) to see the exact events we track.
+For complete transparency, you can inspect our [telemetry implementation](https://github.com/esprit-cli/Esprit/blob/main/esprit/telemetry/posthog.py) to see the exact events we track.
 
 ### What We **Never** Collect
 
