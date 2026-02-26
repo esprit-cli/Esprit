@@ -563,7 +563,10 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
             self._current_title = ""
             self._current_hint = "up/down to navigate  enter to select  q to quit"
         elif view == "wizard_welcome":
-            self._current_entries = self._build_wizard_welcome_entries()
+            self._current_entries = [
+                _MenuEntry("wizard_cloud", "☁️  Esprit Cloud (No Docker required)"),
+                _MenuEntry("wizard_local", "🖥️  Local Mode (Docker + your own API keys)"),
+            ]
             self._current_title = "Welcome to Esprit! Choose your setup:"
             self._current_hint = "up/down to navigate  enter to select"
         elif view == "wizard_complete":
@@ -715,13 +718,6 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
                 hint = self._active_theme().label
             entries.append(_MenuEntry(option.key, option.label, hint))
         return entries
-
-    @staticmethod
-    def _build_wizard_welcome_entries() -> list[_MenuEntry]:
-        return [
-            _MenuEntry("wizard_cloud", "Log in with Esprit (Recommended)"),
-            _MenuEntry("wizard_local", "Bring your own model (connectors)"),
-        ]
 
     def _build_model_entries(self, filter_text: str = "") -> list[_MenuEntry]:
         current = Config.get("esprit_llm") or DEFAULT_MODEL
@@ -1284,11 +1280,10 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
         # Wizard entries
         if key == "wizard_cloud":
             self._selected_provider_id = "esprit"
-            await self._connect_selected_provider()
+            self._set_view("provider_actions")
             return
         if key == "wizard_local":
-            self._mark_wizard_done()
-            self._wizard_mode = False
+            self._wizard_mode = True
             self._set_view("provider")
             return
         if key == "wizard_finish":
@@ -1497,10 +1492,7 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
                 else f"Login failed: {callback_result.error}. Please try again or use a different provider.",
                 "error",
             )
-            if self._wizard_mode:
-                self._set_view("wizard_welcome", push=False)
-            else:
-                self._set_view("provider", push=False)
+            self._set_view("provider", push=False)
             return
 
         if callback_result.credentials:
@@ -1517,15 +1509,9 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
                 # Esprit stores platform credentials outside provider token store.
                 if provider_id != "esprit":
                     self._token_store.set(provider_id, callback_result.credentials)
-        if self._wizard_mode and not Config.get("esprit_llm"):
-            os.environ["ESPRIT_LLM"] = "esprit/default"
-            Config.save_current()
-
         self._set_status(f"Connected {PROVIDER_NAMES.get(provider_id, provider_id)}", "success")
         if self._wizard_mode:
-            self._mark_wizard_done()
-            self._wizard_mode = False
-            self._set_view("scan_choose", push=False)
+            self._set_view("wizard_complete", push=False)
         else:
             self._set_view("provider", push=False)
 
