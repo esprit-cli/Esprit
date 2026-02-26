@@ -221,6 +221,7 @@ try {
 
     Write-Host ''
     Print-Message 'info' 'You may need to restart your terminal for PATH changes to take effect.'
+    Print-Message 'info' "  $APP   # start Esprit"
     Print-Message 'info' "  $APP --help"
 } catch {
     Print-Message 'error' "Installation failed: $_"
