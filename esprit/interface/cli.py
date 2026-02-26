@@ -79,10 +79,13 @@ async def run_cli(args: Any) -> None:  # noqa: PLR0915
         "llm_config": llm_config,
         "max_iterations": 300,
         "non_interactive": True,
+        "targets": args.targets_info,
     }
 
     if getattr(args, "local_sources", None):
         agent_config["local_sources"] = args.local_sources
+    if getattr(args, "local_artifacts", None):
+        agent_config["local_artifacts"] = args.local_artifacts
 
     tracer = Tracer(args.run_name)
     tracer.set_scan_config(scan_config)

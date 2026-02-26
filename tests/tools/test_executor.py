@@ -5,6 +5,7 @@ from typing import Any
 
 from esprit.tools import executor as executor_module
 from esprit.tools.executor import _extract_plain_result, process_tool_invocations
+from esprit.telemetry.tracer import Tracer, set_global_tracer
 
 
 class TestExtractPlainResult:
@@ -63,7 +64,7 @@ class TestProcessToolInvocations:
             agent_state: Any,
             tracer: Any,
             agent_id: str,
-        ) -> tuple[str, list[dict[str, Any]], bool]:
+        ) -> tuple[str, list[dict[str, Any]], bool, Any]:
             tool_name = str(tool_inv.get("toolName") or "unknown")
             observation_xml = (
                 "<tool_result>\n"
@@ -71,7 +72,7 @@ class TestProcessToolInvocations:
                 f"<result>{tool_name} ok</result>\n"
                 "</tool_result>"
             )
-            return observation_xml, [], False
+            return observation_xml, [], False, {"ok": True}
 
         monkeypatch.setattr(executor_module, "_execute_single_tool", fake_execute_single_tool)
 
@@ -96,7 +97,7 @@ class TestProcessToolInvocations:
             agent_state: Any,
             tracer: Any,
             agent_id: str,
-        ) -> tuple[str, list[dict[str, Any]], bool]:
+        ) -> tuple[str, list[dict[str, Any]], bool, Any]:
             tool_name = str(tool_inv.get("toolName") or "unknown")
             observation_xml = (
                 "<tool_result>\n"
@@ -104,7 +105,7 @@ class TestProcessToolInvocations:
                 f"<result>{tool_name} ok</result>\n"
                 "</tool_result>"
             )
-            return observation_xml, [], False
+            return observation_xml, [], False, {"ok": True}
 
         monkeypatch.setattr(executor_module, "_execute_single_tool", fake_execute_single_tool)
 
@@ -122,3 +123,37 @@ class TestProcessToolInvocations:
         assert conversation_history[0]["tool_call_id"] == "call_1"
         assert conversation_history[1]["role"] == "tool"
         assert conversation_history[1]["tool_call_id"] == "call_2"
+
+
+class TestScopeGuardValidation:
+    def test_scope_guard_blocks_out_of_scope_send_request(self) -> None:
+        class _State:
+            context = {}
+
+        tracer = Tracer("scope-guard-test")
+        tracer.set_scan_config({
+            "targets": [
+                {
+                    "type": "web_application",
+                    "details": {"target_url": "https://example.com"},
+                }
+            ]
+        })
+        set_global_tracer(tracer)
+        try:
+            result = asyncio.run(
+                executor_module.execute_tool_with_validation(
+                    "send_request",
+                    agent_state=_State(),
+                    method="GET",
+                    url="https://out-of-scope.example/api",
+                    headers={},
+                    body="",
+                    timeout=5,
+                )
+            )
+        finally:
+            set_global_tracer(None)
+
+        assert isinstance(result, str)
+        assert result.startswith("Error: ScopeGuard blocked send_request:")

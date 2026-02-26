@@ -1,4 +1,7 @@
+import json
 import logging
+import threading
+from copy import deepcopy
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
@@ -29,7 +32,7 @@ def get_global_tracer() -> Optional["Tracer"]:
     return _global_tracer
 
 
-def set_global_tracer(tracer: "Tracer") -> None:
+def set_global_tracer(tracer: Optional["Tracer"]) -> None:
     global _global_tracer  # noqa: PLW0603
     _global_tracer = tracer
 
@@ -68,6 +71,10 @@ class Tracer:
         self._next_execution_id = 1
         self._next_message_id = 1
         self._saved_vuln_ids: set[str] = set()
+        self._discovery_lock = threading.Lock()
+        self._discovery_state_by_agent: dict[str, dict[str, Any]] = {}
+        self._root_discovery_agent_id: str | None = None
+        self._discovery_events: list[dict[str, Any]] = []
 
         self.vulnerability_found_callback: Callable[[dict[str, Any]], None] | None = None
 
@@ -312,6 +319,49 @@ class Tracer:
         )
         self.get_run_dir()
 
+    def set_discovery_state(
+        self,
+        agent_id: str,
+        state: dict[str, Any],
+        *,
+        is_root: bool = False,
+    ) -> None:
+        if not agent_id or not isinstance(state, dict):
+            return
+        with self._discovery_lock:
+            self._discovery_state_by_agent[agent_id] = deepcopy(state)
+            if is_root or self._root_discovery_agent_id is None:
+                self._root_discovery_agent_id = agent_id
+
+    def append_discovery_event(self, agent_id: str, event: dict[str, Any]) -> None:
+        if not agent_id or not isinstance(event, dict):
+            return
+        with self._discovery_lock:
+            payload = {
+                "agent_id": agent_id,
+                "timestamp": datetime.now(UTC).isoformat(),
+                **event,
+            }
+            self._discovery_events.append(payload)
+            # Keep memory bounded for long scans.
+            if len(self._discovery_events) > 10_000:
+                self._discovery_events = self._discovery_events[-10_000:]
+
+    def _get_discovery_snapshot(self) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
+        with self._discovery_lock:
+            if not self._discovery_state_by_agent:
+                return None, []
+
+            root_agent_id = self._root_discovery_agent_id
+            if root_agent_id and root_agent_id in self._discovery_state_by_agent:
+                state = deepcopy(self._discovery_state_by_agent[root_agent_id])
+            else:
+                first_state = next(iter(self._discovery_state_by_agent.values()))
+                state = deepcopy(first_state)
+
+            events = deepcopy(self._discovery_events)
+            return state, events
+
     def save_run_data(self, mark_complete: bool = False) -> None:  # noqa: PLR0912, PLR0915
         try:
             run_dir = self.get_run_dir()
@@ -433,6 +483,33 @@ class Tracer:
                         f"Saved {len(new_reports)} new vulnerability report(s) to: {vuln_dir}"
                     )
                 logger.info(f"Updated vulnerability index: {vuln_csv_file}")
+
+            discovery_state, discovery_events = self._get_discovery_snapshot()
+            if discovery_state:
+                hypotheses = discovery_state.get("hypotheses", [])
+                experiments = discovery_state.get("experiments", [])
+                anomalies = discovery_state.get("anomaly_events", [])
+                evidence_index = discovery_state.get("evidence_index", {})
+                metrics = dict(discovery_state.get("discovery_metrics", {}) or {})
+
+                completed_experiments = int(metrics.get("completed_experiments", 0) or 0)
+                validated = int(metrics.get("validated_hypotheses", 0) or 0)
+                metrics["validated_finding_rate"] = (
+                    validated / completed_experiments if completed_experiments > 0 else 0.0
+                )
+
+                discovery_files = {
+                    "hypotheses.json": hypotheses,
+                    "experiments.json": experiments,
+                    "anomalies.json": anomalies,
+                    "evidence_index.json": evidence_index,
+                    "discovery_metrics.json": metrics,
+                    "discovery_events.json": discovery_events,
+                }
+                for filename, payload in discovery_files.items():
+                    output_file = run_dir / filename
+                    with output_file.open("w", encoding="utf-8") as f:
+                        json.dump(payload, f, indent=2, ensure_ascii=False)
 
             logger.info(f"📊 Essential scan data saved to: {run_dir}")
 

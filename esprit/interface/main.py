@@ -1548,7 +1548,7 @@ def main() -> None:
     args.local_sources = collect_local_sources(args.targets_info)
     args.local_artifacts = collect_local_artifacts(args.targets_info)
 
-    is_whitebox = bool(args.local_sources)
+    is_whitebox = bool(args.local_sources or args.local_artifacts)
 
     display_cost_estimate(
         model_name=Config.get("esprit_llm") or "",

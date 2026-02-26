@@ -1,0 +1,46 @@
+<tools>
+  <tool name="mobile_dynamic_status">
+    <description>Check whether Android dynamic instrumentation dependencies are available and enumerate connected devices.</description>
+    <parameters>
+      <parameter name="platform" type="string" required="false">
+        <description>Target platform ("android" or "ios"). Android performs ADB device enumeration when available.</description>
+      </parameter>
+    </parameters>
+    <returns type="Dict[str, Any]">
+      <description>Availability map for adb/frida/objection, optional device list, raw adb output, and platform notes.</description>
+    </returns>
+  </tool>
+
+  <tool name="mobile_adb">
+    <description>Execute an adb subcommand for operator-assisted Android dynamic workflows.</description>
+    <parameters>
+      <parameter name="command" type="string" required="true">
+        <description>ADB subcommand without the adb prefix, e.g. "devices", "shell pm list packages", "forward tcp:27042 tcp:27042".</description>
+      </parameter>
+      <parameter name="timeout" type="integer" required="false">
+        <description>Execution timeout in seconds (clamped to 1-120).</description>
+      </parameter>
+    </parameters>
+    <returns type="Dict[str, Any]">
+      <description>Command execution result with success, exit_code, stdout, stderr, and command echo.</description>
+    </returns>
+  </tool>
+
+  <tool name="mobile_frida_ps">
+    <description>List processes/apps visible to frida on Android devices for dynamic instrumentation setup.</description>
+    <parameters>
+      <parameter name="device" type="string" required="false">
+        <description>Connection type: "usb" for -U or "remote" for -R.</description>
+      </parameter>
+      <parameter name="include_apps" type="boolean" required="false">
+        <description>Include installed application listing (-a).</description>
+      </parameter>
+      <parameter name="timeout" type="integer" required="false">
+        <description>Execution timeout in seconds (clamped to 1-120).</description>
+      </parameter>
+    </parameters>
+    <returns type="Dict[str, Any]">
+      <description>Command execution result with success, exit_code, stdout, stderr, and command echo.</description>
+    </returns>
+  </tool>
+</tools>

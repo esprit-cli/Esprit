@@ -88,3 +88,13 @@ Create scopes to filter traffic to relevant domains:
 Allowlist: ["api.example.com", "*.example.com"]
 Denylist: ["*.gif", "*.jpg", "*.png", "*.css", "*.js"]
 ```
+
+## Mobile Proxy Mode (Operator-Assisted)
+
+For mobile assessments, you can route emulator/device traffic through the scanner proxy. Captured traffic is stored in the same Caido request store used by web scans, so existing tools (`list_requests`, `view_request`, `repeat_request`, `send_request`) work without a separate replay system.
+
+v1 expectations:
+
+- Operator configures device/emulator proxy settings and CA trust.
+- Esprit captures runtime request templates from mobile flows.
+- Replay/mutation stays in the unified proxy toolchain.

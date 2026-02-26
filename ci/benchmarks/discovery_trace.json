@@ -1,0 +1,71 @@
+[
+  {
+    "tool_name": "list_requests",
+    "tool_args": {},
+    "result": {
+      "requests": [
+        {
+          "id": "req_100",
+          "method": "GET",
+          "host": "juice.shop",
+          "path": "/api/admin",
+          "response": {
+            "statusCode": 403,
+            "roundtripTime": 120
+          }
+        },
+        {
+          "id": "req_101",
+          "method": "POST",
+          "host": "juice.shop",
+          "path": "/api/search",
+          "response": {
+            "statusCode": 500,
+            "roundtripTime": 210
+          }
+        },
+        {
+          "id": "req_102",
+          "method": "PUT",
+          "host": "juice.shop",
+          "path": "/api/users/1",
+          "response": {
+            "statusCode": 405,
+            "roundtripTime": 140
+          }
+        },
+        {
+          "id": "req_103",
+          "method": "GET",
+          "host": "juice.shop",
+          "path": "/api/reports",
+          "response": {
+            "statusCode": 200,
+            "roundtripTime": 9200
+          }
+        }
+      ]
+    }
+  },
+  {
+    "tool_name": "send_request",
+    "tool_args": {
+      "method": "POST",
+      "url": "https://juice.shop/api/search"
+    },
+    "result": {
+      "id": "req_104",
+      "status_code": 500,
+      "body": "You have an error in your SQL syntax near ' OR 1=1 --'"
+    }
+  },
+  {
+    "tool_name": "terminal_execute",
+    "tool_args": {
+      "command": "katana -u https://juice.shop"
+    },
+    "result": {
+      "content": "Found: https://juice.shop/api/v2/orders\nFound: https://juice.shop/api/v2/admin/config"
+    }
+  }
+]

@@ -1946,10 +1946,13 @@ class EspritTUIApp(App):  # type: ignore[misc]
         config = {
             "llm_config": llm_config,
             "max_iterations": 300,
+            "targets": args.targets_info,
         }
 
         if getattr(args, "local_sources", None):
             config["local_sources"] = args.local_sources
+        if getattr(args, "local_artifacts", None):
+            config["local_artifacts"] = args.local_artifacts
 
         return config
 

@@ -78,6 +78,29 @@ Esprit runs inside a Kali Linux-based Docker container with a comprehensive set 
 | ------------------------------------ | --------------------------- |
 | [Playwright](https://playwright.dev) | Headless browser automation |
 
+## Mobile (Static-First)
+
+| Tool | Description |
+| ---- | ----------- |
+| [apktool](https://ibotpeaches.github.io/Apktool/) | Decode Android APK resources and manifests |
+| [jadx](https://github.com/skylot/jadx) | Decompile Android bytecode for static review |
+| [aapt](https://developer.android.com/tools/aapt2) | Inspect APK metadata and package resources |
+| [binwalk](https://github.com/ReFirmLabs/binwalk) | Analyze embedded firmware/blob structures |
+| [mitmproxy](https://mitmproxy.org) | Operator-assisted proxying for mobile traffic capture |
+| [yq](https://github.com/mikefarah/yq) | Parse and transform YAML/structured outputs |
+
+## Mobile (Optional Android Dynamic)
+
+| Tool | Description |
+| ---- | ----------- |
+| [adb](https://developer.android.com/tools/adb) | Connect to and control Android emulator/device runtime |
+| [frida-tools](https://frida.re/docs/tools/) | Dynamic instrumentation primitives for runtime testing |
+| [objection](https://github.com/sensepost/objection) | High-level mobile runtime security testing workflows |
+
+<Note>
+  Mobile support in v1 is static-first. Android dynamic instrumentation is optional/gated via Docker build arg `INSTALL_ANDROID_DYNAMIC_TOOLS=true`, and iOS dynamic testing remains operator-assisted due external tooling constraints.
+</Note>
+
 <Note>
   All tools are pre-configured and ready to use. The agent selects the appropriate tool based on the vulnerability being tested.
 </Note>
