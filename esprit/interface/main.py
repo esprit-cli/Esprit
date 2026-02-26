@@ -53,6 +53,7 @@ from esprit.interface.utils import (  # noqa: E402
     build_subscription_quota_lines,
     check_docker_connection,
     clone_repository,
+    collect_local_artifacts,
     collect_local_sources,
     generate_run_name,
     image_exists,
@@ -1545,6 +1546,7 @@ def main() -> None:
             target_info["details"]["cloned_repo_path"] = cloned_path
 
     args.local_sources = collect_local_sources(args.targets_info)
+    args.local_artifacts = collect_local_artifacts(args.targets_info)
 
     is_whitebox = bool(args.local_sources)
 

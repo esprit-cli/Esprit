@@ -26,6 +26,7 @@ class EspritAgent(BaseAgent):
         local_code = []
         urls = []
         ip_addresses = []
+        mobile_apps = []
 
         for target in targets:
             target_type = target["type"]
@@ -56,6 +57,13 @@ class EspritAgent(BaseAgent):
                 urls.append(details["target_url"])
             elif target_type == "ip_address":
                 ip_addresses.append(details["target_ip"])
+            elif target_type == "mobile_app":
+                workspace_path = f"/workspace/{workspace_subdir}" if workspace_subdir else "/workspace"
+                mobile_apps.append({
+                    "path": details.get("target_path", "unknown"),
+                    "platform": details.get("platform", "unknown"),
+                    "workspace_path": workspace_path,
+                })
 
         task_parts = []
 
@@ -80,6 +88,13 @@ class EspritAgent(BaseAgent):
         if ip_addresses:
             task_parts.append("\n\nIP Addresses:")
             task_parts.extend(f"- {ip}" for ip in ip_addresses)
+
+        if mobile_apps:
+            task_parts.append("\n\nMobile Apps:")
+            for app in mobile_apps:
+                task_parts.append(
+                    f"- {app['path']} ({app['platform']}, available at: {app['workspace_path']})"
+                )
 
         task_description = " ".join(task_parts)
 

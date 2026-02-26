@@ -247,61 +247,7 @@ MobSF can be introduced in two patterns:
    - Run MobSF independently and integrate via API.
    - Richer analysis but higher infra complexity.
 
-Recommendation:
-
-- Keep v1 CLI-only.
-- Treat MobSF sidecar as v2+, so primary scan container stays lean and independently testable.
-
-### A4. New Mobile Tool Module
-
-Add a new tool package `esprit/tools/mobile/` to return structured JSON instead of raw shell text.
-
-#### Proposed tool surface
-
-- `mobile_action(action="static_scan", app_path, platform="auto")`
-  - Outputs permissions, exported components, hardcoded hosts, cert pinning indicators, extracted endpoints.
-- `mobile_action(action="extract_endpoints", app_path)`
-  - Returns normalized endpoint candidates with confidence scores and provenance.
-- `mobile_action(action="dynamic_prepare", app_path, mode="passive")`
-  - Sets up optional runtime instrumentation plan (no bypass automation in v1).
-
-#### Required wiring
-
-- `esprit/tools/mobile/mobile_actions.py`
-- `esprit/tools/mobile/mobile_actions_schema.xml`
-- `esprit/tools/mobile/__init__.py`
-- `esprit/tools/__init__.py` import path updates.
-
-### A5. Prompt and Skill Extensions
-
-#### Required changes
-
-- `esprit/agents/EspritAgent/system_prompt.jinja`
-  - Add mobile workflow instructions:
-    - static extraction
-    - backend correlation
-    - optional dynamic analysis only when explicitly enabled.
-- New skills under `esprit/skills/mobile/`:
-  - `android_static.md`
-  - `ios_static.md`
-  - `mobile_api_correlation.md`
-- Update scan mode skills (`quick`, `standard`, `deep`) to include mobile-specific phases when mobile targets are present.
-
-### A6. Backend Reuse Strategy (Critical)
-
-Mobile should not be isolated. It should feed the existing web/API pipeline.
-
-Pipeline:
-
-1. Extract endpoints/secrets/auth flows from app artifact.
-2. Score endpoint candidates by confidence/provenance:
-   - observed in proxy traffic > decoded literal > inferred/constructed.
-3. Enforce in-scope host filtering before auto-testing.
-4. Convert qualified candidates to prioritized API hypotheses.
-5. Use existing proxy/terminal/python tools for replay/fuzz/validation.
-6. Report via existing `create_vulnerability_report`.
-
-This minimizes net-new code while leveraging mature tooling already in Esprit.
+Recommendation: start with CLI-only (pattern 1) for v1. Reserve MobSF as optional upgrade.
 
 ### A7. Testing Plan (Mobile)
 
@@ -454,7 +400,7 @@ Each hypothesis and experiment must reference raw evidence artifacts.
   - screenshots / terminal outputs where relevant.
 - Discovery summaries should be renderings of evidence-backed events, not free-text-only judgments.
 
-This keeps the autonomy loop auditable and reduces \"LLM vibe\" drift.
+This keeps the autonomy loop auditable and reduces "LLM vibe" drift.
 
 ### B7. Safety and Budget Guards
 
