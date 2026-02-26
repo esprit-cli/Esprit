@@ -612,6 +612,20 @@ class GitHubAppStatusResponse(BaseModel):
     installed_at: str | None = None
 
 
+def _is_stale_github_installation_error(exc: HTTPException) -> bool:
+    """Return True when GitHub reports installation is no longer valid for this user."""
+    return exc.status_code == status.HTTP_401_UNAUTHORIZED and "reconnect github" in str(exc.detail).lower()
+
+
+def _clear_github_app_installation_for_user(user_id: str) -> None:
+    """Clear stale GitHub App installation linkage for a user profile."""
+    supabase.table("profiles").update({
+        "github_app_installation_id": None,
+        "github_app_installed_at": None,
+    }).eq("id", user_id).execute()
+    supabase.table("linked_repos").delete().eq("user_id", user_id).execute()
+
+
 @router.post("/github/app/installation")
 async def save_github_app_installation(
     request: GitHubAppInstallationRequest,
@@ -669,23 +683,27 @@ async def get_github_app_status(user: CurrentUser):
         return GitHubAppStatusResponse(installed=False)
 
     installation_id = response.data.get("github_app_installation_id")
+    installed_at = response.data.get("github_app_installed_at")
+    if installation_id is not None:
+        try:
+            await get_github_app_installation_token(int(installation_id))
+        except HTTPException as exc:
+            if _is_stale_github_installation_error(exc):
+                _clear_github_app_installation_for_user(user.sub)
+                return GitHubAppStatusResponse(installed=False)
+            raise
+
     return GitHubAppStatusResponse(
         installed=installation_id is not None,
         installation_id=installation_id,
-        installed_at=response.data.get("github_app_installed_at"),
+        installed_at=installed_at,
     )
 
 
 @router.delete("/github/app/installation")
 async def remove_github_app_installation(user: CurrentUser):
     """Remove GitHub App installation from user profile."""
-    supabase.table("profiles").update({
-        "github_app_installation_id": None,
-        "github_app_installed_at": None,
-    }).eq("id", user.sub).execute()
-
-    # Also clear linked repos
-    supabase.table("linked_repos").delete().eq("user_id", user.sub).execute()
+    _clear_github_app_installation_for_user(user.sub)
 
     return {"success": True}
 
@@ -768,6 +786,12 @@ async def get_github_app_installation_token(installation_id: int) -> str:
                 "Accept": "application/vnd.github.v3+json",
             },
         )
+
+        if response.status_code in (401, 404, 410):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="GitHub App installation is no longer valid. Please reconnect GitHub.",
+            )
 
         if response.status_code != 201:
             raise HTTPException(
@@ -1018,7 +1042,16 @@ async def start_scan(
             )
 
         installation_id = profile_response.data["github_app_installation_id"]
-        github_token = await get_github_app_installation_token(installation_id)
+        try:
+            github_token = await get_github_app_installation_token(installation_id)
+        except HTTPException as exc:
+            if _is_stale_github_installation_error(exc):
+                _clear_github_app_installation_for_user(user.sub)
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="GitHub connection expired. Please reconnect GitHub.",
+                ) from exc
+            raise
 
         # Normalize repo URL (remove https:// prefix if present)
         if target.startswith("https://"):
@@ -1697,7 +1730,13 @@ Security fixes have been applied to address the vulnerabilities discovered durin
                     error=f"GitHub API error: {pr_response.status_code}",
                 )
 
-    except HTTPException:
+    except HTTPException as exc:
+        if _is_stale_github_installation_error(exc):
+            _clear_github_app_installation_for_user(user.sub)
+            return CreatePRResponse(
+                success=False,
+                error="GitHub connection expired. Please reconnect GitHub and try again.",
+            )
         raise
     except Exception as e:
         logger.error("Failed to create PR", scan_id=scan_id, error=str(e))
@@ -1775,6 +1814,14 @@ async def list_github_repos(user: CurrentUser):
 
             return GitHubReposResponse(repos=repos, total=len(repos))
 
+    except HTTPException as exc:
+        if _is_stale_github_installation_error(exc):
+            _clear_github_app_installation_for_user(user.sub)
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="GitHub connection expired. Please reconnect GitHub.",
+            ) from exc
+        raise
     except httpx.RequestError as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
