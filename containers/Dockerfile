@@ -1,6 +1,7 @@
 FROM kalilinux/kali-rolling:latest
 
 LABEL description="AI Agent Penetration Testing Environment with Comprehensive Automated Tools"
+ARG INSTALL_ANDROID_DYNAMIC_TOOLS=false
 
 RUN apt-get update && \
     apt-get install -y kali-archive-keyring sudo && \
@@ -36,6 +37,7 @@ RUN apt-get update && \
     iproute2 iputils-ping netcat-traditional \
     nmap ncat ndiff \
     sqlmap nuclei subfinder naabu ffuf \
+    apktool jadx aapt binwalk mitmproxy \
     nodejs npm pipx \
     libcap2-bin \
     gdb \
@@ -90,7 +92,8 @@ RUN nuclei -update-templates
 RUN pipx install arjun && \
     pipx install dirsearch && \
     pipx inject dirsearch setuptools && \
-    pipx install wafw00f
+    pipx install wafw00f && \
+    pipx install yq
 
 ENV NPM_CONFIG_PREFIX=/home/pentester/.npm-global
 RUN mkdir -p /home/pentester/.npm-global
@@ -116,6 +119,12 @@ RUN apt-get update && apt-get install -y zaproxy
 RUN curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
 
 RUN apt-get install -y wapiti
+
+RUN if [ "$INSTALL_ANDROID_DYNAMIC_TOOLS" = "true" ]; then \
+        apt-get update && \
+        apt-get install -y --no-install-recommends adb && \
+        /app/venv/bin/pip install frida-tools objection; \
+    fi
 
 USER pentester
 
@@ -178,6 +187,7 @@ COPY esprit/tools/__init__.py esprit/tools/registry.py esprit/tools/executor.py 
 
 COPY esprit/tools/browser/ /app/esprit/tools/browser/
 COPY esprit/tools/file_edit/ /app/esprit/tools/file_edit/
+COPY esprit/tools/mobile/ /app/esprit/tools/mobile/
 COPY esprit/tools/notes/ /app/esprit/tools/notes/
 COPY esprit/tools/python/ /app/esprit/tools/python/
 COPY esprit/tools/terminal/ /app/esprit/tools/terminal/

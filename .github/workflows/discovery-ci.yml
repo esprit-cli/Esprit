@@ -1,0 +1,42 @@
+name: Discovery CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - feature/mobile-autonomous-discovery
+
+jobs:
+  discovery-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: snok/install-poetry@v1
+
+      - name: Install dependencies
+        run: poetry install --with dev
+
+      - name: Run discovery and integration tests
+        run: |
+          poetry run pytest -q tests/discovery tests/tools/test_executor.py tests/tools/test_mobile_actions.py tests/telemetry/test_tracer.py tests/runtime/test_cloud_runtime.py
+
+      - name: Generate benchmark metrics
+        run: |
+          poetry run python -m esprit.discovery.benchmark_runner \
+            --trace ci/benchmarks/discovery_trace.json \
+            --output /tmp/discovery_metrics.generated.json
+
+      - name: Benchmark gate
+        run: |
+          poetry run python -m esprit.discovery.benchmark_gate \
+            --metrics /tmp/discovery_metrics.generated.json \
+            --min-hypothesis-conversion-rate 0.15 \
+            --min-novelty-ratio 0.60 \
+            --min-validated-finding-rate 0.10 \
+            --min-validated-hypotheses 1

@@ -1,9 +1,12 @@
 """Tests for BaseAgent native tool-call payload construction."""
 
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 from esprit.agents.base_agent import BaseAgent
 from esprit.agents.state import AgentState
+from esprit.discovery.integration import DiscoveryIntegration
+from esprit.discovery.models import Hypothesis, HypothesisStatus
 from esprit.llm import LLMRequestFailedError
 
 
@@ -136,3 +139,83 @@ class TestLLMAutoResumePolicy:
         agent._llm_auto_resume_attempts = 2
 
         assert agent._should_auto_resume_llm_failure() is False
+
+
+class _TracerStub:
+    def __init__(self) -> None:
+        self.events: list[dict[str, Any]] = []
+        self.states: list[dict[str, Any]] = []
+
+    def append_discovery_event(self, _agent_id: str, event: dict[str, Any]) -> None:
+        self.events.append(event)
+
+    def set_discovery_state(self, _agent_id: str, state: dict[str, Any], is_root: bool = False) -> None:
+        self.states.append(state)
+
+
+class TestDiscoveryAutoScheduling:
+    @staticmethod
+    def _make_agent() -> BaseAgent:
+        agent = BaseAgent.__new__(BaseAgent)
+        agent.config = {"auto_schedule_discovery_experiments": True}
+        agent.state = AgentState(parent_id=None)
+        agent._discovery_integration = DiscoveryIntegration(enabled=True)
+        agent._processed_discovery_subagents = set()
+        return agent
+
+    def test_auto_schedules_subagents_from_ranked_hypotheses(self, monkeypatch: Any) -> None:
+        agent = self._make_agent()
+        hypothesis = Hypothesis(
+            title="IDOR candidate",
+            source="proxy",
+            target="/api/users/{id}",
+            vulnerability_class="IDOR",
+            novelty_score=0.9,
+            impact_score=0.8,
+            evidence_score=0.7,
+            reachability_score=0.8,
+        )
+        agent._discovery_integration.state.add_hypothesis(hypothesis)
+
+        monkeypatch.setattr(
+            "esprit.tools.agents_graph.agents_graph_actions.create_agent",
+            lambda **kwargs: {"success": True, "agent_id": "agent_sub_1"},
+        )
+        tracer = _TracerStub()
+
+        spawned = agent._auto_schedule_discovery_experiments(tracer)
+
+        assert spawned == 1
+        assert hypothesis.status == HypothesisStatus.in_progress
+        experiments = agent._discovery_integration.state.experiments
+        assert len(experiments) == 1
+        assert experiments[0].agent_id == "agent_sub_1"
+
+    def test_completion_updates_hypothesis_status(self) -> None:
+        agent = self._make_agent()
+        hypothesis = Hypothesis(
+            title="XSS candidate",
+            source="proxy",
+            target="/search",
+            vulnerability_class="XSS",
+            novelty_score=0.7,
+        )
+        hid = agent._discovery_integration.state.add_hypothesis(hypothesis)
+        agent._discovery_integration.scheduler.mark_scheduled(hid, "agent_sub_2")
+        tracer = _TracerStub()
+
+        agent_graph = {
+            "nodes": {
+                "agent_sub_2": {
+                    "status": "finished",
+                    "result": {
+                        "success": True,
+                        "summary": "Validated XSS",
+                        "findings": ["Reflected XSS in q parameter"],
+                    },
+                }
+            }
+        }
+        agent._process_discovery_subagent_completion("agent_sub_2", agent_graph, tracer)
+
+        assert hypothesis.status == HypothesisStatus.validated

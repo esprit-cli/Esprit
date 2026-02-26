@@ -63,6 +63,7 @@ class BaseAgent(metaclass=AgentMeta):
         self.config = config
 
         self.local_sources = config.get("local_sources", [])
+        self.local_artifacts = config.get("local_artifacts", [])
         self.non_interactive = config.get("non_interactive", False)
 
         if "max_iterations" in config:
@@ -79,10 +80,13 @@ class BaseAgent(metaclass=AgentMeta):
             self.state = AgentState(
                 agent_name="Root Agent",
                 max_iterations=self.max_iterations,
-                is_whitebox=bool(self.local_sources),
+                is_whitebox=bool(self.local_sources or self.local_artifacts),
             )
 
         self.llm = LLM(self.llm_config, agent_name=self.agent_name)
+        self._discovery_integration: Any | None = None
+        self._scope_guard: Any | None = None
+        self._processed_discovery_subagents: set[str] = set()
 
         with contextlib.suppress(Exception):
             self.llm.set_agent_identity(self.state.agent_name, self.state.agent_id)
@@ -111,6 +115,7 @@ class BaseAgent(metaclass=AgentMeta):
         self._llm_auto_resume_attempts = 0
         self._last_llm_failure_retryable = False
         self._last_llm_error_status_code: int | None = None
+        self._initialize_discovery_components(config)
 
         from esprit.telemetry.tracer import get_global_tracer
 
@@ -176,6 +181,215 @@ class BaseAgent(metaclass=AgentMeta):
 
         if self.state.parent_id is None and agents_graph_actions._root_agent_id is None:
             agents_graph_actions._root_agent_id = self.state.agent_id
+
+    def _initialize_discovery_components(self, config: dict[str, Any]) -> None:
+        if self.state.parent_id is not None:
+            return
+
+        if not bool(config.get("enable_discovery", True)):
+            return
+
+        try:
+            from esprit.discovery.integration import DiscoveryIntegration
+            from esprit.discovery.scope_guard import ScopeGuard
+            from esprit.telemetry.tracer import get_global_tracer
+        except ImportError:
+            return
+
+        self._discovery_integration = DiscoveryIntegration(enabled=True)
+
+        scope_mode = str(config.get("scope_guard_mode") or "block").lower().strip()
+        if scope_mode not in {"block", "warn"}:
+            scope_mode = "block"
+
+        self._scope_guard = ScopeGuard(mode=scope_mode)
+
+        targets = config.get("targets")
+        if not isinstance(targets, list):
+            tracer = get_global_tracer()
+            targets = (tracer.scan_config or {}).get("targets", []) if tracer else []
+
+        if isinstance(targets, list):
+            self._scope_guard.register_targets(targets)
+
+        self.state.context["scope_guard"] = self._scope_guard
+
+        tracer = get_global_tracer()
+        if tracer:
+            self._persist_discovery_state(tracer)
+
+    def _inject_discovery_context(self) -> None:
+        if self._discovery_integration is None or not self._discovery_integration.enabled:
+            return
+
+        # Keep only the latest discovery block to avoid repetitive context bloat.
+        filtered_messages: list[dict[str, Any]] = []
+        for msg in self.state.messages:
+            content = msg.get("content")
+            if (
+                msg.get("role") == "user"
+                and isinstance(content, str)
+                and content.startswith("<discovery_context>")
+            ):
+                continue
+            filtered_messages.append(msg)
+        self.state.messages = filtered_messages
+
+        context_block = self._discovery_integration.build_context_block()
+        if context_block:
+            self.state.add_message("user", context_block)
+
+    def _persist_discovery_state(self, tracer: "Tracer") -> None:
+        if self._discovery_integration is None or self.state.parent_id is not None:
+            return
+
+        persist = getattr(tracer, "set_discovery_state", None)
+        if not callable(persist):
+            return
+
+        persist(
+            self.state.agent_id,
+            self._discovery_integration.get_persistence_data(),
+            is_root=True,
+        )
+
+    def _auto_schedule_discovery_experiments(self, tracer: Optional["Tracer"] = None) -> int:
+        if (
+            self._discovery_integration is None
+            or not self._discovery_integration.enabled
+            or self.state.parent_id is not None
+        ):
+            return 0
+
+        if not bool(self.config.get("auto_schedule_discovery_experiments", True)):
+            return 0
+
+        scheduler = self._discovery_integration.scheduler
+        if not scheduler.has_pending_work():
+            return 0
+
+        try:
+            max_per_iteration = int(self.config.get("max_discovery_subagents_per_iteration", 2))
+        except (TypeError, ValueError):
+            max_per_iteration = 2
+        max_per_iteration = max(1, min(max_per_iteration, 5))
+
+        tasks = scheduler.get_next_tasks(max_tasks=max_per_iteration)
+        if not tasks:
+            return 0
+
+        spawned = 0
+        try:
+            from esprit.tools.agents_graph.agents_graph_actions import create_agent
+        except ImportError:
+            return 0
+
+        for task in tasks:
+            skills_csv = ",".join(task.get("suggested_skills", [])) or None
+            result = create_agent(
+                agent_state=self.state,
+                task=task["task_description"],
+                name=task["suggested_name"],
+                inherit_context=False,
+                skills=skills_csv,
+            )
+            if not isinstance(result, dict) or not result.get("success"):
+                if tracer:
+                    append_event = getattr(tracer, "append_discovery_event", None)
+                    if callable(append_event):
+                        append_event(
+                            self.state.agent_id,
+                            {
+                                "type": "schedule_failed",
+                                "hypothesis_id": task.get("hypothesis_id"),
+                                "error": str((result or {}).get("error", "unknown")),
+                                "timestamp": datetime.now(UTC).isoformat(),
+                            },
+                        )
+                continue
+
+            agent_id = result.get("agent_id")
+            if not isinstance(agent_id, str) or not agent_id:
+                continue
+
+            experiment_id = scheduler.mark_scheduled(task["hypothesis_id"], agent_id)
+            if not experiment_id:
+                continue
+
+            spawned += 1
+            if tracer:
+                append_event = getattr(tracer, "append_discovery_event", None)
+                if callable(append_event):
+                    append_event(
+                        self.state.agent_id,
+                        {
+                            "type": "experiment_scheduled",
+                            "hypothesis_id": task["hypothesis_id"],
+                            "experiment_id": experiment_id,
+                            "subagent_id": agent_id,
+                            "timestamp": datetime.now(UTC).isoformat(),
+                        },
+                    )
+
+        if spawned > 0 and tracer:
+            self._persist_discovery_state(tracer)
+
+        return spawned
+
+    def _process_discovery_subagent_completion(
+        self,
+        sender_id: str | None,
+        agent_graph: dict[str, Any],
+        tracer: Optional["Tracer"],
+    ) -> None:
+        if (
+            self._discovery_integration is None
+            or not self._discovery_integration.enabled
+            or not sender_id
+            or sender_id in self._processed_discovery_subagents
+        ):
+            return
+
+        sender_node = (agent_graph.get("nodes") or {}).get(sender_id)
+        if not isinstance(sender_node, dict):
+            return
+
+        status = str(sender_node.get("status") or "")
+        if status not in {"finished", "failed", "completed"}:
+            return
+
+        result_data = sender_node.get("result") or {}
+        if not isinstance(result_data, dict):
+            result_data = {}
+
+        success = bool(result_data.get("success", status in {"finished", "completed"}))
+        summary = str(result_data.get("summary") or status)
+        findings_raw = result_data.get("findings") or []
+        findings: list[str] = []
+        if isinstance(findings_raw, list):
+            findings = [str(item) for item in findings_raw if isinstance(item, str)]
+
+        self._discovery_integration.complete_experiment_from_agent_result(
+            sender_id,
+            success=success,
+            result_summary=summary,
+            findings=findings,
+        )
+        self._processed_discovery_subagents.add(sender_id)
+
+        if tracer:
+            self._persist_discovery_state(tracer)
+            append_event = getattr(tracer, "append_discovery_event", None)
+            if callable(append_event):
+                append_event(
+                    self.state.agent_id,
+                    {
+                        "type": "experiment_completed",
+                        "subagent_id": sender_id,
+                        "success": success,
+                        "timestamp": datetime.now(UTC).isoformat(),
+                    },
+                )
 
     async def agent_loop(self, task: str) -> dict[str, Any]:  # noqa: PLR0912, PLR0915
         from esprit.telemetry.tracer import get_global_tracer
@@ -444,7 +658,10 @@ class BaseAgent(metaclass=AgentMeta):
             try:
                 runtime = get_runtime()
                 sandbox_info = await runtime.create_sandbox(
-                    self.state.agent_id, self.state.sandbox_token, self.local_sources
+                    self.state.agent_id,
+                    self.state.sandbox_token,
+                    self.local_sources,
+                    self.local_artifacts,
                 )
                 self.state.sandbox_id = sandbox_info["workspace_id"]
                 self.state.sandbox_token = sandbox_info["auth_token"]
@@ -466,6 +683,7 @@ class BaseAgent(metaclass=AgentMeta):
     async def _process_iteration(self, tracer: Optional["Tracer"]) -> bool:
         final_response = None
         tools = self._get_agent_tools()
+        self._inject_discovery_context()
 
         async for response in self.llm.generate(self.state.get_conversation_history(), tools=tools):
             final_response = response
@@ -562,13 +780,63 @@ class BaseAgent(metaclass=AgentMeta):
 
     async def _execute_actions(self, actions: list[Any], tracer: Optional["Tracer"]) -> bool:
         """Execute actions and return True if agent should finish."""
+        if self._discovery_integration and self._discovery_integration.enabled:
+            filtered_actions: list[Any] = []
+            blocked_finish = False
+            for action in actions:
+                if (
+                    isinstance(action, dict)
+                    and action.get("toolName") == "finish_scan"
+                    and self._discovery_integration.has_untested_high_priority()
+                ):
+                    blocked_finish = True
+                    continue
+                filtered_actions.append(action)
+
+            if blocked_finish:
+                summary = self._discovery_integration.get_untested_summary(threshold=0.5)
+                self.state.add_message(
+                    "user",
+                    "Discovery guard prevented finish_scan because high-priority hypotheses "
+                    "are still untested.\n"
+                    f"{summary}",
+                )
+
+            actions = filtered_actions
+            if not actions:
+                return False
+
         for action in actions:
             self.state.add_action(action)
 
         conversation_history = self.state.get_conversation_history()
 
+        def _on_tool_result(tool_name: str, tool_args: dict[str, Any], result: Any) -> None:
+            if self._discovery_integration and self._discovery_integration.enabled:
+                with contextlib.suppress(Exception):
+                    self._discovery_integration.process_tool_result(tool_name, tool_args, result)
+                    if tracer:
+                        self._persist_discovery_state(tracer)
+
+            if tracer:
+                append_event = getattr(tracer, "append_discovery_event", None)
+                if callable(append_event):
+                    append_event(
+                        self.state.agent_id,
+                        {
+                            "type": "tool_result",
+                            "tool_name": tool_name,
+                            "timestamp": datetime.now(UTC).isoformat(),
+                        },
+                    )
+
         tool_task = asyncio.create_task(
-            process_tool_invocations(actions, conversation_history, self.state)
+            process_tool_invocations(
+                actions,
+                conversation_history,
+                self.state,
+                on_tool_result=_on_tool_result,
+            )
         )
         self._current_task = tool_task
 
@@ -581,6 +849,9 @@ class BaseAgent(metaclass=AgentMeta):
             raise
 
         self.state.messages = conversation_history
+
+        if not should_agent_finish:
+            self._auto_schedule_discovery_experiments(tracer)
 
         if should_agent_finish:
             self.state.set_completed({"success": True})
@@ -627,6 +898,7 @@ class BaseAgent(metaclass=AgentMeta):
                 for message in messages:
                     if not message.get("read", False):
                         sender_id = message.get("from")
+                        sender_name = "Unknown Agent"
                         was_llm_failed = state.llm_failed
 
                         if self._should_resume_waiting_on_message(state, sender_id):
@@ -643,6 +915,13 @@ class BaseAgent(metaclass=AgentMeta):
                         else:
                             if sender_id and sender_id in _agent_graph.get("nodes", {}):
                                 sender_name = _agent_graph["nodes"][sender_id]["name"]
+                            from esprit.telemetry.tracer import get_global_tracer
+
+                            self._process_discovery_subagent_completion(
+                                sender_id,
+                                _agent_graph,
+                                get_global_tracer(),
+                            )
 
                             message_content = f"""<inter_agent_message>
     <delivery_notice>

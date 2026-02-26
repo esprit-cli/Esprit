@@ -1,5 +1,6 @@
 """Tests for esprit.runtime.docker_runtime module."""
 
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import httpx
@@ -136,3 +137,20 @@ class TestGetContainerLogs:
 
         result = runtime._get_container_logs()
         assert result == "(unable to retrieve logs)"
+
+
+class TestDockerfileMobileTooling:
+    def test_includes_mobile_static_tools(self):
+        dockerfile = Path("containers/Dockerfile").read_text(encoding="utf-8")
+        assert "apktool" in dockerfile
+        assert "jadx" in dockerfile
+        assert "aapt" in dockerfile
+        assert "binwalk" in dockerfile
+        assert "mitmproxy" in dockerfile
+        assert "pipx install yq" in dockerfile
+
+    def test_has_optional_android_dynamic_tool_flag(self):
+        dockerfile = Path("containers/Dockerfile").read_text(encoding="utf-8")
+        assert "ARG INSTALL_ANDROID_DYNAMIC_TOOLS=false" in dockerfile
+        assert "frida-tools" in dockerfile
+        assert "objection" in dockerfile

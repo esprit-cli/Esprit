@@ -1,6 +1,8 @@
 import inspect
 import os
-from typing import Any
+from contextlib import suppress
+from datetime import UTC, datetime
+from typing import Any, Callable
 
 import defusedxml.ElementTree as DefusedET
 
@@ -26,6 +28,88 @@ from .registry import (
 _SERVER_TIMEOUT = float(Config.get("esprit_sandbox_execution_timeout") or "120")
 SANDBOX_EXECUTION_TIMEOUT = _SERVER_TIMEOUT + 30
 SANDBOX_CONNECT_TIMEOUT = float(Config.get("esprit_sandbox_connect_timeout") or "10")
+_SCOPE_GUARD_CACHE: dict[str, Any] = {}
+
+
+def _resolve_scope_guard(agent_state: Any | None) -> Any | None:
+    if agent_state is not None and hasattr(agent_state, "context"):
+        ctx = getattr(agent_state, "context", {}) or {}
+        guard = ctx.get("scope_guard")
+        if guard is not None:
+            return guard
+
+    try:
+        from esprit.discovery.scope_guard import ScopeGuard
+        from esprit.telemetry.tracer import get_global_tracer
+    except ImportError:
+        return None
+
+    tracer = get_global_tracer()
+    cache_key = tracer.run_id if tracer else "default"
+    guard = _SCOPE_GUARD_CACHE.get(cache_key)
+    if guard is None:
+        mode = str(Config.get("esprit_scope_guard_mode") or "block").lower().strip()
+        if mode not in {"block", "warn"}:
+            mode = "block"
+        guard = ScopeGuard(mode=mode)
+        if tracer and tracer.scan_config:
+            targets = tracer.scan_config.get("targets", [])
+            if isinstance(targets, list):
+                guard.register_targets(targets)
+        _SCOPE_GUARD_CACHE[cache_key] = guard
+
+    if agent_state is not None and hasattr(agent_state, "context"):
+        agent_state.context["scope_guard"] = guard
+
+    return guard
+
+
+def _check_scope_guard(tool_name: str, kwargs: dict[str, Any], agent_state: Any | None) -> str | None:
+    if tool_name not in {"send_request", "repeat_request"}:
+        return None
+
+    guard = _resolve_scope_guard(agent_state)
+    if guard is None:
+        return None
+
+    with suppress(Exception):
+        check = guard.check_request_args(tool_name, kwargs)
+        if not check.allowed:
+            message = check.message or check.reason
+            return f"Error: ScopeGuard blocked {tool_name}: {message}"
+    return None
+
+
+def _expand_scope_from_proxy_results(agent_state: Any | None, tool_name: str, result: Any) -> None:
+    if tool_name != "list_requests":
+        return
+    if not isinstance(result, dict):
+        return
+
+    requests = result.get("requests")
+    if not isinstance(requests, list):
+        return
+
+    guard = _resolve_scope_guard(agent_state)
+    if guard is None:
+        return
+
+    with suppress(Exception):
+        count = guard.add_allowed_hosts_from_proxy(requests)
+        if count > 0:
+            tracer, agent_id = _get_tracer_and_agent_id(agent_state)
+            if tracer:
+                append_event = getattr(tracer, "append_discovery_event", None)
+                if callable(append_event):
+                    append_event(
+                        agent_id,
+                        {
+                            "type": "scope_expansion",
+                            "tool_name": "list_requests",
+                            "hosts_added": count,
+                            "timestamp": datetime.now(UTC).isoformat(),
+                        },
+                    )
 
 
 async def execute_tool(tool_name: str, agent_state: Any | None = None, **kwargs: Any) -> Any:
@@ -177,6 +261,10 @@ async def execute_tool_with_validation(
     if arg_error:
         return f"Error: {arg_error}"
 
+    scope_error = _check_scope_guard(tool_name, kwargs, agent_state)
+    if scope_error:
+        return scope_error
+
     try:
         result = await execute_tool(tool_name, agent_state, **kwargs)
     except Exception as e:  # noqa: BLE001
@@ -263,7 +351,7 @@ async def _execute_single_tool(
     agent_state: Any | None,
     tracer: Any | None,
     agent_id: str,
-) -> tuple[str, list[dict[str, Any]], bool]:
+) -> tuple[str, list[dict[str, Any]], bool, Any]:
     tool_name = tool_inv.get("toolName", "unknown")
     args = tool_inv.get("args", {})
     execution_id = None
@@ -274,6 +362,7 @@ async def _execute_single_tool(
 
     try:
         result = await execute_tool_invocation(tool_inv, agent_state)
+        _expand_scope_from_proxy_results(agent_state, tool_name, result)
 
         is_error, error_payload = _check_error_result(result)
 
@@ -296,7 +385,7 @@ async def _execute_single_tool(
         raise
 
     observation_xml, images = _format_tool_result(tool_name, result)
-    return observation_xml, images, should_agent_finish
+    return observation_xml, images, should_agent_finish, result
 
 
 def _get_tracer_and_agent_id(agent_state: Any | None) -> tuple[Any | None, str]:
@@ -316,6 +405,7 @@ async def process_tool_invocations(
     tool_invocations: list[dict[str, Any]],
     conversation_history: list[dict[str, Any]],
     agent_state: Any | None = None,
+    on_tool_result: Callable[[str, dict[str, Any], Any], None] | None = None,
 ) -> bool:
     observation_parts: list[str] = []
     all_images: list[dict[str, Any]] = []
@@ -333,9 +423,18 @@ async def process_tool_invocations(
         is_native = False
 
     for tool_inv in tool_invocations:
-        observation_xml, images, tool_should_finish = await _execute_single_tool(
+        observation_xml, images, tool_should_finish, raw_result = await _execute_single_tool(
             tool_inv, agent_state, tracer, agent_id
         )
+        if on_tool_result:
+            try:
+                on_tool_result(
+                    str(tool_inv.get("toolName") or "unknown"),
+                    tool_inv.get("args", {}) or {},
+                    raw_result,
+                )
+            except Exception:
+                pass
 
         if is_native:
             # Native mode: each result is a separate role=tool message

@@ -29,19 +29,24 @@ class CloudRuntime(AbstractRuntime):
         self._sandboxes: dict[str, dict[str, Any]] = {}
 
     @staticmethod
-    def _sanitize_local_sources(
-        local_sources: list[dict[str, str]] | None,
+    def _sanitize_paths(
+        entries: list[dict[str, str]] | None,
+        default_prefix: str,
     ) -> list[dict[str, str]]:
-        if not local_sources:
+        if not entries:
             return []
 
         sanitized: list[dict[str, str]] = []
-        for index, source in enumerate(local_sources, start=1):
-            source_path = source.get("source_path")
+        for index, entry in enumerate(entries, start=1):
+            source_path = entry.get("source_path")
             if not source_path:
                 continue
 
-            target_name = source.get("workspace_subdir") or Path(source_path).name or f"target_{index}"
+            target_name = (
+                entry.get("workspace_subdir")
+                or Path(source_path).name
+                or f"{default_prefix}_{index}"
+            )
             sanitized.append(
                 {
                     "source_path": source_path,
@@ -56,11 +61,15 @@ class CloudRuntime(AbstractRuntime):
         agent_id: str,
         existing_token: str | None = None,
         local_sources: list[dict[str, str]] | None = None,
+        artifacts: list[dict[str, str]] | None = None,
     ) -> SandboxInfo:
         payload: dict[str, Any] = {"agent_id": agent_id}
-        sources_payload = self._sanitize_local_sources(local_sources)
+        sources_payload = self._sanitize_paths(local_sources, "target")
         if sources_payload:
             payload["local_sources"] = sources_payload
+        artifacts_payload = self._sanitize_paths(artifacts, "artifact")
+        if artifacts_payload:
+            payload["local_artifacts"] = artifacts_payload
 
         try:
             async with httpx.AsyncClient(timeout=_DEFAULT_TIMEOUT_SECONDS, trust_env=False) as client:

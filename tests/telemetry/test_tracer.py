@@ -1,6 +1,8 @@
 """Tests for tracer LLM token aggregation helpers."""
 
+import json
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -111,3 +113,37 @@ class TestTracerRunStatus:
         assert tracer.run_metadata["status"] == "completed"
         assert tracer.end_time is not None
         assert tracer.run_metadata["end_time"] == tracer.end_time
+
+
+class TestTracerDiscoveryPersistence:
+    def test_persists_discovery_files(self, tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.chdir(tmp_path)
+        tracer = Tracer("discovery-run")
+        tracer.set_discovery_state(
+            "agent_root",
+            {
+                "hypotheses": [{"id": "hyp_1"}],
+                "experiments": [{"id": "exp_1"}],
+                "anomaly_events": [{"id": "anom_1"}],
+                "evidence_index": {"proxy:req_1": {"source": "proxy", "ref_id": "req_1"}},
+                "discovery_metrics": {
+                    "validated_hypotheses": 1,
+                    "completed_experiments": 1,
+                },
+            },
+            is_root=True,
+        )
+        tracer.append_discovery_event("agent_root", {"type": "tool_result", "tool_name": "list_requests"})
+
+        tracer.save_run_data()
+
+        run_dir = tmp_path / "esprit_runs" / "discovery-run"
+        assert (run_dir / "hypotheses.json").exists()
+        assert (run_dir / "experiments.json").exists()
+        assert (run_dir / "anomalies.json").exists()
+        assert (run_dir / "evidence_index.json").exists()
+        assert (run_dir / "discovery_metrics.json").exists()
+        assert (run_dir / "discovery_events.json").exists()
+
+        metrics = json.loads((run_dir / "discovery_metrics.json").read_text(encoding="utf-8"))
+        assert metrics["validated_finding_rate"] == 1.0
