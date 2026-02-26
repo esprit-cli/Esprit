@@ -3,8 +3,9 @@ Authentication utilities for validating Supabase JWT tokens.
 """
 
 import time
-from typing import Annotated
+from typing import Annotated, Any
 
+import requests
 import structlog
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -17,6 +18,8 @@ settings = get_settings()
 logger = structlog.get_logger()
 
 security = HTTPBearer()
+_TOKEN_CACHE_TTL_SECONDS = 120
+_token_cache: dict[str, tuple[float, dict[str, object]]] = {}
 
 
 class TokenPayload(BaseModel):
@@ -89,6 +92,70 @@ def _candidate_jwt_secrets() -> list[str]:
     return secrets
 
 
+def _extract_unverified_claims(token: str) -> dict[str, Any]:
+    try:
+        claims = jwt.get_unverified_claims(token)
+    except JWTError:
+        return {}
+    return claims if isinstance(claims, dict) else {}
+
+
+def _decode_via_supabase_userinfo(token: str) -> dict[str, object] | None:
+    """Fallback validation path for Supabase tokens (e.g., asymmetric signing)."""
+    now = time.time()
+    cached = _token_cache.get(token)
+    if cached and cached[0] > now:
+        return cached[1]
+
+    supabase_url = settings.supabase_url.strip().rstrip("/")
+    if not supabase_url or not settings.supabase_service_key:
+        return None
+
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "apikey": settings.supabase_service_key,
+    }
+    try:
+        response = requests.get(
+            f"{supabase_url}/auth/v1/user",
+            headers=headers,
+            timeout=5,
+        )
+    except requests.RequestException as exc:
+        logger.warning("Supabase user verification request failed", error=str(exc))
+        return None
+
+    if response.status_code != 200:
+        logger.warning("Supabase user verification rejected token", status_code=response.status_code)
+        return None
+
+    user_info = response.json()
+    if not isinstance(user_info, dict):
+        return None
+
+    claims = _extract_unverified_claims(token)
+    exp_value = claims.get("exp")
+    if not isinstance(exp_value, (int, float)):
+        exp_value = int(now) + _TOKEN_CACHE_TTL_SECONDS
+    issuer = claims.get("iss")
+    if not isinstance(issuer, str) or not issuer.strip():
+        issuer = f"{supabase_url}/auth/v1"
+
+    payload: dict[str, object] = {
+        "sub": user_info.get("id") or claims.get("sub"),
+        "email": user_info.get("email") or claims.get("email"),
+        "role": claims.get("role", "authenticated"),
+        "exp": int(exp_value),
+        "aud": claims.get("aud", "authenticated"),
+        "iss": issuer,
+    }
+
+    cache_expiry = min(now + _TOKEN_CACHE_TTL_SECONDS, float(payload["exp"]))
+    if cache_expiry > now:
+        _token_cache[token] = (cache_expiry, payload)
+    return payload
+
+
 def _decode_payload(token: str) -> dict[str, object]:
     last_error: JWTError | None = None
     for secret in _candidate_jwt_secrets():
@@ -104,6 +171,10 @@ def _decode_payload(token: str) -> dict[str, object]:
             break
         except JWTError as exc:
             last_error = exc
+
+    supabase_payload = _decode_via_supabase_userinfo(token)
+    if isinstance(supabase_payload, dict):
+        return supabase_payload
 
     if last_error is not None:
         logger.warning("JWT parse/verify failed", error=str(last_error))
