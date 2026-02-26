@@ -65,7 +65,10 @@ _GUIServerType = Any
 
 def get_package_version() -> str:
     try:
-        return pkg_version("esprit-agent")
+        try:
+            return pkg_version("esprit-cli")
+        except PackageNotFoundError:
+            return pkg_version("esprit-agent")
     except PackageNotFoundError:
         return "dev"
 

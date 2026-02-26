@@ -870,7 +870,10 @@ def get_version() -> str:
     try:
         from importlib.metadata import version
 
-        return version("esprit-agent")
+        try:
+            return version("esprit-cli")
+        except Exception:  # noqa: BLE001
+            return version("esprit-agent")
     except Exception:  # noqa: BLE001
         try:
             from esprit._version import __version__
