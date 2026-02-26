@@ -276,7 +276,6 @@ main() {
 
   echo ""
   echo -e "${MUTED}Run this now (or open a new terminal):${NC}"
-  echo -e "  ${MUTED}$APP${NC} ${GREEN}# start Esprit${NC}"
   echo -e "  ${MUTED}export PATH=$BIN_DIR:\$PATH${NC}"
   echo -e "  ${MUTED}$APP --help${NC}"
 }
