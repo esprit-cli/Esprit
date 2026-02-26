@@ -86,6 +86,17 @@ class QuotaCheckResponse(BaseModel):
     message: str | None = None
 
 
+class SubscriptionVerifyResponse(BaseModel):
+    """Subscription verification response consumed by CLI."""
+
+    valid: bool
+    plan: str
+    quota_remaining: dict[str, int]
+    cloud_enabled: bool
+    available_models: list[str]
+    error: str | None = None
+
+
 # Scan Schemas
 class ScanCreateRequest(BaseModel):
     """Request to create a new scan."""

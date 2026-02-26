@@ -65,10 +65,13 @@ class Settings(BaseSettings):
     quota_bypass_code: str = ""
     supabase_jwt_secret: str = ""
     auth_jwt_secret: str = ""
+    llm_requests_per_minute: int = 120
 
     # Plan Limits
-    free_scans_per_month: int = 0  # No free tier - subscription required
-    free_tokens_per_month: int = 0
+    free_scans_per_month: int = 0  # Legacy field, free now uses one lifetime claim.
+    free_tokens_per_month: int = 0  # Legacy field, free now uses free_single_scan_tokens.
+    free_lifetime_scans: int = 1
+    free_single_scan_tokens: int = 1_000_000
     pro_scans_per_month: int = 10  # $10/month
     pro_tokens_per_month: int = 1_000_000
     team_scans_per_month: int = 999999  # Unlimited

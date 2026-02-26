@@ -2,6 +2,7 @@
 API routes for the Esprit Backend service.
 """
 
+import asyncio
 from datetime import datetime, timezone, timedelta
 from collections import defaultdict
 import json
@@ -28,6 +29,7 @@ from app.models.schemas import (
     ScanStatusResponse,
     ScanLogEntry,
     ScanLogsResponse,
+    SubscriptionVerifyResponse,
     UsageResponse,
 )
 from app.services.llm_service import LLMServiceError, llm_service
@@ -111,6 +113,124 @@ class PresignedUrlRateLimiter:
 
 # Global rate limiter instance
 presigned_url_limiter = PresignedUrlRateLimiter(max_requests=5, window_hours=1)
+
+FREE_ALLOWED_MODEL_ALIASES = {
+    "default",
+    "haiku",
+    "haiku-4.5",
+    "claude-haiku-4-5",
+    "claude-haiku-4-5-20251001",
+    "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+}
+
+
+class UserRequestRateLimiter:
+    """Simple in-memory per-user limiter for request burst control."""
+
+    def __init__(self, max_requests: int, window_seconds: int) -> None:
+        self.max_requests = max_requests
+        self.window_seconds = window_seconds
+        self._requests: Dict[str, List[datetime]] = defaultdict(list)
+        self._lock = asyncio.Lock()
+
+    async def check_and_record(self, user_id: str) -> tuple[bool, int | None]:
+        async with self._lock:
+            now = datetime.now(tz=timezone.utc)
+            cutoff = now - timedelta(seconds=self.window_seconds)
+            self._requests[user_id] = [ts for ts in self._requests[user_id] if ts > cutoff]
+
+            if len(self._requests[user_id]) >= self.max_requests:
+                oldest_request = min(self._requests[user_id])
+                reset_after = oldest_request + timedelta(seconds=self.window_seconds) - now
+                return False, max(1, int(reset_after.total_seconds()))
+
+            self._requests[user_id].append(now)
+            return True, None
+
+
+llm_request_limiter = UserRequestRateLimiter(
+    max_requests=max(1, settings.llm_requests_per_minute),
+    window_seconds=60,
+)
+_llm_quota_locks: Dict[str, asyncio.Lock] = {}
+_llm_quota_locks_guard = asyncio.Lock()
+
+
+async def _get_llm_quota_lock(user_id: str) -> asyncio.Lock:
+    async with _llm_quota_locks_guard:
+        lock = _llm_quota_locks.get(user_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            _llm_quota_locks[user_id] = lock
+        return lock
+
+
+def _is_free_model_allowed(model_name: str | None) -> bool:
+    if not model_name:
+        return True
+    normalized = model_name.strip().lower()
+    if "/" in normalized:
+        normalized = normalized.split("/", 1)[1]
+    return normalized in FREE_ALLOWED_MODEL_ALIASES
+
+
+def _enforce_free_model_allowlist(payload: LLMGenerateRequest, model_hint: str | None) -> str:
+    """Force free users onto safe aliases regardless of client hints."""
+    if not _is_free_model_allowed(payload.model):
+        payload.model = "default"
+    if not _is_free_model_allowed(model_hint):
+        return "default"
+    return model_hint or "default"
+
+
+async def _execute_llm_request(
+    payload: LLMGenerateRequest,
+    user: CurrentUser,
+    raw_request: Request,
+) -> LLMGenerateResponse:
+    plan = await usage_service.get_user_plan(user.sub)
+
+    allowed, retry_after = await llm_request_limiter.check_and_record(user.sub)
+    if not allowed:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="LLM request rate limit exceeded. Please retry shortly.",
+            headers={"Retry-After": str(retry_after)} if retry_after is not None else None,
+        )
+
+    provider_hint = raw_request.headers.get("X-Esprit-Provider")
+    model_hint = raw_request.headers.get("X-Esprit-Model")
+    if plan == "free":
+        claim = await usage_service.get_free_scan_claim(user.sub)
+        if claim is None:
+            raise HTTPException(
+                status_code=status.HTTP_402_PAYMENT_REQUIRED,
+                detail="No free scan claim found. Start your free scan first.",
+            )
+        model_hint = _enforce_free_model_allowlist(payload, model_hint)
+
+    enforce_scan_limit = plan != "free"
+    llm_quota_lock = await _get_llm_quota_lock(user.sub)
+    async with llm_quota_lock:
+        quota = await usage_service.check_quota(user.sub, enforce_scan_limit=enforce_scan_limit)
+        if quota.tokens_remaining <= 0:
+            raise HTTPException(
+                status_code=status.HTTP_402_PAYMENT_REQUIRED,
+                detail=quota.message or "Token quota exceeded. Upgrade your plan for more tokens.",
+            )
+
+        try:
+            result = await llm_service.generate(
+                payload,
+                user.sub,
+                provider_hint=provider_hint,
+                model_hint=model_hint,
+            )
+        except LLMServiceError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+
+        await usage_service.add_tokens_used(user.sub, result.tokens_used)
+        return result
 
 
 # Public stats models (no auth required)
@@ -225,30 +345,7 @@ async def generate_llm_response(
 
     This allows users to run scans without needing their own API keys.
     """
-    # Check token quota
-    quota = await usage_service.check_quota(user.sub)
-    if quota.tokens_remaining <= 0:
-        raise HTTPException(
-            status_code=status.HTTP_402_PAYMENT_REQUIRED,
-            detail="Token quota exceeded. Upgrade your plan for more tokens.",
-        )
-
-    provider_hint = raw_request.headers.get("X-Esprit-Provider")
-    model_hint = raw_request.headers.get("X-Esprit-Model")
-    try:
-        result = await llm_service.generate(
-            payload,
-            user.sub,
-            provider_hint=provider_hint,
-            model_hint=model_hint,
-        )
-    except LLMServiceError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
-
-    # Track token usage
-    await usage_service.add_tokens_used(user.sub, result.tokens_used)
-
-    return result
+    return await _execute_llm_request(payload, user, raw_request)
 
 
 def _normalize_openai_compat_payload(payload: dict[str, Any]) -> LLMGenerateRequest:
@@ -337,26 +434,7 @@ async def generate_llm_chat_completions_compat(
     llm_payload = _normalize_openai_compat_payload(payload)
     stream_requested = bool(payload.get("stream"))
 
-    quota = await usage_service.check_quota(user.sub)
-    if quota.tokens_remaining <= 0:
-        raise HTTPException(
-            status_code=status.HTTP_402_PAYMENT_REQUIRED,
-            detail="Token quota exceeded. Upgrade your plan for more tokens.",
-        )
-
-    provider_hint = raw_request.headers.get("X-Esprit-Provider")
-    model_hint = raw_request.headers.get("X-Esprit-Model")
-    try:
-        result = await llm_service.generate(
-            llm_payload,
-            user.sub,
-            provider_hint=provider_hint,
-            model_hint=model_hint,
-        )
-    except LLMServiceError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
-
-    await usage_service.add_tokens_used(user.sub, result.tokens_used)
+    result = await _execute_llm_request(llm_payload, user, raw_request)
     completion = _format_openai_compat_response(result)
 
     if not stream_requested:
@@ -416,6 +494,42 @@ async def get_user_usage(user: CurrentUser):
 async def check_user_quota(user: CurrentUser):
     """Check if user has remaining quota for a new scan."""
     return await usage_service.check_quota(user.sub)
+
+
+@router.get("/subscription/verify", response_model=SubscriptionVerifyResponse)
+async def verify_subscription(user: CurrentUser):
+    """Return subscription validity, quotas, and cloud model access for CLI."""
+    try:
+        plan = await usage_service.get_user_plan(user.sub)
+        quota = await usage_service.check_quota(user.sub)
+        scans_remaining = max(0, int(quota.scans_remaining))
+        tokens_remaining = max(0, int(quota.tokens_remaining))
+
+        if plan == "free":
+            cloud_enabled = scans_remaining > 0 and tokens_remaining > 0
+            available_models = usage_service.free_available_models() if cloud_enabled else []
+        else:
+            cloud_enabled = bool(quota.has_quota and tokens_remaining > 0)
+            available_models = ["default", "haiku", "kimi-k2.5"] if cloud_enabled else []
+
+        return SubscriptionVerifyResponse(
+            valid=True,
+            plan=plan,
+            quota_remaining={"scans": scans_remaining, "tokens": tokens_remaining},
+            cloud_enabled=cloud_enabled,
+            available_models=available_models,
+            error=None,
+        )
+    except Exception:  # noqa: BLE001
+        # Fail closed when verification cannot complete.
+        return SubscriptionVerifyResponse(
+            valid=False,
+            plan="free",
+            quota_remaining={"scans": 0, "tokens": 0},
+            cloud_enabled=False,
+            available_models=[],
+            error="verification_unavailable",
+        )
 
 
 # GitHub OAuth endpoints
@@ -824,15 +938,6 @@ async def start_scan(
     3. Launches ECS Fargate task with repo credentials
     4. Updates scan status to 'running'
     """
-    # Check quota first (with optional bypass code)
-    bypass_code = request.bypass_code if request else None
-    quota = await usage_service.check_quota(user.sub, bypass_code)
-    if not quota.has_quota:
-        raise HTTPException(
-            status_code=status.HTTP_402_PAYMENT_REQUIRED,
-            detail=quota.message or "Quota exceeded. Upgrade your plan at /billing",
-        )
-
     # Fetch scan record
     scan_response = supabase.table("scans").select("*").eq("id", scan_id).single().execute()
 
@@ -857,6 +962,31 @@ async def start_scan(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Scan cannot be started (status: {scan.get('status')})",
         )
+
+    user_plan = await usage_service.get_user_plan(user.sub)
+    scan_type = scan.get("scan_type", "standard")
+    if user_plan == "free" and scan_type != "quick":
+        raise HTTPException(
+            status_code=status.HTTP_402_PAYMENT_REQUIRED,
+            detail="Free plan supports quick cloud scan mode only.",
+        )
+
+    # Check quota first (with optional bypass code)
+    bypass_code = request.bypass_code if request else None
+    quota = await usage_service.check_quota(user.sub, bypass_code)
+    if not quota.has_quota:
+        raise HTTPException(
+            status_code=status.HTTP_402_PAYMENT_REQUIRED,
+            detail=quota.message or "Quota exceeded. Upgrade your plan at /billing",
+        )
+
+    if user_plan == "free":
+        claimed, claim_error = await usage_service.claim_free_scan(user.sub, scan_id)
+        if not claimed:
+            raise HTTPException(
+                status_code=status.HTTP_402_PAYMENT_REQUIRED,
+                detail=claim_error or "Your free scan has already been used.",
+            )
 
     # Get target and determine target type
     target = scan.get("target", "")

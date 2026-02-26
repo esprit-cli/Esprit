@@ -19,6 +19,9 @@ def test_llm_generate_returns_mapped_error(monkeypatch) -> None:
     async def fake_check_quota(*args, **kwargs):
         return SimpleNamespace(tokens_remaining=999, has_quota=True)
 
+    async def fake_get_user_plan(*args, **kwargs):
+        return "pro"
+
     async def fake_add_tokens(*args, **kwargs):
         return None
 
@@ -26,6 +29,7 @@ def test_llm_generate_returns_mapped_error(monkeypatch) -> None:
         raise LLMServiceError(message="invalid model", status_code=422)
 
     app.dependency_overrides[auth_module.get_current_user] = fake_user
+    monkeypatch.setattr(routes.usage_service, "get_user_plan", fake_get_user_plan)
     monkeypatch.setattr(routes.usage_service, "check_quota", fake_check_quota)
     monkeypatch.setattr(routes.usage_service, "add_tokens_used", fake_add_tokens)
     monkeypatch.setattr(routes.llm_service, "generate", fake_generate)
@@ -49,6 +53,9 @@ def test_llm_chat_completions_compat_returns_openai_shape(monkeypatch) -> None:
     async def fake_check_quota(*args, **kwargs):
         return SimpleNamespace(tokens_remaining=999, has_quota=True)
 
+    async def fake_get_user_plan(*args, **kwargs):
+        return "pro"
+
     async def fake_add_tokens(*args, **kwargs):
         return None
 
@@ -63,6 +70,7 @@ def test_llm_chat_completions_compat_returns_openai_shape(monkeypatch) -> None:
         )
 
     app.dependency_overrides[auth_module.get_current_user] = fake_user
+    monkeypatch.setattr(routes.usage_service, "get_user_plan", fake_get_user_plan)
     monkeypatch.setattr(routes.usage_service, "check_quota", fake_check_quota)
     monkeypatch.setattr(routes.usage_service, "add_tokens_used", fake_add_tokens)
     monkeypatch.setattr(routes.llm_service, "generate", fake_generate)
@@ -92,6 +100,9 @@ def test_llm_chat_completions_compat_stream_shape(monkeypatch) -> None:
     async def fake_check_quota(*args, **kwargs):
         return SimpleNamespace(tokens_remaining=999, has_quota=True)
 
+    async def fake_get_user_plan(*args, **kwargs):
+        return "pro"
+
     async def fake_add_tokens(*args, **kwargs):
         return None
 
@@ -106,6 +117,7 @@ def test_llm_chat_completions_compat_stream_shape(monkeypatch) -> None:
         )
 
     app.dependency_overrides[auth_module.get_current_user] = fake_user
+    monkeypatch.setattr(routes.usage_service, "get_user_plan", fake_get_user_plan)
     monkeypatch.setattr(routes.usage_service, "check_quota", fake_check_quota)
     monkeypatch.setattr(routes.usage_service, "add_tokens_used", fake_add_tokens)
     monkeypatch.setattr(routes.llm_service, "generate", fake_generate)

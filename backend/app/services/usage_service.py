@@ -40,6 +40,11 @@ class UsageService:
             },
         }
 
+    @staticmethod
+    def free_available_models() -> list[str]:
+        """Cloud models exposed to free users."""
+        return ["default", "haiku"]
+
     def _get_current_month(self) -> str:
         """Get current month in YYYY-MM format."""
         return datetime.now(tz=timezone.utc).strftime("%Y-%m")
@@ -58,7 +63,7 @@ class UsageService:
         response = self.supabase.table("profiles").select("plan").eq("id", user_id).single().execute()
 
         if response.data:
-            return response.data.get("plan", "free")
+            return str(response.data.get("plan", "free")).strip().lower()
         return "free"
 
     async def get_usage(self, user_id: str) -> UsageResponse:
@@ -66,6 +71,11 @@ class UsageService:
         month = self._get_current_month()
         plan = await self.get_user_plan(user_id)
         limits = self.plan_limits.get(plan, self.plan_limits["free"])
+        if plan == "free":
+            limits = {
+                "scans": settings.free_lifetime_scans,
+                "tokens": settings.free_single_scan_tokens,
+            }
 
         # Get or create usage record
         response = (
@@ -90,8 +100,13 @@ class UsageService:
             ).execute()
             usage = {"scans_count": 0, "tokens_used": 0}
 
+        scans_used = usage.get("scans_count", 0)
+        if plan == "free":
+            claim = await self.get_free_scan_claim(user_id)
+            scans_used = 1 if claim else 0
+
         return UsageResponse(
-            scans_used=usage.get("scans_count", 0),
+            scans_used=scans_used,
             scans_limit=limits["scans"],
             tokens_used=usage.get("tokens_used", 0),
             tokens_limit=limits["tokens"],
@@ -99,7 +114,44 @@ class UsageService:
             plan=plan,
         )
 
-    async def check_quota(self, user_id: str, bypass_code: str | None = None) -> QuotaCheckResponse:
+    async def get_free_scan_claim(self, user_id: str) -> dict | None:
+        """Return free scan claim row if one exists."""
+        response = (
+            self.supabase.table("free_scan_claims")
+            .select("*")
+            .eq("user_id", user_id)
+            .limit(1)
+            .execute()
+        )
+        if response.data:
+            return response.data[0]
+        return None
+
+    async def claim_free_scan(self, user_id: str, scan_id: str) -> tuple[bool, str | None]:
+        """Attempt to atomically claim the single free scan slot."""
+        payload = {
+            "user_id": user_id,
+            "scan_id": scan_id,
+            "claimed_at": datetime.now(tz=timezone.utc).isoformat(),
+        }
+        try:
+            self.supabase.table("free_scan_claims").insert(payload).execute()
+            logger.info("Claimed free scan", user_id=user_id, scan_id=scan_id)
+            return True, None
+        except Exception as exc:  # noqa: BLE001
+            message = str(exc).lower()
+            if any(token in message for token in ["duplicate", "unique", "already"]):
+                return False, "Free scan already used."
+            logger.error("Failed to claim free scan", user_id=user_id, scan_id=scan_id, error=str(exc))
+            raise
+
+    async def check_quota(
+        self,
+        user_id: str,
+        bypass_code: str | None = None,
+        *,
+        enforce_scan_limit: bool = True,
+    ) -> QuotaCheckResponse:
         """Check if user has remaining quota for a new scan."""
         if self._is_quota_bypass_allowed(bypass_code):
             logger.info("Quota bypass approved", user_id=user_id)
@@ -115,6 +167,28 @@ class UsageService:
 
         scans_remaining = usage.scans_limit - usage.scans_used
         tokens_remaining = usage.tokens_limit - usage.tokens_used
+
+        if usage.plan == "free":
+            if enforce_scan_limit and scans_remaining <= 0:
+                return QuotaCheckResponse(
+                    has_quota=False,
+                    scans_remaining=0,
+                    tokens_remaining=max(tokens_remaining, 0),
+                    message="Your free Esprit cloud scan has already been used.",
+                )
+            if tokens_remaining <= 0:
+                return QuotaCheckResponse(
+                    has_quota=False,
+                    scans_remaining=max(scans_remaining, 0),
+                    tokens_remaining=0,
+                    message="Your free scan reached the token limit.",
+                )
+            return QuotaCheckResponse(
+                has_quota=True,
+                scans_remaining=max(scans_remaining, 0),
+                tokens_remaining=tokens_remaining,
+                message=None,
+            )
 
         # Hard paywall - no scans remaining
         if scans_remaining <= 0:
