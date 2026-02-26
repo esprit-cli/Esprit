@@ -20,6 +20,12 @@ settings = get_settings()
 class UsageService:
     """Service for tracking and checking usage limits."""
 
+    UNLIMITED_TOKENS = 2_147_483_647
+    PLAN_ALIASES = {
+        "premium": "pro",
+        "enterprise": "team",
+    }
+
     def __init__(self) -> None:
         self.supabase = create_client(
             settings.supabase_url,
@@ -27,16 +33,16 @@ class UsageService:
         )
         self.plan_limits = {
             "free": {
-                "scans": settings.free_scans_per_month,
-                "tokens": settings.free_tokens_per_month,
+                "scans": settings.free_lifetime_scans,
+                "tokens": self.UNLIMITED_TOKENS,
             },
             "pro": {
                 "scans": settings.pro_scans_per_month,
-                "tokens": settings.pro_tokens_per_month,
+                "tokens": self.UNLIMITED_TOKENS,
             },
             "team": {
                 "scans": settings.team_scans_per_month,
-                "tokens": settings.team_tokens_per_month,
+                "tokens": self.UNLIMITED_TOKENS,
             },
         }
 
@@ -58,12 +64,20 @@ class UsageService:
             return False
         return hmac.compare_digest(expected_code, bypass_code)
 
+    def _normalize_plan(self, plan: str | None) -> str:
+        normalized = str(plan or "free").strip().lower()
+        normalized = self.PLAN_ALIASES.get(normalized, normalized)
+        if normalized not in self.plan_limits:
+            logger.warning("Unknown plan detected; defaulting to free", plan=plan)
+            return "free"
+        return normalized
+
     async def get_user_plan(self, user_id: str) -> str:
         """Get user's current plan."""
         response = self.supabase.table("profiles").select("plan").eq("id", user_id).single().execute()
 
         if response.data:
-            return str(response.data.get("plan", "free")).strip().lower()
+            return self._normalize_plan(response.data.get("plan"))
         return "free"
 
     async def get_usage(self, user_id: str) -> UsageResponse:
@@ -71,11 +85,6 @@ class UsageService:
         month = self._get_current_month()
         plan = await self.get_user_plan(user_id)
         limits = self.plan_limits.get(plan, self.plan_limits["free"])
-        if plan == "free":
-            limits = {
-                "scans": settings.free_lifetime_scans,
-                "tokens": settings.free_single_scan_tokens,
-            }
 
         # Get or create usage record
         response = (
@@ -158,7 +167,7 @@ class UsageService:
             return QuotaCheckResponse(
                 has_quota=True,
                 scans_remaining=999999,
-                tokens_remaining=999999999,
+                tokens_remaining=self.UNLIMITED_TOKENS,
                 message=None,
             )
 
@@ -166,22 +175,15 @@ class UsageService:
         usage = await self.get_usage(user_id)
 
         scans_remaining = usage.scans_limit - usage.scans_used
-        tokens_remaining = usage.tokens_limit - usage.tokens_used
+        tokens_remaining = max(0, usage.tokens_limit - usage.tokens_used)
 
         if usage.plan == "free":
             if enforce_scan_limit and scans_remaining <= 0:
                 return QuotaCheckResponse(
                     has_quota=False,
                     scans_remaining=0,
-                    tokens_remaining=max(tokens_remaining, 0),
+                    tokens_remaining=tokens_remaining,
                     message="Your free Esprit cloud scan has already been used.",
-                )
-            if tokens_remaining <= 0:
-                return QuotaCheckResponse(
-                    has_quota=False,
-                    scans_remaining=max(scans_remaining, 0),
-                    tokens_remaining=0,
-                    message="Your free scan reached the token limit.",
                 )
             return QuotaCheckResponse(
                 has_quota=True,
@@ -197,15 +199,6 @@ class UsageService:
                 scans_remaining=0,
                 tokens_remaining=tokens_remaining,
                 message=f"You've used all {usage.scans_limit} scans for this month. Upgrade to Pro ($49/mo) or Team ($199/mo) for more scans.",
-            )
-
-        # Hard paywall - no tokens remaining
-        if tokens_remaining <= 0:
-            return QuotaCheckResponse(
-                has_quota=False,
-                scans_remaining=scans_remaining,
-                tokens_remaining=0,
-                message="You've exhausted your token quota for this month. Upgrade your plan for more tokens.",
             )
 
         return QuotaCheckResponse(

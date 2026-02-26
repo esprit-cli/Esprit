@@ -69,13 +69,13 @@ class Settings(BaseSettings):
 
     # Plan Limits
     free_scans_per_month: int = 0  # Legacy field, free now uses one lifetime claim.
-    free_tokens_per_month: int = 0  # Legacy field, free now uses free_single_scan_tokens.
+    free_tokens_per_month: int = 0  # Legacy field, token quotas are not enforced.
     free_lifetime_scans: int = 1
-    free_single_scan_tokens: int = 1_000_000
+    free_single_scan_tokens: int = 1_000_000  # Legacy field, token quotas are not enforced.
     pro_scans_per_month: int = 10  # $10/month
-    pro_tokens_per_month: int = 1_000_000
+    pro_tokens_per_month: int = 1_000_000  # Legacy field, token quotas are not enforced.
     team_scans_per_month: int = 999999  # Unlimited
-    team_tokens_per_month: int = 10_000_000
+    team_tokens_per_month: int = 10_000_000  # Legacy field, token quotas are not enforced.
 
 
 # Scan Tier Configuration

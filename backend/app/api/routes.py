@@ -213,10 +213,10 @@ async def _execute_llm_request(
     llm_quota_lock = await _get_llm_quota_lock(user.sub)
     async with llm_quota_lock:
         quota = await usage_service.check_quota(user.sub, enforce_scan_limit=enforce_scan_limit)
-        if quota.tokens_remaining <= 0:
+        if not quota.has_quota:
             raise HTTPException(
                 status_code=status.HTTP_402_PAYMENT_REQUIRED,
-                detail=quota.message or "Token quota exceeded. Upgrade your plan for more tokens.",
+                detail=quota.message or "Scan quota exceeded. Upgrade your plan for more scans.",
             )
 
         try:
@@ -506,10 +506,10 @@ async def verify_subscription(user: CurrentUser):
         tokens_remaining = max(0, int(quota.tokens_remaining))
 
         if plan == "free":
-            cloud_enabled = scans_remaining > 0 and tokens_remaining > 0
+            cloud_enabled = scans_remaining > 0
             available_models = usage_service.free_available_models() if cloud_enabled else []
         else:
-            cloud_enabled = bool(quota.has_quota and tokens_remaining > 0)
+            cloud_enabled = bool(quota.has_quota)
             available_models = ["default", "haiku", "kimi-k2.5"] if cloud_enabled else []
 
         return SubscriptionVerifyResponse(

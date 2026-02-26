@@ -160,6 +160,13 @@ def test_subscription_verify_paid_user_includes_full_model_set(monkeypatch) -> N
     app.dependency_overrides.clear()
 
 
+def test_usage_service_normalizes_premium_and_enterprise_plans(monkeypatch) -> None:
+    usage = UsageService()
+    assert usage._normalize_plan("premium") == "pro"
+    assert usage._normalize_plan("enterprise") == "team"
+    assert usage._normalize_plan("unknown-plan") == "free"
+
+
 def test_start_scan_rejects_non_quick_for_free_plan(monkeypatch) -> None:
     scan_id = "00000000-0000-0000-0000-000000000123"
 
@@ -211,7 +218,7 @@ def test_start_scan_rejects_non_quick_for_free_plan(monkeypatch) -> None:
     app.dependency_overrides.clear()
 
 
-def test_llm_generate_blocks_free_user_after_token_cap(monkeypatch) -> None:
+def test_llm_generate_does_not_block_free_user_on_token_count(monkeypatch) -> None:
     async def fake_user() -> auth_module.TokenPayload:
         return _fake_user()
 
@@ -223,19 +230,30 @@ def test_llm_generate_blocks_free_user_after_token_cap(monkeypatch) -> None:
 
     async def fake_check_quota(_user_id: str, *args, **kwargs):
         return SimpleNamespace(
-            has_quota=False,
+            has_quota=True,
             scans_remaining=0,
             tokens_remaining=0,
-            message="Your free scan reached the token limit.",
+            message=None,
         )
 
     async def fake_generate(*args, **kwargs):
-        raise AssertionError("llm_service.generate should not be called when quota is exhausted")
+        return SimpleNamespace(
+            content="ok",
+            model="us.anthropic.claude-haiku-4-5-20251001-v1:0",
+            tokens_used=42,
+            finish_reason="stop",
+            tool_calls=None,
+            thinking_blocks=None,
+        )
+
+    async def fake_add_tokens(*args, **kwargs):
+        return None
 
     app.dependency_overrides[auth_module.get_current_user] = fake_user
     monkeypatch.setattr(routes.usage_service, "get_user_plan", fake_get_user_plan)
     monkeypatch.setattr(routes.usage_service, "get_free_scan_claim", fake_get_free_scan_claim)
     monkeypatch.setattr(routes.usage_service, "check_quota", fake_check_quota)
+    monkeypatch.setattr(routes.usage_service, "add_tokens_used", fake_add_tokens)
     monkeypatch.setattr(routes.llm_service, "generate", fake_generate)
 
     with TestClient(app) as client:
@@ -245,6 +263,6 @@ def test_llm_generate_blocks_free_user_after_token_cap(monkeypatch) -> None:
             json={"messages": [{"role": "user", "content": "hello"}]},
         )
 
-    assert response.status_code == 402
-    assert response.json()["detail"] == "Your free scan reached the token limit."
+    assert response.status_code == 200
+    assert response.json()["content"] == "ok"
     app.dependency_overrides.clear()
