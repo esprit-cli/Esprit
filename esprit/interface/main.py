@@ -68,6 +68,13 @@ from esprit.telemetry.tracer import get_global_tracer  # noqa: E402
 
 logging.getLogger().setLevel(logging.ERROR)
 
+_PAID_SUBSCRIPTION_PLANS = {"pro", "team", "enterprise"}
+
+
+def _is_paid_subscription_plan(plan: str | None) -> bool:
+    return (plan or "").strip().lower() in _PAID_SUBSCRIPTION_PLANS
+
+
 def _is_cloud_subscription_model(model_name: str | None) -> bool:
     if not model_name:
         return True
@@ -77,9 +84,12 @@ def _is_cloud_subscription_model(model_name: str | None) -> bool:
 
 def _should_use_cloud_runtime() -> bool:
     """Check if scan runtime should be routed to Esprit Cloud."""
-    from esprit.auth.credentials import is_authenticated, verify_subscription
+    from esprit.auth.credentials import get_user_plan, is_authenticated, verify_subscription
 
     if not is_authenticated():
+        return False
+
+    if not _is_paid_subscription_plan(get_user_plan()):
         return False
 
     model_name = Config.get("esprit_llm")
@@ -87,9 +97,14 @@ def _should_use_cloud_runtime() -> bool:
         return False
 
     verification = verify_subscription()
-    if not verification.get("valid", False):
-        return False
-    return bool(verification.get("cloud_enabled", False))
+    if verification.get("valid", False):
+        cloud_enabled = verification.get("cloud_enabled")
+        return bool(cloud_enabled) if cloud_enabled is not None else True
+
+    # If subscription verification endpoint is temporarily unreachable,
+    # trust local credentials and continue with cloud mode.
+    error = str(verification.get("error", ""))
+    return error.startswith("Subscription verification failed:")
 
 
 def validate_environment() -> None:  # noqa: PLR0912, PLR0915
