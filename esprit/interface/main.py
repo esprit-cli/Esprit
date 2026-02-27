@@ -82,9 +82,43 @@ def _is_cloud_subscription_model(model_name: str | None) -> bool:
     return model_lower.startswith("esprit/") or model_lower.startswith("bedrock/")
 
 
+def _cloud_sandbox_endpoint_available(auth_token: str | None) -> bool:
+    """Check whether legacy cloud sandbox runtime endpoint is reachable."""
+    if not auth_token:
+        return False
+
+    import json
+    from urllib.error import HTTPError, URLError
+    from urllib.request import Request, urlopen
+
+    api_base = (os.getenv("ESPRIT_API_URL") or "https://esprit.dev/api/v1").rstrip("/")
+    endpoint = f"{api_base}/sandbox/create"
+    payload = json.dumps({"agent_id": "runtime_probe"}).encode("utf-8")
+    request = Request(
+        endpoint,
+        data=payload,
+        method="POST",
+        headers={
+            "Authorization": f"Bearer {auth_token}",
+            "Content-Type": "application/json",
+        },
+    )
+
+    try:
+        with urlopen(request, timeout=5) as response:  # noqa: S310
+            return int(getattr(response, "status", 200)) < 500
+    except HTTPError as exc:
+        if exc.code in {404, 405}:
+            return False
+        return True
+    except URLError:
+        # Keep cloud mode for transient network failures; runtime call will surface details.
+        return True
+
+
 def _should_use_cloud_runtime() -> bool:
     """Check if scan runtime should be routed to Esprit Cloud."""
-    from esprit.auth.credentials import get_user_plan, is_authenticated, verify_subscription
+    from esprit.auth.credentials import get_auth_token, get_user_plan, is_authenticated, verify_subscription
 
     if not is_authenticated():
         return False
@@ -97,6 +131,8 @@ def _should_use_cloud_runtime() -> bool:
     # deciding cloud vs docker runtime.
     verification = verify_subscription(force_refresh=True)
     if verification.get("valid", False):
+        if not _cloud_sandbox_endpoint_available(get_auth_token()):
+            return False
         cloud_enabled = verification.get("cloud_enabled")
         return bool(cloud_enabled) if cloud_enabled is not None else True
 
