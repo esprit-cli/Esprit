@@ -1228,6 +1228,12 @@ def pull_docker_image() -> None:
     image_name = Config.get("esprit_image")
     preferred_platform = (Config.get("esprit_docker_platform") or "").strip() or None
 
+    # Proactively use linux/amd64 on ARM hosts (e.g. Apple Silicon) since
+    # the sandbox image only publishes amd64 manifests and the Python Docker
+    # SDK can hang instead of erroring when no matching manifest exists.
+    if preferred_platform is None and platform.machine() in ("arm64", "aarch64"):
+        preferred_platform = "linux/amd64"
+
     if image_exists(client, image_name):  # type: ignore[arg-type]
         return
 
@@ -1241,6 +1247,12 @@ def pull_docker_image() -> None:
         pull_kwargs: dict[str, Any] = {"stream": True, "decode": True}
         if platform_override:
             pull_kwargs["platform"] = platform_override
+
+        # Smoothing state for stable ETA / speed display
+        _smooth_completed = 0.0
+        _last_update_time = time.monotonic()
+        _UPDATE_INTERVAL = 0.25  # update progress bar at most ~4 Hz
+        _EMA_ALPHA = 0.3  # smoothing factor (lower = smoother)
 
         progress.update(
             task_id,
@@ -1292,6 +1304,11 @@ def pull_docker_image() -> None:
                     elif "status:" in normalized:
                         progress.update(task_id, description="[bold cyan]Finalizing image...")
 
+            now = time.monotonic()
+            if now - _last_update_time < _UPDATE_INTERVAL:
+                continue
+            _last_update_time = now
+
             aggregate_current = 0
             aggregate_total = 0
             complete_layers = 0
@@ -1306,12 +1323,24 @@ def pull_docker_image() -> None:
                     if layer_current >= layer_total:
                         complete_layers += 1
 
+            # Smooth the completed value to prevent jittery ETA/speed
+            if aggregate_current >= aggregate_total and aggregate_total > 0:
+                _smooth_completed = float(aggregate_current)
+            else:
+                _smooth_completed = _smooth_completed + _EMA_ALPHA * (aggregate_current - _smooth_completed)
+                _smooth_completed = max(_smooth_completed, aggregate_current * 0.5)
+
             progress.update(
                 task_id,
                 total=aggregate_total if aggregate_total > 0 else None,
-                completed=aggregate_current,
+                completed=int(_smooth_completed),
                 layers=f"{complete_layers}/{known_layers} layers" if known_layers > 0 else "resolving layers",
             )
+
+        # Final update to ensure 100% completion is shown
+        aggregate_total = sum(max(0, e["total"]) for e in layer_progress.values() if e["total"] > 0)
+        if aggregate_total > 0:
+            progress.update(task_id, total=aggregate_total, completed=aggregate_total)
 
     def _verify_image_ready(max_retries: int = 3) -> bool:
         for attempt in range(max_retries):
@@ -1347,9 +1376,7 @@ def pull_docker_image() -> None:
         except DockerException as e:
             pull_error = e
             error_text = str(e).lower()
-            manifest_mismatch = "no matching manifest" in error_text or (
-                "manifest list entries" in error_text and "no match for platform" in error_text
-            )
+            manifest_mismatch = "no matching manifest" in error_text or "no match for platform" in error_text
             missing_arm_manifest = manifest_mismatch and "arm64" in error_text
             can_fallback = preferred_platform is None and missing_arm_manifest
 
