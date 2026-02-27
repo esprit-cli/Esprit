@@ -176,6 +176,25 @@ class TestSystemPromptToolGating:
 
         assert "<agents_graph_tools>" in llm.system_prompt
 
+    def test_adds_policy_notice_for_openai_connector(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(LLM, "supports_native_tool_calling", lambda self: True)
+        llm = LLM(LLMConfig(model_name="openai/gpt-5"), "EspritAgent")
+
+        assert "POLICY NOTICE:" in llm.system_prompt
+        assert "approved pentest scope" in llm.system_prompt
+
+    def test_adds_policy_notice_for_copilot_connector(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(LLM, "supports_native_tool_calling", lambda self: True)
+        llm = LLM(LLMConfig(model_name="github-copilot/gpt-5"), "EspritAgent")
+
+        assert "POLICY NOTICE:" in llm.system_prompt
+
+    def test_skips_policy_notice_for_non_codex_connectors(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(LLM, "supports_native_tool_calling", lambda self: True)
+        llm = LLM(LLMConfig(model_name="anthropic/claude-3-5-sonnet-20241022"), "EspritAgent")
+
+        assert "POLICY NOTICE:" not in llm.system_prompt
+
 
 class TestPromptCacheControl:
     def test_marks_system_identity_and_first_user_for_cache(
