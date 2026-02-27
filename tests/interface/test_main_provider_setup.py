@@ -184,3 +184,49 @@ def test_pull_docker_image_exits_when_image_not_present_after_pull() -> None:
             interface_main.pull_docker_image()
 
     assert client.images.get.call_count == 3
+
+
+def test_docker_health_check_allows_missing_local_image_and_defers_pull() -> None:
+    client = MagicMock()
+    client.ping.return_value = True
+    client.info.return_value = {"DockerRootDir": "/tmp"}
+
+    console = MagicMock()
+
+    class _Config:
+        @staticmethod
+        def get(name: str) -> str | None:
+            if name == "esprit_image":
+                return "improdead/esprit-sandbox:latest"
+            return None
+
+    with (
+        patch("docker.from_env", return_value=client),
+        patch("esprit.interface.main.image_exists", return_value=False),
+        patch("esprit.interface.main.shutil.disk_usage", return_value=MagicMock(free=3 * 1024 * 1024 * 1024)),
+    ):
+        assert interface_main._docker_health_check(console, _Config) is True
+
+    printed = " ".join(str(call.args[0]) for call in console.print.call_args_list if call.args)
+    assert "will be pulled in the next step" in printed
+
+
+def test_docker_health_check_fails_when_image_not_configured() -> None:
+    client = MagicMock()
+    client.ping.return_value = True
+    client.info.return_value = {"DockerRootDir": "/tmp"}
+
+    console = MagicMock()
+
+    class _Config:
+        @staticmethod
+        def get(name: str) -> str | None:
+            if name == "esprit_image":
+                return ""
+            return None
+
+    with (
+        patch("docker.from_env", return_value=client),
+        patch("esprit.interface.main.shutil.disk_usage", return_value=MagicMock(free=3 * 1024 * 1024 * 1024)),
+    ):
+        assert interface_main._docker_health_check(console, _Config) is False

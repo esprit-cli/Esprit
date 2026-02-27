@@ -257,15 +257,20 @@ def _docker_health_check(console: Console, config: type) -> bool:
             ("Docker daemon is not running", "Start Docker Desktop or run: sudo systemctl start docker"),
         )
 
-    # 2. Sandbox image exists
+    # 2. Sandbox image configured (actual pull happens in next startup step)
     if not failures:
-        image_name = config.get("esprit_image")
-        if not image_exists(client, image_name):
+        image_name = str(config.get("esprit_image") or "").strip()
+        if not image_name:
             failures.append(
                 (
-                    f"Sandbox image '{image_name}' not found",
-                    f"Run: docker pull {image_name}",
+                    "Sandbox image is not configured",
+                    "Set ESPRIT_IMAGE to a valid image (for example: improdead/esprit-sandbox:latest)",
                 ),
+            )
+        elif not image_exists(client, image_name):
+            console.print(
+                f"[dim]Sandbox image '{image_name}' is not present locally yet; "
+                "it will be pulled in the next step.[/]",
             )
 
     # 3. Sufficient disk space (≥ 2 GB on Docker data-root)
