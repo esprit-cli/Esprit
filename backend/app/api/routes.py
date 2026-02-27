@@ -1373,12 +1373,18 @@ async def cancel_scan(
             detail=f"Scan is not running (status: {scan.get('status')})",
         )
 
-    # Stop the ECS task if we have a task ARN
+    # Stop the ECS task if we have a task ARN; fallback to ScanId tag lookup.
+    task_stopped = False
     if scan.get("task_arn"):
         try:
-            await sandbox_service.stop_task(scan.get("task_arn"))
+            task_stopped = await sandbox_service.stop_task(scan.get("task_arn"))
         except Exception as e:
-            logger.warning("Failed to stop ECS task", scan_id=scan_id, error=str(e))
+            logger.warning("Failed to stop ECS task by ARN", scan_id=scan_id, error=str(e))
+    if not task_stopped:
+        try:
+            await sandbox_service.stop_tasks_for_scan(scan_id)
+        except Exception as e:
+            logger.warning("Failed to stop ECS task by scan id", scan_id=scan_id, error=str(e))
 
     # Update scan status to cancelled
     supabase.table("scans").update({
@@ -1423,12 +1429,19 @@ async def delete_scan(
                 detail="Not authorized to delete this scan",
             )
 
-        # If scan is running, try to stop the ECS task
-        if scan.get("status") == "running" and scan.get("task_arn"):
-            try:
-                await sandbox_service.stop_task(scan.get("task_arn"))
-            except Exception as e:
-                logger.warning("Failed to stop running task", scan_id=scan_id, error=str(e))
+        # If scan is active, stop ECS task(s) before deletion.
+        if scan.get("status") in ["running", "pending"]:
+            task_stopped = False
+            if scan.get("task_arn"):
+                try:
+                    task_stopped = await sandbox_service.stop_task(scan.get("task_arn"))
+                except Exception as e:
+                    logger.warning("Failed to stop task by ARN", scan_id=scan_id, error=str(e))
+            if not task_stopped:
+                try:
+                    await sandbox_service.stop_tasks_for_scan(scan_id)
+                except Exception as e:
+                    logger.warning("Failed to stop task by scan id", scan_id=scan_id, error=str(e))
 
         # Delete scan logs first (foreign key constraint)
         supabase.table("scan_logs").delete().eq("scan_id", scan_id).execute()

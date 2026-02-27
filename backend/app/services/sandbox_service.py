@@ -311,6 +311,36 @@ class SandboxService:
             logger.error("Failed to stop task", task_arn=task_arn, error=str(e))
             return False
 
+    async def stop_tasks_for_scan(self, scan_id: str) -> int:
+        """Stop all ECS tasks tagged with the given scan ID."""
+        stopped = 0
+        try:
+            task_arns: set[str] = set()
+            for desired_status in ("RUNNING", "PENDING"):
+                response = self.ecs_client.list_tasks(
+                    cluster=settings.ecs_cluster_name,
+                    desiredStatus=desired_status,
+                )
+                task_arns.update(response.get("taskArns", []))
+
+            for task_arn in task_arns:
+                tags_response = self.ecs_client.list_tags_for_resource(resourceArn=task_arn)
+                tags = {t["key"]: t["value"] for t in tags_response.get("tags", [])}
+                if tags.get("ScanId") != scan_id:
+                    continue
+                self.ecs_client.stop_task(
+                    cluster=settings.ecs_cluster_name,
+                    task=task_arn,
+                    reason="Scan cancelled/deleted by user",
+                )
+                stopped += 1
+
+            if stopped:
+                logger.info("Stopped scan tasks by ScanId", scan_id=scan_id, stopped=stopped)
+        except ClientError as e:
+            logger.error("Failed to stop tasks by scan id", scan_id=scan_id, error=str(e))
+        return stopped
+
     async def destroy_sandbox(self, sandbox_id: str) -> bool:
         """
         Stop and clean up a sandbox.
