@@ -923,25 +923,39 @@ async def get_scan_logs(
             detail="Not authorized to view this scan",
         )
 
-    # Get logs
-    query = supabase.table("scan_logs").select("*").eq("scan_id", scan_id).order("created_at", desc=False)
+    # Read recent logs without assuming a fixed timestamp column name.
+    # Older rows may use created_at/content/log_type while newer rows use
+    # timestamp/message/level.
+    response = (
+        supabase.table("scan_logs")
+        .select("*")
+        .eq("scan_id", scan_id)
+        .limit(500)
+        .execute()
+    )
+    rows = list(response.data or [])
+
+    def _log_timestamp(row: dict[str, Any]) -> str:
+        return str(row.get("timestamp") or row.get("created_at") or "")
+
+    rows.sort(key=_log_timestamp)
 
     if after_id:
-        # Get logs created after the specified log
-        after_log = supabase.table("scan_logs").select("created_at").eq("id", after_id).execute()
-        if after_log.data and len(after_log.data) > 0:
-            query = query.gt("created_at", after_log.data[0]["created_at"])
-
-    response = query.limit(100).execute()
+        anchor = next((row for row in rows if row.get("id") == after_id), None)
+        if anchor:
+            anchor_ts = _log_timestamp(anchor)
+            rows = [row for row in rows if _log_timestamp(row) > anchor_ts]
+        else:
+            rows = []
 
     logs = [
         ScanLogEntry(
             id=log["id"],
-            created_at=log["created_at"],
-            log_type=log.get("log_type", "info"),
-            content=log.get("content", ""),
+            created_at=(_log_timestamp(log) or datetime.now(timezone.utc).isoformat()),
+            log_type=str(log.get("level") or log.get("log_type") or "info"),
+            content=str(log.get("message") or log.get("content") or ""),
         )
-        for log in (response.data or [])
+        for log in rows[:100]
     ]
 
     return ScanLogsResponse(scan_id=scan_id, logs=logs)
@@ -1477,8 +1491,14 @@ async def replay_scan(
             detail="Not authorized to replay this scan",
         )
 
-    # Fetch all logs in chronological order
-    logs_response = supabase.table("scan_logs").select("*").eq("scan_id", scan_id).order("created_at").execute()
+    # Fetch all logs in chronological order (support both timestamp field names).
+    logs_response = (
+        supabase.table("scan_logs")
+        .select("*")
+        .eq("scan_id", scan_id)
+        .order("timestamp")
+        .execute()
+    )
 
     if not logs_response.data:
         raise HTTPException(
@@ -1503,7 +1523,8 @@ async def replay_scan(
     last_real_time = None
 
     for i, log in enumerate(logs):
-        log_time = datetime.fromisoformat(log["created_at"].replace("Z", "+00:00"))
+        raw_time = str(log.get("timestamp") or log.get("created_at") or "")
+        log_time = datetime.fromisoformat(raw_time.replace("Z", "+00:00"))
 
         if first_log_time is None:
             first_log_time = log_time
@@ -1521,11 +1542,11 @@ async def replay_scan(
         # Insert event to trigger UI update
         supabase.table("scan_logs").insert({
             "scan_id": scan_id,
-            "level": log.get("level", "info"),
-            "message": log.get("message", ""),
+            "level": log.get("level") or log.get("log_type") or "info",
+            "message": log.get("message") or log.get("content") or "",
             "agent_id": log.get("agent_id"),
             "metadata": log.get("metadata"),
-            "created_at": datetime.now(timezone.utc).isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
         }).execute()
 
         # Log progress every 50 events
