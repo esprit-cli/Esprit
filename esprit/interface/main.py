@@ -1260,9 +1260,14 @@ def pull_docker_image() -> None:
     image_name = Config.get("esprit_image")
     preferred_platform = (Config.get("esprit_docker_platform") or "").strip() or None
 
-    # Proactively use linux/amd64 on ARM hosts (e.g. Apple Silicon) since
-    # the sandbox image only publishes amd64 manifests and the Python Docker
-    # SDK can hang instead of erroring when no matching manifest exists.
+    # On macOS, always request linux/amd64 unless explicitly overridden.
+    # This avoids Rosetta edge-cases where Python reports x86_64 while Docker
+    # still defaults pull resolution to arm64/v8 on Apple Silicon.
+    if preferred_platform is None and platform.system() == "Darwin":
+        preferred_platform = "linux/amd64"
+
+    # Proactively use linux/amd64 on ARM hosts (e.g. Apple Silicon/Linux ARM)
+    # since the sandbox image only publishes amd64 manifests.
     if preferred_platform is None and platform.machine() in ("arm64", "aarch64"):
         preferred_platform = "linux/amd64"
 

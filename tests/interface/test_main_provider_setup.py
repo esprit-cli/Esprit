@@ -126,6 +126,46 @@ def test_pull_docker_image_uses_amd64_on_arm_host() -> None:
     assert pull_calls[0].get("platform") == "linux/amd64"
 
 
+def test_pull_docker_image_uses_amd64_on_macos_rosetta_style_host() -> None:
+    client = MagicMock()
+    pull_calls: list[dict[str, object]] = []
+
+    def pull_side_effect(_image_name: str, **kwargs: object) -> object:
+        pull_calls.append(kwargs)
+        return iter([{"status": "Status: Downloaded newer image"}])
+
+    client.api.pull.side_effect = pull_side_effect
+
+    console = MagicMock()
+    status_ctx = MagicMock()
+    status_widget = MagicMock()
+    status_ctx.__enter__.return_value = status_widget
+    status_ctx.__exit__.return_value = False
+    console.status.return_value = status_ctx
+
+    def config_get(name: str) -> str | None:
+        if name == "esprit_image":
+            return "improdead/esprit-sandbox:latest"
+        if name == "esprit_docker_platform":
+            return None
+        return None
+
+    with (
+        patch("esprit.interface.main.Console", return_value=console),
+        patch("esprit.interface.main.check_docker_connection", return_value=client),
+        patch("esprit.interface.main.image_exists", return_value=False),
+        patch("esprit.interface.main.platform.machine", return_value="x86_64"),
+        patch("esprit.interface.main.platform.system", return_value="Darwin"),
+        patch("esprit.interface.main.Config.get", side_effect=config_get),
+        patch.dict(interface_main.os.environ, {}, clear=True),
+    ):
+        interface_main.pull_docker_image()
+        assert "ESPRIT_DOCKER_PLATFORM" not in interface_main.os.environ
+
+    assert len(pull_calls) == 1
+    assert pull_calls[0].get("platform") == "linux/amd64"
+
+
 def test_pull_docker_image_exits_without_fallback_on_non_arm_host() -> None:
     client = MagicMock()
     client.api.pull.side_effect = interface_main.DockerException(
