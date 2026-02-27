@@ -89,22 +89,22 @@ def _should_use_cloud_runtime() -> bool:
     if not is_authenticated():
         return False
 
-    if not _is_paid_subscription_plan(get_user_plan()):
-        return False
-
     model_name = Config.get("esprit_llm")
     if not _is_cloud_subscription_model(model_name):
         return False
 
-    verification = verify_subscription()
+    # Avoid stale local plan data by forcing a fresh server verification before
+    # deciding cloud vs docker runtime.
+    verification = verify_subscription(force_refresh=True)
     if verification.get("valid", False):
         cloud_enabled = verification.get("cloud_enabled")
         return bool(cloud_enabled) if cloud_enabled is not None else True
 
     # If subscription verification endpoint is temporarily unreachable,
-    # trust local credentials and continue with cloud mode.
+    # fallback to local paid-plan metadata to avoid unnecessary docker fallback.
+    # Any server-reachable invalid response remains fail-closed.
     error = str(verification.get("error", ""))
-    return error.startswith("Subscription verification failed:")
+    return error.startswith("Subscription verification failed:") and _is_paid_subscription_plan(get_user_plan())
 
 
 def validate_environment() -> None:  # noqa: PLR0912, PLR0915
