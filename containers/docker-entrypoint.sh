@@ -112,7 +112,7 @@ echo "✅ Caido project selected successfully."
 
 echo "Configuring system-wide proxy settings..."
 
-cat << EOF | sudo tee /etc/profile.d/proxy.sh
+cat << EOF | sudo tee /etc/profile.d/proxy.sh >/dev/null
 export http_proxy=http://127.0.0.1:${CAIDO_PORT}
 export https_proxy=http://127.0.0.1:${CAIDO_PORT}
 export HTTP_PROXY=http://127.0.0.1:${CAIDO_PORT}
@@ -123,7 +123,7 @@ export SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
 export CAIDO_API_TOKEN=${TOKEN}
 EOF
 
-cat << EOF | sudo tee /etc/environment
+cat << EOF | sudo tee /etc/environment >/dev/null
 http_proxy=http://127.0.0.1:${CAIDO_PORT}
 https_proxy=http://127.0.0.1:${CAIDO_PORT}
 HTTP_PROXY=http://127.0.0.1:${CAIDO_PORT}
@@ -132,7 +132,7 @@ ALL_PROXY=http://127.0.0.1:${CAIDO_PORT}
 CAIDO_API_TOKEN=${TOKEN}
 EOF
 
-cat << EOF | sudo tee /etc/wgetrc
+cat << EOF | sudo tee /etc/wgetrc >/dev/null
 use_proxy=yes
 http_proxy=http://127.0.0.1:${CAIDO_PORT}
 https_proxy=http://127.0.0.1:${CAIDO_PORT}
@@ -157,11 +157,21 @@ export PYTHONPATH=/app
 export ESPRIT_SANDBOX_MODE=true
 export POETRY_VIRTUALENVS_CREATE=false
 export TOOL_SERVER_TIMEOUT="${ESPRIT_SANDBOX_EXECUTION_TIMEOUT:-120}"
+export TOOL_SERVER_PORT="${TOOL_SERVER_PORT:-48081}"
+if [ -z "${TOOL_SERVER_TOKEN:-}" ]; then
+  TOOL_SERVER_TOKEN="$(openssl rand -hex 16 2>/dev/null || cat /proc/sys/kernel/random/uuid | tr -d '-')"
+  export TOOL_SERVER_TOKEN
+fi
 TOOL_SERVER_LOG="/tmp/tool_server.log"
 
 # Tool server and its health check must bypass the Caido proxy
 export no_proxy="${no_proxy:+${no_proxy},}127.0.0.1,localhost"
 export NO_PROXY="${NO_PROXY:+${NO_PROXY},}127.0.0.1,localhost"
+
+if ! [[ "$TOOL_SERVER_PORT" =~ ^[0-9]+$ ]]; then
+  echo "ERROR: TOOL_SERVER_PORT must be numeric, got '$TOOL_SERVER_PORT'"
+  exit 1
+fi
 
 sudo -E -u pentester \
   poetry run python -m esprit.runtime.tool_server \
