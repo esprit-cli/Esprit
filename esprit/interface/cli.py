@@ -1,4 +1,5 @@
 import atexit
+import logging
 import signal
 import sys
 import threading
@@ -86,6 +87,9 @@ async def run_cli(args: Any) -> None:  # noqa: PLR0915
 
     tracer = Tracer(args.run_name)
     tracer.set_scan_config(scan_config)
+    agent: EspritAgent | None = None
+    cleanup_lock = threading.Lock()
+    cleanup_done = False
 
     def display_vulnerability(report: dict[str, Any]) -> None:
         report_id = report.get("id", "unknown")
@@ -105,18 +109,33 @@ async def run_cli(args: Any) -> None:  # noqa: PLR0915
 
     tracer.vulnerability_found_callback = display_vulnerability
 
-    def cleanup_on_exit() -> None:
+    def cleanup_runtime_resources(*, save_diffs: bool) -> None:
+        nonlocal cleanup_done
+        with cleanup_lock:
+            if cleanup_done:
+                return
+            cleanup_done = True
+
         from esprit.runtime import cleanup_runtime, extract_and_save_diffs
 
-        # Extract file edits from sandbox BEFORE destroying it
-        if hasattr(agent, "state") and agent.state.sandbox_id:
-            extract_and_save_diffs(agent.state.sandbox_id)
+        if save_diffs and agent and agent.state.sandbox_id:
+            try:
+                extract_and_save_diffs(agent.state.sandbox_id)
+            except Exception:  # noqa: BLE001
+                logging.exception("Failed to extract sandbox diffs during cleanup")
 
+        try:
+            cleanup_runtime()
+        except Exception:  # noqa: BLE001
+            logging.exception("Failed to cleanup runtime resources")
+
+    def cleanup_on_exit() -> None:
         tracer.cleanup()
-        cleanup_runtime()
+        cleanup_runtime_resources(save_diffs=bool(tracer.end_time))
 
     def signal_handler(_signum: int, _frame: Any) -> None:
         tracer.cleanup()
+        cleanup_runtime_resources(save_diffs=False)
         sys.exit(1)
 
     atexit.register(cleanup_on_exit)
@@ -179,9 +198,11 @@ async def run_cli(args: Any) -> None:  # noqa: PLR0915
             finally:
                 stop_updates.set()
                 update_thread.join(timeout=1)
+                cleanup_runtime_resources(save_diffs=True)
 
     except Exception as e:
         console.print(f"[bold red]Error during penetration test:[/] {e}")
+        cleanup_runtime_resources(save_diffs=False)
         raise
 
     if tracer.final_scan_result:

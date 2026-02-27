@@ -1877,7 +1877,10 @@ class EspritTUIApp(App):  # type: ignore[misc]
         self._scan_stop_event = threading.Event()
         self._scan_completed = threading.Event()
         self._scan_failed = threading.Event()
+        self._runtime_cleanup_lock = threading.Lock()
+        self._runtime_cleanup_done = False
         self._stats_spinner_frame: int = 0
+        self.agent: EspritAgent | None = None
 
         self._spinner_frame_index: int = 0  # Current animation frame index
         self._sweep_num_squares: int = 6  # Number of squares in sweep animation
@@ -1940,19 +1943,33 @@ class EspritTUIApp(App):  # type: ignore[misc]
 
         return config
 
+    def _cleanup_runtime_resources(self, *, save_diffs: bool) -> None:
+        with self._runtime_cleanup_lock:
+            if self._runtime_cleanup_done:
+                return
+            self._runtime_cleanup_done = True
+
+        from esprit.runtime import cleanup_runtime, extract_and_save_diffs
+
+        if save_diffs and self.agent and self.agent.state.sandbox_id:
+            try:
+                extract_and_save_diffs(self.agent.state.sandbox_id)
+            except Exception:  # noqa: BLE001
+                logging.exception("Failed to extract sandbox diffs during cleanup")
+
+        try:
+            cleanup_runtime()
+        except Exception:  # noqa: BLE001
+            logging.exception("Failed to cleanup runtime resources")
+
     def _setup_cleanup_handlers(self) -> None:
         def cleanup_on_exit() -> None:
-            from esprit.runtime import cleanup_runtime, extract_and_save_diffs
-
-            # Extract file edits from sandbox BEFORE destroying it
-            if hasattr(self, "agent") and hasattr(self.agent, "state") and self.agent.state.sandbox_id:
-                extract_and_save_diffs(self.agent.state.sandbox_id)
-
             self.tracer.cleanup()
-            cleanup_runtime()
+            self._cleanup_runtime_resources(save_diffs=self._scan_completed.is_set())
 
         def signal_handler(_signum: int, _frame: Any) -> None:
             self.tracer.cleanup()
+            self._cleanup_runtime_resources(save_diffs=False)
             sys.exit(0)
 
         atexit.register(cleanup_on_exit)
@@ -3385,10 +3402,10 @@ class EspritTUIApp(App):  # type: ignore[misc]
                 asyncio.set_event_loop(loop)
 
                 try:
-                    agent = EspritAgent(self.agent_config)
+                    self.agent = EspritAgent(self.agent_config)
 
                     if not self._scan_stop_event.is_set():
-                        loop.run_until_complete(agent.execute_scan(self.scan_config))
+                        loop.run_until_complete(self.agent.execute_scan(self.scan_config))
 
                 except (KeyboardInterrupt, asyncio.CancelledError):
                     logging.info("Scan interrupted by user")
@@ -3407,6 +3424,7 @@ class EspritTUIApp(App):  # type: ignore[misc]
                     if self.tracer and not self.tracer.end_time:
                         from datetime import datetime, timezone
                         self.tracer.end_time = datetime.now(timezone.utc).isoformat()
+                    self._cleanup_runtime_resources(save_diffs=True)
                     loop.close()
                     self._scan_completed.set()
 
@@ -4020,6 +4038,7 @@ class EspritTUIApp(App):  # type: ignore[misc]
                 pass
 
         self.tracer.cleanup()
+        self._cleanup_runtime_resources(save_diffs=self._scan_completed.is_set())
 
         self.exit()
 
