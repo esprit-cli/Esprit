@@ -414,6 +414,53 @@ class TestOpenCodePublicFallback:
         assert llm.config.model_name == "opencode/gpt-5.2-codex"
 
 
+class TestEspritModelFallback:
+    def test_paid_plan_falls_back_from_default_to_kimi_on_rate_limit(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        llm = LLM.__new__(LLM)
+        llm.config = SimpleNamespace(model_name="esprit/default")
+
+        monkeypatch.setattr("esprit.auth.credentials.get_user_plan", lambda: "pro")
+        monkeypatch.setattr("esprit.llm.llm.Config.get", lambda _name: None)
+
+        err = RuntimeError("rate limited")
+        err.status_code = 429  # type: ignore[attr-defined]
+
+        assert llm._try_esprit_model_fallback(err) is True
+        assert llm.config.model_name == "esprit/kimi-k2.5"
+
+    def test_free_plan_does_not_switch_from_default_to_kimi(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        llm = LLM.__new__(LLM)
+        llm.config = SimpleNamespace(model_name="esprit/default")
+
+        monkeypatch.setattr("esprit.auth.credentials.get_user_plan", lambda: "free")
+        monkeypatch.setattr("esprit.llm.llm.Config.get", lambda _name: None)
+
+        err = RuntimeError("rate limited")
+        err.status_code = 429  # type: ignore[attr-defined]
+
+        assert llm._try_esprit_model_fallback(err) is False
+        assert llm.config.model_name == "esprit/default"
+
+    def test_falls_back_from_kimi_to_default_on_rate_limit(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        llm = LLM.__new__(LLM)
+        llm.config = SimpleNamespace(model_name="esprit/kimi-k2.5")
+
+        monkeypatch.setattr("esprit.auth.credentials.get_user_plan", lambda: "pro")
+        monkeypatch.setattr("esprit.llm.llm.Config.get", lambda _name: None)
+
+        err = RuntimeError("rate limited")
+        err.status_code = 429  # type: ignore[attr-defined]
+
+        assert llm._try_esprit_model_fallback(err) is True
+        assert llm.config.model_name == "esprit/default"
+
+
 class TestBuildCompletionArgs:
     @pytest.mark.parametrize("configured_model", ["openai/codex-5.3", "codex-5.3"])
     def test_codex_oauth_forces_openai_prefix(

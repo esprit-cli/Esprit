@@ -297,6 +297,9 @@ class LLM:
                 if self._should_try_opencode_fallback_early(e) and self._try_opencode_model_fallback(e):
                     attempt = 0
                     continue
+                if self._try_esprit_model_fallback(e):
+                    attempt = 0
+                    continue
                 if attempt >= max_retries or not self._should_retry(e):
                     # Before giving up, try auto model fallback for Antigravity
                     if self._is_antigravity() and self._try_model_fallback(e):
@@ -1358,6 +1361,66 @@ class LLM:
             _fallback_logger.warning(
                 "Switched from %s to %s due to %s",
                 old_model, new_model, _reason,
+            )
+            return True
+
+        return False
+
+    def _try_esprit_model_fallback(self, e: Exception) -> bool:
+        """Switch Esprit cloud model on upstream throttling."""
+        if str(Config.get("esprit_auto_fallback") or "").lower() in ("false", "0", "no"):
+            return False
+
+        current_model = (self.config.model_name or "").strip().lower()
+        if not current_model.startswith("esprit/"):
+            return False
+
+        code = getattr(e, "status_code", None) or getattr(
+            getattr(e, "response", None), "status_code", None
+        )
+        if code != 429:
+            return False
+
+        from esprit.auth.credentials import get_user_plan
+
+        plan = (get_user_plan() or "free").strip().lower()
+        paid_plan = plan in {"pro", "team", "enterprise"}
+        current_alias = current_model.split("/", 1)[1] if "/" in current_model else current_model
+        haiku_aliases = {
+            "default",
+            "haiku",
+            "haiku-4.5",
+            "claude-haiku-4-5",
+            "claude-haiku-4-5-20251001",
+        }
+        kimi_aliases = {"kimi-k2.5", "kimi-k2"}
+
+        candidates: list[str] = []
+        if current_alias in kimi_aliases:
+            candidates.append("default")
+        elif current_alias in haiku_aliases:
+            if paid_plan:
+                candidates.append("kimi-k2.5")
+        else:
+            candidates.append("default")
+            if paid_plan:
+                candidates.append("kimi-k2.5")
+
+        if not hasattr(self, "_tried_esprit_fallback_models"):
+            self._tried_esprit_fallback_models: set[str] = set()
+        tried = self._tried_esprit_fallback_models
+        tried.add(current_model)
+
+        for alias in candidates:
+            fallback_model = f"esprit/{alias}"
+            if fallback_model == current_model or fallback_model in tried:
+                continue
+            self.config.model_name = fallback_model
+            tried.add(fallback_model)
+            logger.warning(
+                "Esprit cloud model rate limited, switching fallback from %s to %s",
+                current_model,
+                fallback_model,
             )
             return True
 
