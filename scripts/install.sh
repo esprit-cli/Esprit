@@ -116,6 +116,7 @@ sync_runtime_repo() {
 
 install_python_runtime() {
   local py_bin="$1"
+  local package_dir=""
 
   mkdir -p "$INSTALL_ROOT"
   if [ "$FORCE" = true ] || [ ! -x "$VENV_DIR/bin/python" ]; then
@@ -124,9 +125,19 @@ install_python_runtime() {
     "$py_bin" -m venv "$VENV_DIR"
   fi
 
+  if [ -f "$RUNTIME_DIR/pyproject.toml" ] || [ -f "$RUNTIME_DIR/setup.py" ]; then
+    package_dir="$RUNTIME_DIR"
+  elif [ -f "$RUNTIME_DIR/cli/pyproject.toml" ] || [ -f "$RUNTIME_DIR/cli/setup.py" ]; then
+    package_dir="$RUNTIME_DIR/cli"
+  else
+    print_message error "Runtime source does not contain an installable Python package."
+    print_message error "Expected pyproject.toml at $RUNTIME_DIR or $RUNTIME_DIR/cli."
+    exit 1
+  fi
+
   print_message info "${MUTED}Installing Esprit dependencies (this can take a few minutes)...${NC}"
   "$VENV_DIR/bin/python" -m pip install --upgrade pip setuptools wheel >/dev/null
-  "$VENV_DIR/bin/pip" install --upgrade "$RUNTIME_DIR" >/dev/null
+  "$VENV_DIR/bin/pip" install --upgrade "$package_dir" >/dev/null
   print_message success "✓ Python runtime installed"
 }
 

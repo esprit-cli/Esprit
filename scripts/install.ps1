@@ -107,6 +107,7 @@ function Sync-RuntimeRepo {
 
 function Install-PythonRuntime {
     param([string]$PyBin)
+    $packageDir = $null
 
     if (-not (Test-Path $INSTALL_ROOT)) {
         New-Item -ItemType Directory -Path $INSTALL_ROOT -Force | Out-Null
@@ -119,11 +120,19 @@ function Install-PythonRuntime {
         Invoke-Python $PyBin @('-m', 'venv', $VENV_DIR)
     }
 
+    if ((Test-Path (Join-Path $RUNTIME_DIR 'pyproject.toml')) -or (Test-Path (Join-Path $RUNTIME_DIR 'setup.py'))) {
+        $packageDir = $RUNTIME_DIR
+    } elseif ((Test-Path (Join-Path $RUNTIME_DIR 'cli\pyproject.toml')) -or (Test-Path (Join-Path $RUNTIME_DIR 'cli\setup.py'))) {
+        $packageDir = Join-Path $RUNTIME_DIR 'cli'
+    } else {
+        throw "Runtime source does not contain an installable Python package. Expected pyproject.toml at '$RUNTIME_DIR' or '$RUNTIME_DIR\\cli'."
+    }
+
     Print-Message 'info' 'Installing Esprit dependencies (this can take a few minutes)...'
     $venvPip = Join-Path $VENV_DIR 'Scripts\pip.exe'
     & $venvPython -m pip install --upgrade pip setuptools wheel --quiet
     if ($LASTEXITCODE -ne 0) { throw 'pip upgrade failed' }
-    & $venvPip install --upgrade $RUNTIME_DIR --quiet
+    & $venvPip install --upgrade $packageDir --quiet
     if ($LASTEXITCODE -ne 0) { throw 'pip install failed' }
     Print-Message 'success' '✓ Python runtime installed'
 }
