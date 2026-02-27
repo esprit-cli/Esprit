@@ -40,6 +40,53 @@ def test_get_available_models_limits_opencode_to_public_without_api_key() -> Non
     assert "opencode/gpt-5.2-codex" not in model_ids
 
 
+def test_esprit_cloud_block_reason_requires_login_for_esprit_models() -> None:
+    with (
+        patch(
+            "esprit.interface.main.Config.get",
+            side_effect=lambda name: "esprit/default" if name == "esprit_llm" else None,
+        ),
+        patch("esprit.auth.credentials.is_authenticated", return_value=False),
+    ):
+        reason = interface_main._esprit_cloud_block_reason()
+
+    assert reason is not None
+    assert "requires Esprit login" in reason
+
+
+def test_esprit_cloud_block_reason_reports_cloud_disabled_quota() -> None:
+    with (
+        patch(
+            "esprit.interface.main.Config.get",
+            side_effect=lambda name: "esprit/default" if name == "esprit_llm" else None,
+        ),
+        patch("esprit.auth.credentials.is_authenticated", return_value=True),
+        patch(
+            "esprit.auth.credentials.verify_subscription",
+            return_value={
+                "valid": True,
+                "cloud_enabled": False,
+                "quota_remaining": {"scans": 0},
+            },
+        ),
+    ):
+        reason = interface_main._esprit_cloud_block_reason()
+
+    assert reason is not None
+    assert "disabled" in reason.lower()
+    assert "scans remaining: 0" in reason
+
+
+def test_esprit_cloud_block_reason_not_applied_for_non_esprit_models() -> None:
+    with patch(
+        "esprit.interface.main.Config.get",
+        side_effect=lambda name: "opencode/gpt-5-nano" if name == "esprit_llm" else None,
+    ):
+        reason = interface_main._esprit_cloud_block_reason()
+
+    assert reason is None
+
+
 def test_pull_docker_image_uses_amd64_on_arm_host() -> None:
     client = MagicMock()
     pull_calls: list[dict[str, object]] = []

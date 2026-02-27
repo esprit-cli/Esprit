@@ -107,6 +107,38 @@ def _should_use_cloud_runtime() -> bool:
     return error.startswith("Subscription verification failed:") and _is_paid_subscription_plan(get_user_plan())
 
 
+def _esprit_cloud_block_reason() -> str | None:
+    """Return a user-facing reason when esprit/* cannot use cloud runtime."""
+    from esprit.auth.credentials import is_authenticated, verify_subscription
+
+    model_name = (Config.get("esprit_llm") or "").strip().lower()
+    if not model_name.startswith("esprit/"):
+        return None
+
+    if not is_authenticated():
+        return "Selected model requires Esprit login. Run `esprit provider login esprit`."
+
+    verification = verify_subscription()
+    if verification.get("valid", False):
+        if verification.get("cloud_enabled") is False:
+            quota = verification.get("quota_remaining")
+            scans_remaining: str | int | None = None
+            if isinstance(quota, dict):
+                scans_remaining = quota.get("scans")
+            if isinstance(scans_remaining, int):
+                return (
+                    "Esprit Cloud access is currently disabled for this account "
+                    f"(scans remaining: {scans_remaining})."
+                )
+            return "Esprit Cloud access is currently disabled for this account."
+        return None
+
+    error = str(verification.get("error") or "").strip()
+    if error:
+        return f"Esprit subscription verification failed: {error}"
+    return "Esprit Cloud access is unavailable for this account."
+
+
 def validate_environment() -> None:  # noqa: PLR0912, PLR0915
     from esprit.llm.config import DEFAULT_MODEL
 
@@ -1511,6 +1543,17 @@ def main() -> None:
             sys.exit(1)
 
     use_cloud_runtime = _should_use_cloud_runtime()
+    if not use_cloud_runtime:
+        esprit_cloud_block_reason = _esprit_cloud_block_reason()
+        if esprit_cloud_block_reason:
+            error_text = Text()
+            error_text.append("ESPRIT CLOUD REQUIRED", style="bold red")
+            error_text.append("\n\n", style="white")
+            error_text.append(f"{esprit_cloud_block_reason}\n", style="white")
+            error_text.append("\nEsprit models run in cloud runtime and do not use Docker.\n", style="dim")
+            console.print(Panel(error_text, border_style="red"))
+            sys.exit(1)
+
     if use_cloud_runtime:
         os.environ["ESPRIT_RUNTIME_BACKEND"] = "cloud"
         configured_model = (Config.get("esprit_llm") or "").strip()
