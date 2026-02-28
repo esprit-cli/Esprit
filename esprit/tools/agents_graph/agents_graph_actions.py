@@ -1,4 +1,5 @@
 import logging
+import re
 import threading
 from copy import deepcopy
 from datetime import UTC, datetime
@@ -28,10 +29,20 @@ _agent_states: dict[str, Any] = {}
 # When a subagent inherits parent context, long histories are compressed
 # to avoid sending tens of thousands of redundant tokens every turn.
 
-MAX_AGENTS = 10  # Hard cap on total agents to prevent runaway spawning
+MAX_ACTIVE_AGENTS = 10
+MAX_TOTAL_AGENTS = 24
+MAX_ACTIVE_CHILDREN_PER_PARENT = 6
+_ACTIVE_STATUSES = {"running", "waiting", "stopping"}
 
 _INHERIT_SUMMARIZE_THRESHOLD = 15  # Summarize if parent history exceeds this
 _RECENT_MESSAGES_TO_KEEP = 10  # Keep last N messages verbatim after summary
+
+
+def _normalize_task_signature(task: str) -> str:
+    if not task:
+        return ""
+    normalized = re.sub(r"\s+", " ", task).strip().lower()
+    return normalized
 
 
 def _snapshot_inherited_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -357,23 +368,65 @@ def create_agent(
     skills: str | None = None,
 ) -> dict[str, Any]:
     try:
-        # Guard against runaway agent spawning — count only active agents
-        active_count = sum(
-            1
-            for n in _agent_graph["nodes"].values()
-            if n.get("status") in ("running", "waiting", "stopping")
-        )
-        if active_count >= MAX_AGENTS:
+        parent_id = agent_state.agent_id
+
+        total_count = len(_agent_graph["nodes"])
+        if total_count >= MAX_TOTAL_AGENTS:
             return {
                 "success": False,
                 "error": (
-                    f"Active agent limit reached ({active_count}/{MAX_AGENTS}). "
+                    f"Total agent limit reached ({total_count}/{MAX_TOTAL_AGENTS}). "
+                    "Finish or stop existing agents before creating new ones."
+                ),
+                "agent_id": None,
+            }
+
+        active_count = sum(
+            1
+            for n in _agent_graph["nodes"].values()
+            if n.get("status") in _ACTIVE_STATUSES
+        )
+        if active_count >= MAX_ACTIVE_AGENTS:
+            return {
+                "success": False,
+                "error": (
+                    f"Active agent limit reached ({active_count}/{MAX_ACTIVE_AGENTS}). "
                     f"Wait for existing agents to finish before spawning more."
                 ),
                 "agent_id": None,
             }
 
-        parent_id = agent_state.agent_id
+        parent_active_children = [
+            n
+            for n in _agent_graph["nodes"].values()
+            if n.get("parent_id") == parent_id and n.get("status") in _ACTIVE_STATUSES
+        ]
+        if len(parent_active_children) >= MAX_ACTIVE_CHILDREN_PER_PARENT:
+            return {
+                "success": False,
+                "error": (
+                    "Parent already has too many active subagents "
+                    f"({len(parent_active_children)}/{MAX_ACTIVE_CHILDREN_PER_PARENT}). "
+                    "Wait for child agents to complete before adding more."
+                ),
+                "agent_id": None,
+            }
+
+        requested_task_signature = _normalize_task_signature(task)
+        if requested_task_signature:
+            for child in parent_active_children:
+                existing_signature = _normalize_task_signature(str(child.get("task") or ""))
+                if existing_signature == requested_task_signature:
+                    existing_id = str(child.get("id") or "unknown")
+                    return {
+                        "success": False,
+                        "error": (
+                            "Duplicate active subagent task detected "
+                            f"(existing agent: {existing_id}). "
+                            "Reuse that agent's result instead of spawning a near-identical task."
+                        ),
+                        "agent_id": None,
+                    }
 
         skill_list = []
         if skills:
