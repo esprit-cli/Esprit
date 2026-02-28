@@ -145,19 +145,22 @@ def extract_and_save_diffs(sandbox_id: str) -> list[dict[str, object]]:
 
 
 def _upload_patch_to_s3(patch_content: str, log: "logging.Logger") -> None:
-    """Upload patch to S3 if running in hosted mode (S3_BUCKET + SCAN_ID set)."""
+    """Upload patch to S3 if running in hosted mode."""
     import os
 
     bucket = os.getenv("S3_BUCKET")
+    patch_s3_key = (os.getenv("PATCH_S3_KEY") or "").strip()
     scan_id = os.getenv("SCAN_ID")
-    if not bucket or not scan_id:
+    if not bucket:
         return
 
     try:
         import boto3
 
         s3 = boto3.client("s3", region_name=os.getenv("AWS_REGION", "us-east-1"))
-        s3_key = f"patches/{scan_id}.patch"
+        s3_key = patch_s3_key or (f"patches/{scan_id}.patch" if scan_id else "")
+        if not s3_key:
+            return
         s3.put_object(Bucket=bucket, Key=s3_key, Body=patch_content.encode("utf-8"))
         log.info("Uploaded patch to s3://%s/%s", bucket, s3_key)
     except Exception:  # noqa: BLE001
