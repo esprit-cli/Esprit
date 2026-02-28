@@ -27,6 +27,12 @@ _SERVER_TIMEOUT = float(Config.get("esprit_sandbox_execution_timeout") or "120")
 SANDBOX_EXECUTION_TIMEOUT = _SERVER_TIMEOUT + 30
 SANDBOX_CONNECT_TIMEOUT = float(Config.get("esprit_sandbox_connect_timeout") or "10")
 
+_RELAXED_REQUIRED_PARAMS: dict[str, set[str]] = {
+    # Keep this tolerant so cloud model drift or partial argument extraction
+    # does not drop discovered findings on the floor.
+    "create_vulnerability_report": set(),
+}
+
 
 async def execute_tool(tool_name: str, agent_state: Any | None = None, **kwargs: Any) -> Any:
     execute_in_sandbox = should_execute_in_sandbox(tool_name)
@@ -136,6 +142,7 @@ def _validate_tool_arguments(tool_name: str, kwargs: dict[str, Any]) -> str | No
 
     allowed_params: set[str] = param_schema.get("params", set())
     required_params: set[str] = param_schema.get("required", set())
+    required_params = _RELAXED_REQUIRED_PARAMS.get(tool_name, required_params)
     optional_params = allowed_params - required_params
 
     schema_hint = _format_schema_hint(tool_name, required_params, optional_params)

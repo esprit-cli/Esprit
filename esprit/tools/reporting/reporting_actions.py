@@ -40,71 +40,57 @@ def calculate_cvss_and_severity(
         return base_score, severity, vector
 
 
-def _validate_required_fields(**kwargs: str | None) -> list[str]:
-    validation_errors: list[str] = []
-
-    required_fields = {
-        "title": "Title cannot be empty",
-        "description": "Description cannot be empty",
-        "impact": "Impact cannot be empty",
-        "target": "Target cannot be empty",
-        "technical_analysis": "Technical analysis cannot be empty",
-        "poc_description": "PoC description cannot be empty",
-        "poc_script_code": "PoC script/code is REQUIRED - provide the actual exploit/payload",
-        "remediation_steps": "Remediation steps cannot be empty",
-    }
-
-    for field_name, error_msg in required_fields.items():
-        value = kwargs.get(field_name)
-        if not value or not str(value).strip():
-            validation_errors.append(error_msg)
-
-    return validation_errors
+def _normalize_text(
+    value: str | None,
+    fallback: str,
+    field_name: str,
+    warnings: list[str],
+) -> str:
+    normalized = (value or "").strip()
+    if normalized:
+        return normalized
+    warnings.append(f"{field_name} missing - defaulted")
+    return fallback
 
 
-def _validate_cvss_parameters(**kwargs: str) -> list[str]:
-    validation_errors: list[str] = []
-
-    cvss_validations = {
-        "attack_vector": ["N", "A", "L", "P"],
-        "attack_complexity": ["L", "H"],
-        "privileges_required": ["N", "L", "H"],
-        "user_interaction": ["N", "R"],
-        "scope": ["U", "C"],
-        "confidentiality": ["N", "L", "H"],
-        "integrity": ["N", "L", "H"],
-        "availability": ["N", "L", "H"],
-    }
-
-    for param_name, valid_values in cvss_validations.items():
-        value = kwargs.get(param_name)
-        if value not in valid_values:
-            validation_errors.append(
-                f"Invalid {param_name}: {value}. Must be one of: {valid_values}"
-            )
-
-    return validation_errors
+def _normalize_cvss_component(
+    value: str | None,
+    field_name: str,
+    valid_values: list[str],
+    default_value: str,
+    warnings: list[str],
+) -> str:
+    normalized = (value or "").strip().upper()
+    if normalized in valid_values:
+        return normalized
+    if normalized:
+        warnings.append(
+            f"{field_name}={normalized} invalid - defaulted to {default_value}"
+        )
+    else:
+        warnings.append(f"{field_name} missing - defaulted to {default_value}")
+    return default_value
 
 
 @register_tool(sandbox_execution=False)
 def create_vulnerability_report(
-    title: str,
-    description: str,
-    impact: str,
-    target: str,
-    technical_analysis: str,
-    poc_description: str,
-    poc_script_code: str,
-    remediation_steps: str,
+    title: str | None = None,
+    description: str | None = None,
+    impact: str | None = None,
+    target: str | None = None,
+    technical_analysis: str | None = None,
+    poc_description: str | None = None,
+    poc_script_code: str | None = None,
+    remediation_steps: str | None = None,
     # CVSS Breakdown Components
-    attack_vector: str,
-    attack_complexity: str,
-    privileges_required: str,
-    user_interaction: str,
-    scope: str,
-    confidentiality: str,
-    integrity: str,
-    availability: str,
+    attack_vector: str | None = None,
+    attack_complexity: str | None = None,
+    privileges_required: str | None = None,
+    user_interaction: str | None = None,
+    scope: str | None = None,
+    confidentiality: str | None = None,
+    integrity: str | None = None,
+    availability: str | None = None,
     # Optional fields
     endpoint: str | None = None,
     method: str | None = None,
@@ -116,32 +102,103 @@ def create_vulnerability_report(
     cwe_id: str | None = None,
     owasp_category: str | None = None,
 ) -> dict[str, Any]:
-    validation_errors = _validate_required_fields(
-        title=title,
-        description=description,
-        impact=impact,
-        target=target,
-        technical_analysis=technical_analysis,
-        poc_description=poc_description,
-        poc_script_code=poc_script_code,
-        remediation_steps=remediation_steps,
+    warnings: list[str] = []
+
+    title = _normalize_text(title, "Untitled vulnerability finding", "title", warnings)
+    description = _normalize_text(
+        description,
+        "No description was provided by the agent output.",
+        "description",
+        warnings,
+    )
+    impact = _normalize_text(
+        impact,
+        "Potential security impact exists and should be reviewed manually.",
+        "impact",
+        warnings,
+    )
+    target = _normalize_text(target, "unknown target", "target", warnings)
+    technical_analysis = _normalize_text(
+        technical_analysis,
+        "Technical analysis was not provided.",
+        "technical_analysis",
+        warnings,
+    )
+    poc_description = _normalize_text(
+        poc_description,
+        "Proof-of-concept description was not provided.",
+        "poc_description",
+        warnings,
+    )
+    poc_script_code = _normalize_text(
+        poc_script_code,
+        "N/A",
+        "poc_script_code",
+        warnings,
+    )
+    remediation_steps = _normalize_text(
+        remediation_steps,
+        "Review and remediate manually based on the findings.",
+        "remediation_steps",
+        warnings,
     )
 
-    validation_errors.extend(
-        _validate_cvss_parameters(
-            attack_vector=attack_vector,
-            attack_complexity=attack_complexity,
-            privileges_required=privileges_required,
-            user_interaction=user_interaction,
-            scope=scope,
-            confidentiality=confidentiality,
-            integrity=integrity,
-            availability=availability,
-        )
+    attack_vector = _normalize_cvss_component(
+        attack_vector,
+        "attack_vector",
+        ["N", "A", "L", "P"],
+        "N",
+        warnings,
     )
-
-    if validation_errors:
-        return {"success": False, "message": "Validation failed", "errors": validation_errors}
+    attack_complexity = _normalize_cvss_component(
+        attack_complexity,
+        "attack_complexity",
+        ["L", "H"],
+        "L",
+        warnings,
+    )
+    privileges_required = _normalize_cvss_component(
+        privileges_required,
+        "privileges_required",
+        ["N", "L", "H"],
+        "N",
+        warnings,
+    )
+    user_interaction = _normalize_cvss_component(
+        user_interaction,
+        "user_interaction",
+        ["N", "R"],
+        "N",
+        warnings,
+    )
+    scope = _normalize_cvss_component(
+        scope,
+        "scope",
+        ["U", "C"],
+        "U",
+        warnings,
+    )
+    confidentiality = _normalize_cvss_component(
+        confidentiality,
+        "confidentiality",
+        ["N", "L", "H"],
+        "L",
+        warnings,
+    )
+    integrity = _normalize_cvss_component(
+        integrity,
+        "integrity",
+        ["N", "L", "H"],
+        "L",
+        warnings,
+    )
+    availability = _normalize_cvss_component(
+        availability,
+        "availability",
+        ["N", "L", "H"],
+        "L",
+        warnings,
+    )
 
     cvss_score, severity, cvss_vector = calculate_cvss_and_severity(
         attack_vector,
@@ -238,6 +295,7 @@ def create_vulnerability_report(
                 "report_id": report_id,
                 "severity": severity,
                 "cvss_score": cvss_score,
+                "warnings": warnings,
             }
 
         import logging
@@ -251,4 +309,5 @@ def create_vulnerability_report(
             "success": True,
             "message": f"Vulnerability report '{title}' created (not persisted)",
             "warning": "Report could not be persisted - tracer unavailable",
+            "warnings": warnings,
         }
