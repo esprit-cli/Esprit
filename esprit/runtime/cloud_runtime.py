@@ -102,19 +102,38 @@ class CloudRuntime(AbstractRuntime):
 
         try:
             async with httpx.AsyncClient(timeout=_DEFAULT_TIMEOUT_SECONDS, trust_env=False) as client:
-                response = await client.post(
-                    f"{self.api_base}/sandbox/create",
-                    json=payload,
-                    headers={"Authorization": f"Bearer {self.access_token}"},
-                )
-                response.raise_for_status()
-                data = response.json()
-        except httpx.HTTPStatusError as exc:
-            details = (
-                f"Cloud sandbox API returned HTTP {exc.response.status_code}: "
-                f"{exc.response.text[:500]}"
-            )
-            raise SandboxInitializationError("Failed to create cloud sandbox.", details) from exc
+                headers = {"Authorization": f"Bearer {self.access_token}"}
+                create_endpoints = ("/sandbox", "/sandbox/create")
+                data: dict[str, Any] | None = None
+
+                for index, endpoint in enumerate(create_endpoints):
+                    response = await client.post(
+                        f"{self.api_base}{endpoint}",
+                        json=payload,
+                        headers=headers,
+                    )
+                    try:
+                        response.raise_for_status()
+                        data = response.json()
+                        break
+                    except httpx.HTTPStatusError as exc:
+                        # Prefer the canonical /sandbox route, but keep a legacy fallback.
+                        if exc.response.status_code in {404, 405} and index < len(create_endpoints) - 1:
+                            continue
+                        details = (
+                            f"Cloud sandbox API returned HTTP {exc.response.status_code}: "
+                            f"{exc.response.text[:500]}"
+                        )
+                        raise SandboxInitializationError(
+                            "Failed to create cloud sandbox.",
+                            details,
+                        ) from exc
+
+                if data is None:
+                    raise SandboxInitializationError(
+                        "Failed to create cloud sandbox.",
+                        "No valid response from cloud sandbox API.",
+                    )
         except httpx.RequestError as exc:
             raise SandboxInitializationError(
                 "Failed to connect to Esprit Cloud sandbox API.",

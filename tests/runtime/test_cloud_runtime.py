@@ -65,6 +65,46 @@ async def test_create_sandbox_success() -> None:
     assert sandbox["tool_server_port"] == 443
     assert sandbox["agent_id"] == "agent-1"
     assert runtime._sandboxes["sbx-1"]["agent_id"] == "agent-1"
+    assert mock_post.await_count == 1
+    assert mock_post.await_args_list[0].args[0] == "https://api.example.com/v1/sandbox"
+
+
+@pytest.mark.asyncio
+async def test_create_sandbox_falls_back_to_legacy_route() -> None:
+    runtime = CloudRuntime(access_token="token-123", api_base="https://api.example.com/v1")
+
+    primary_request = httpx.Request("POST", "https://api.example.com/v1/sandbox")
+    primary_response = httpx.Response(405, request=primary_request, text="method not allowed")
+    primary = MagicMock()
+    primary.raise_for_status.side_effect = httpx.HTTPStatusError(
+        "method not allowed",
+        request=primary_request,
+        response=primary_response,
+    )
+    primary.status_code = 405
+    primary.text = "method not allowed"
+
+    fallback = _response(
+        200,
+        {
+            "sandbox_id": "sbx-2",
+            "api_url": "https://runtime.example.com/sandbox/sbx-2",
+            "auth_token": "sandbox-token-2",
+            "tool_server_port": 443,
+        },
+    )
+    mock_post = AsyncMock(side_effect=[primary, fallback])
+
+    with patch(
+        "esprit.runtime.cloud_runtime.httpx.AsyncClient",
+        return_value=_FakeAsyncClient(post=mock_post),
+    ):
+        sandbox = await runtime.create_sandbox(agent_id="agent-2")
+
+    assert sandbox["workspace_id"] == "sbx-2"
+    assert mock_post.await_count == 2
+    assert mock_post.await_args_list[0].args[0] == "https://api.example.com/v1/sandbox"
+    assert mock_post.await_args_list[1].args[0] == "https://api.example.com/v1/sandbox/create"
 
 
 @pytest.mark.asyncio
@@ -110,7 +150,7 @@ async def test_create_sandbox_requires_sandbox_token() -> None:
 async def test_create_sandbox_http_error_raises() -> None:
     runtime = CloudRuntime(access_token="token-123", api_base="https://api.example.com/v1")
 
-    request = httpx.Request("POST", "https://api.example.com/v1/sandbox/create")
+    request = httpx.Request("POST", "https://api.example.com/v1/sandbox")
     response = httpx.Response(401, request=request, text="unauthorized")
 
     http_error_response = MagicMock()

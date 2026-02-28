@@ -7,7 +7,7 @@ from datetime import datetime, timezone, timedelta
 from collections import defaultdict
 import json
 from typing import Any, Dict, List
-from uuid import uuid4
+from uuid import NAMESPACE_URL, uuid4, uuid5
 
 import httpx
 from fastapi import APIRouter, HTTPException, Request, status
@@ -294,6 +294,43 @@ async def create_sandbox(
             detail=quota.message or "Quota exceeded. Upgrade your plan at /billing",
         )
 
+    plan = await usage_service.get_user_plan(user.sub)
+    if plan == "free":
+        if request.scan_type != "quick":
+            raise HTTPException(
+                status_code=status.HTTP_402_PAYMENT_REQUIRED,
+                detail="Free plan supports quick cloud scan mode only.",
+            )
+        # /sandbox requests can originate from CLI runtime and may not have a DB scan row.
+        # Create a deterministic placeholder scan row once so free_scan_claims FK stays valid.
+        claim_scan_id = str(uuid5(NAMESPACE_URL, f"free-sandbox-claim:{user.sub}"))
+        existing_scan = supabase.table("scans").select("id").eq("id", claim_scan_id).limit(1).execute()
+        if not existing_scan.data:
+            scan_data = {
+                "id": claim_scan_id,
+                "user_id": user.sub,
+                "target": request.target,
+                "target_type": request.target_type,
+                "scan_type": "quick",
+                "status": "completed",
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "started_at": datetime.now(timezone.utc).isoformat(),
+                "completed_at": datetime.now(timezone.utc).isoformat(),
+            }
+            try:
+                supabase.table("scans").insert(scan_data).execute()
+            except Exception as exc:  # noqa: BLE001
+                msg = str(exc).lower()
+                if not any(token in msg for token in ["duplicate", "unique", "already"]):
+                    raise
+
+        claimed, claim_error = await usage_service.claim_free_scan(user.sub, claim_scan_id)
+        if not claimed:
+            raise HTTPException(
+                status_code=status.HTTP_402_PAYMENT_REQUIRED,
+                detail=claim_error or "Your free scan has already been used.",
+            )
+
     # Create sandbox
     result = await sandbox_service.create_sandbox(request, user.sub)
 
@@ -309,7 +346,7 @@ async def get_sandbox_status(
     user: CurrentUser,
 ):
     """Get the status of a sandbox."""
-    result = await sandbox_service.get_sandbox_status(sandbox_id)
+    result = await sandbox_service.get_sandbox_status(sandbox_id, user.sub)
     if not result:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -324,7 +361,7 @@ async def destroy_sandbox(
     user: CurrentUser,
 ):
     """Stop and clean up a sandbox."""
-    success = await sandbox_service.destroy_sandbox(sandbox_id)
+    success = await sandbox_service.destroy_sandbox(sandbox_id, user.sub)
     if not success:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -816,9 +853,6 @@ class ScanStartResponse(BaseModel):
     message: str
 
 
-import uuid
-
-
 @router.post("/scans", response_model=ScanCreateResponse)
 async def create_scan(
     request: ScanCreateRequest,
@@ -830,7 +864,7 @@ async def create_scan(
     This endpoint creates the scan in Supabase so the CLI doesn't need
     to call Supabase directly (avoiding JWT compatibility issues).
     """
-    scan_id = str(uuid.uuid4())
+    scan_id = str(uuid4())
 
     scan_data = {
         "id": scan_id,

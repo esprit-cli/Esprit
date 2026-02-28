@@ -21,6 +21,7 @@ class Settings(BaseSettings):
     app_name: str = "Esprit Backend"
     debug: bool = False
     environment: Literal["development", "staging", "production", "prod", "dev"] = "development"
+    api_base_url: str = "https://esprit.dev/api/v1"
 
     # Supabase
     supabase_url: str

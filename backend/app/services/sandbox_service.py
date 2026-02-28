@@ -70,7 +70,7 @@ class SandboxService:
                                 {"name": "USER_ID", "value": user_id},
                                 {"name": "SANDBOX_ID", "value": sandbox_id},
                                 # The sandbox will call back to our API for LLM requests
-                                {"name": "LLM_PROXY_URL", "value": f"{settings.app_name}/api/v1/llm/generate"},
+                                {"name": "LLM_PROXY_URL", "value": f"{settings.api_base_url.rstrip('/')}/llm/generate"},
                                 # Optional test credentials for authenticated testing
                                 {"name": "TEST_USERNAME", "value": request.test_username or ""},
                                 {"name": "TEST_PASSWORD", "value": request.test_password or ""},
@@ -104,33 +104,44 @@ class SandboxService:
             logger.error("Failed to create sandbox", error=str(e))
             raise
 
-    async def get_sandbox_status(self, sandbox_id: str) -> SandboxStatusResponse | None:
+    def _list_tasks_paginated(self, desired_status: str) -> list[str]:
+        task_arns: list[str] = []
+        paginator = self.ecs_client.get_paginator("list_tasks")
+        for page in paginator.paginate(
+            cluster=settings.ecs_cluster_name,
+            desiredStatus=desired_status,
+        ):
+            task_arns.extend(page.get("taskArns", []))
+        return task_arns
+
+    async def get_sandbox_status(self, sandbox_id: str, user_id: str) -> SandboxStatusResponse | None:
         """
         Get the status of a sandbox.
         """
         try:
-            # List tasks with the sandbox tag
-            response = self.ecs_client.list_tasks(
-                cluster=settings.ecs_cluster_name,
-                desiredStatus="RUNNING",
-            )
+            task_arns = self._list_tasks_paginated("RUNNING")
+            task_arns.extend(self._list_tasks_paginated("PENDING"))
 
-            if not response["taskArns"]:
+            if not task_arns:
                 return SandboxStatusResponse(
                     sandbox_id=sandbox_id,
                     status="stopped",
                 )
 
-            # Describe tasks to find our sandbox
-            tasks_response = self.ecs_client.describe_tasks(
-                cluster=settings.ecs_cluster_name,
-                tasks=response["taskArns"],
-            )
+            # Describe tasks in chunks and include tags for ownership checks.
+            tasks: list[dict] = []
+            for index in range(0, len(task_arns), 100):
+                chunk = task_arns[index:index + 100]
+                tasks_response = self.ecs_client.describe_tasks(
+                    cluster=settings.ecs_cluster_name,
+                    tasks=chunk,
+                    include=["TAGS"],
+                )
+                tasks.extend(tasks_response.get("tasks", []))
 
-            for task in tasks_response["tasks"]:
-                # Check tags for matching sandbox ID
+            for task in tasks:
                 tags = {t["key"]: t["value"] for t in task.get("tags", [])}
-                if tags.get("SandboxId") == sandbox_id:
+                if tags.get("SandboxId") == sandbox_id and tags.get("UserId") == user_id:
                     # Get public IP
                     public_ip = None
                     attachments = task.get("attachments", [])
@@ -321,11 +332,7 @@ class SandboxService:
         try:
             task_arns: set[str] = set()
             for desired_status in ("RUNNING", "PENDING"):
-                response = self.ecs_client.list_tasks(
-                    cluster=settings.ecs_cluster_name,
-                    desiredStatus=desired_status,
-                )
-                task_arns.update(response.get("taskArns", []))
+                task_arns.update(self._list_tasks_paginated(desired_status))
 
             for task_arn in task_arns:
                 tags_response = self.ecs_client.list_tags_for_resource(resourceArn=task_arn)
@@ -345,29 +352,26 @@ class SandboxService:
             logger.error("Failed to stop tasks by scan id", scan_id=scan_id, error=str(e))
         return stopped
 
-    async def destroy_sandbox(self, sandbox_id: str) -> bool:
+    async def destroy_sandbox(self, sandbox_id: str, user_id: str) -> bool:
         """
         Stop and clean up a sandbox.
         """
         try:
-            # Find and stop the task
-            response = self.ecs_client.list_tasks(
-                cluster=settings.ecs_cluster_name,
-                desiredStatus="RUNNING",
-            )
+            task_arns: set[str] = set()
+            for desired_status in ("RUNNING", "PENDING"):
+                task_arns.update(self._list_tasks_paginated(desired_status))
 
-            for task_arn in response.get("taskArns", []):
-                # Check if this is our sandbox
+            for task_arn in task_arns:
                 tags_response = self.ecs_client.list_tags_for_resource(resourceArn=task_arn)
                 tags = {t["key"]: t["value"] for t in tags_response.get("tags", [])}
 
-                if tags.get("SandboxId") == sandbox_id:
+                if tags.get("SandboxId") == sandbox_id and tags.get("UserId") == user_id:
                     self.ecs_client.stop_task(
                         cluster=settings.ecs_cluster_name,
                         task=task_arn,
                         reason="Sandbox destroyed by user",
                     )
-                    logger.info("Sandbox destroyed", sandbox_id=sandbox_id)
+                    logger.info("Sandbox destroyed", sandbox_id=sandbox_id, user_id=user_id)
                     return True
 
             return False
