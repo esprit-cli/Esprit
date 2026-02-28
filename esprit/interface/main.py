@@ -139,6 +139,28 @@ def _esprit_cloud_block_reason() -> str | None:
     return "Esprit Cloud access is unavailable for this account."
 
 
+def _cleanup_orphaned_cloud_sandboxes(console: Console) -> None:
+    """Best-effort cleanup for cloud sandboxes left by abrupt previous exits."""
+    from esprit.auth.credentials import get_auth_token
+    from esprit.runtime.cloud_runtime import CloudRuntime
+
+    access_token = get_auth_token()
+    if not access_token:
+        return
+
+    api_base = os.getenv("ESPRIT_API_URL", "https://esprit.dev/api/v1")
+    try:
+        cleaned = asyncio.run(CloudRuntime.cleanup_stale_sandboxes(access_token, api_base))
+    except Exception:  # noqa: BLE001
+        logging.debug("Failed to run stale cloud sandbox cleanup", exc_info=True)
+        return
+
+    if cleaned > 0:
+        suffix = "sandbox" if cleaned == 1 else "sandboxes"
+        console.print(f"[dim]Cleaned up {cleaned} stale cloud {suffix} from previous runs.[/]")
+        console.print()
+
+
 def validate_environment() -> None:  # noqa: PLR0912, PLR0915
     from esprit.llm.config import DEFAULT_MODEL
 
@@ -1565,6 +1587,8 @@ def main() -> None:
         if configured_model.lower().startswith("bedrock/"):
             os.environ["ESPRIT_LLM"] = "esprit/default"
             Config.save_current()
+
+        _cleanup_orphaned_cloud_sandboxes(console)
 
         console.print("[green]\u2713[/] Using Esprit Cloud (no Docker required)")
 

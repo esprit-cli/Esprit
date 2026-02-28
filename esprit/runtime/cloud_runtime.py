@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
+import time
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -14,6 +16,8 @@ from .runtime import AbstractRuntime, SandboxInfo
 
 _DEFAULT_TIMEOUT_SECONDS = 30
 _DEFAULT_CLOUD_TOOL_PORT = 443
+_STATE_FILE_ENV = "ESPRIT_CLOUD_SANDBOX_STATE_FILE"
+_DEFAULT_STATE_FILE = Path.home() / ".esprit" / "state" / "cloud_sandboxes.json"
 
 
 class CloudRuntime(AbstractRuntime):
@@ -29,6 +33,138 @@ class CloudRuntime(AbstractRuntime):
         self.access_token = access_token
         self.api_base = api_base.rstrip("/")
         self._sandboxes: dict[str, dict[str, Any]] = {}
+
+    @classmethod
+    def _state_file_path(cls) -> Path:
+        override = (os.getenv(_STATE_FILE_ENV) or "").strip()
+        if override:
+            return Path(override).expanduser()
+        return _DEFAULT_STATE_FILE
+
+    @classmethod
+    def _load_tracked_sandboxes(cls) -> list[dict[str, str]]:
+        path = cls._state_file_path()
+        try:
+            if not path.exists():
+                return []
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001
+            return []
+
+        if not isinstance(payload, dict):
+            return []
+        sandboxes = payload.get("sandboxes")
+        if not isinstance(sandboxes, list):
+            return []
+
+        tracked: list[dict[str, str]] = []
+        for item in sandboxes:
+            if not isinstance(item, dict):
+                continue
+            sandbox_id = str(item.get("sandbox_id") or "").strip()
+            api_base = str(item.get("api_base") or "").strip().rstrip("/")
+            if not sandbox_id or not api_base:
+                continue
+            tracked.append(
+                {
+                    "sandbox_id": sandbox_id,
+                    "api_base": api_base,
+                    "created_at": str(item.get("created_at") or ""),
+                }
+            )
+        return tracked
+
+    @classmethod
+    def _save_tracked_sandboxes(cls, entries: list[dict[str, str]]) -> None:
+        path = cls._state_file_path()
+        payload = {"version": 1, "sandboxes": entries}
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp_path = path.with_suffix(path.suffix + ".tmp")
+            tmp_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+            tmp_path.replace(path)
+        except Exception:  # noqa: BLE001
+            # Best effort only; cleanup still works for current process state.
+            return
+
+    def _track_sandbox(self, sandbox_id: str) -> None:
+        sandbox_id = (sandbox_id or "").strip()
+        if not sandbox_id:
+            return
+
+        existing = self._load_tracked_sandboxes()
+        filtered = [
+            item
+            for item in existing
+            if not (
+                item.get("sandbox_id") == sandbox_id and item.get("api_base") == self.api_base
+            )
+        ]
+        filtered.append(
+            {
+                "sandbox_id": sandbox_id,
+                "api_base": self.api_base,
+                "created_at": str(int(time.time())),
+            }
+        )
+        self._save_tracked_sandboxes(filtered)
+
+    def _untrack_sandbox(self, sandbox_id: str) -> None:
+        sandbox_id = (sandbox_id or "").strip()
+        if not sandbox_id:
+            return
+        existing = self._load_tracked_sandboxes()
+        filtered = [
+            item
+            for item in existing
+            if not (
+                item.get("sandbox_id") == sandbox_id and item.get("api_base") == self.api_base
+            )
+        ]
+        self._save_tracked_sandboxes(filtered)
+
+    @classmethod
+    async def cleanup_stale_sandboxes(cls, access_token: str, api_base: str) -> int:
+        """Best-effort cleanup for sandboxes left by abrupt process termination."""
+        normalized_api_base = (api_base or "").strip().rstrip("/")
+        if not access_token or not normalized_api_base:
+            return 0
+
+        tracked = cls._load_tracked_sandboxes()
+        if not tracked:
+            return 0
+
+        remaining: list[dict[str, str]] = []
+        cleaned = 0
+        headers = {"Authorization": f"Bearer {access_token}"}
+        timeout = httpx.Timeout(_DEFAULT_TIMEOUT_SECONDS, connect=10)
+
+        async with httpx.AsyncClient(timeout=timeout, trust_env=False) as client:
+            for item in tracked:
+                sandbox_id = str(item.get("sandbox_id") or "").strip()
+                entry_api_base = str(item.get("api_base") or "").strip().rstrip("/")
+                if not sandbox_id or not entry_api_base:
+                    continue
+
+                if entry_api_base != normalized_api_base:
+                    remaining.append(item)
+                    continue
+
+                try:
+                    response = await client.delete(
+                        f"{normalized_api_base}/sandbox/{sandbox_id}",
+                        headers=headers,
+                    )
+                    if response.status_code in {200, 202, 204, 404}:
+                        cleaned += 1
+                        continue
+                except httpx.RequestError:
+                    pass
+
+                remaining.append(item)
+
+        cls._save_tracked_sandboxes(remaining)
+        return cleaned
 
     @staticmethod
     def _sanitize_local_sources(
@@ -180,6 +316,7 @@ class CloudRuntime(AbstractRuntime):
             "tool_server_port": tool_server_port,
             "agent_id": agent_id,
         }
+        self._track_sandbox(sandbox_id)
 
         return {
             "workspace_id": sandbox_id,
@@ -230,6 +367,7 @@ class CloudRuntime(AbstractRuntime):
             pass
         finally:
             self._sandboxes.pop(container_id, None)
+            self._untrack_sandbox(container_id)
 
     async def _cleanup_all(self, sandbox_ids: list[str]) -> None:
         for sandbox_id in sandbox_ids:
