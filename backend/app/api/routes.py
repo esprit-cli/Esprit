@@ -1267,7 +1267,7 @@ async def get_patch_url(
     Get a presigned URL to download the patch file for a completed scan.
 
     The patch contains all file changes made during the scan.
-    Only available for local_upload scans after completion.
+    Available for white-box scans where code was available in the sandbox.
     """
     import boto3
     from botocore.config import Config
@@ -1293,8 +1293,8 @@ async def get_patch_url(
     if not settings.s3_bucket:
         return PatchUrlResponse(download_url=None, has_patch=False)
 
-    # Path includes user_id for isolation (matches sandbox_service.py)
-    patch_key = f"patches/{user.sub}/{scan_id}.patch"
+    # Prefer user-isolated key path; fallback to legacy path for older scans.
+    patch_keys = [f"patches/{user.sub}/{scan_id}.patch", f"patches/{scan_id}.patch"]
 
     try:
         s3_client = boto3.client(
@@ -1305,20 +1305,28 @@ async def get_patch_url(
             config=Config(signature_version="s3v4"),
         )
 
-        # Check if patch exists
-        try:
-            s3_client.head_object(Bucket=settings.s3_bucket, Key=patch_key)
-        except ClientError as e:
-            if e.response["Error"]["Code"] == "404":
-                return PatchUrlResponse(download_url=None, has_patch=False)
-            raise
+        resolved_patch_key: str | None = None
+        for patch_key in patch_keys:
+            try:
+                s3_client.head_object(Bucket=settings.s3_bucket, Key=patch_key)
+            except ClientError as e:
+                code = str(e.response.get("Error", {}).get("Code", ""))
+                if code in {"404", "NoSuchKey", "NotFound"}:
+                    continue
+                raise
+            else:
+                resolved_patch_key = patch_key
+                break
+
+        if not resolved_patch_key:
+            return PatchUrlResponse(download_url=None, has_patch=False)
 
         # Generate presigned URL for GET (download)
         download_url = s3_client.generate_presigned_url(
             "get_object",
             Params={
                 "Bucket": settings.s3_bucket,
-                "Key": patch_key,
+                "Key": resolved_patch_key,
             },
             ExpiresIn=3600,  # 1 hour
         )

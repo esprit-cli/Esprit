@@ -206,6 +206,10 @@ class SandboxService:
             # Use the sandbox task definition for scanning
             # Container name must match what's in Terraform task definition
             container_name = "sandbox"
+            patchable_target_types = {"repository", "public_repository", "local_upload"}
+            patch_s3_key = (
+                f"patches/{user_id}/{scan_id}.patch" if target_type in patchable_target_types else ""
+            )
 
             response = self.ecs_client.run_task(
                 cluster=settings.ecs_cluster_name,
@@ -252,7 +256,7 @@ class SandboxService:
                                 # S3 configuration for local_upload targets (paths include user_id for isolation)
                                 {"name": "S3_BUCKET", "value": settings.s3_bucket or ""},
                                 {"name": "UPLOAD_S3_KEY", "value": f"uploads/{user_id}/{scan_id}.tar.gz" if target_type == "local_upload" else ""},
-                                {"name": "PATCH_S3_KEY", "value": f"patches/{user_id}/{scan_id}.patch" if target_type == "local_upload" else ""},
+                                {"name": "PATCH_S3_KEY", "value": patch_s3_key},
                             ],
                         }
                     ]
