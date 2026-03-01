@@ -12,8 +12,8 @@ def test_launchpad_has_compact_aligned_layout_rules() -> None:
     assert "content-align: left middle;" in styles
     assert "text-align: left;" in styles
     assert "#launchpad_menu {" in styles
-    assert "max-height: 16;" in styles
-    assert "overflow-y: auto;" in styles
+    assert "max-height: 18;" in styles
+    assert "scrollbar-size-vertical: 0;" in styles
     assert "#launchpad_input {" in styles
     assert "height: 3;" in styles
     assert "min-height: 3;" in styles

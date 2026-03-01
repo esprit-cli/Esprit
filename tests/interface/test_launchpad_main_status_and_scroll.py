@@ -1,4 +1,3 @@
-from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from esprit.interface.launchpad import LaunchpadApp, _MenuEntry
@@ -51,42 +50,28 @@ def test_main_entries_show_current_scan_mode_hint() -> None:
     assert hints["scan_mode"] == "selected: quick"
 
 
-def test_menu_scroll_target_calculation() -> None:
-    assert LaunchpadApp._get_menu_scroll_target(selected_index=9, top_row=0, visible_rows=4) == 6
-    assert LaunchpadApp._get_menu_scroll_target(selected_index=1, top_row=3, visible_rows=4) == 1
-    assert LaunchpadApp._get_menu_scroll_target(selected_index=4, top_row=2, visible_rows=4) is None
-
-
-def test_ensure_selected_entry_visible_scrolls_to_selection() -> None:
+def test_render_menu_scrolls_top_row_to_keep_selected_entry_visible() -> None:
     app = LaunchpadApp()
     app._current_entries = [_MenuEntry(f"model:{i}", f"Model {i}") for i in range(20)]
-    app.selected_index = 10
-
     menu_widget = MagicMock()
-    menu_widget.content_region = SimpleNamespace(height=0)
-    menu_widget.size.height = 6
-    menu_widget.scroll_y = 0
-    menu_widget.max_scroll_y = 30
+    app.query_one = lambda _selector, _widget_type=None: menu_widget  # type: ignore[method-assign]
 
-    app._ensure_selected_entry_visible(menu_widget)
+    app._MENU_VISIBLE_ROWS = 4
+    app._menu_top_row = 0
 
-    menu_widget.scroll_to.assert_called_once_with(y=7, animate=False)
+    app.selected_index = 9
+    app._render_menu()
+    assert app._menu_top_row == 6
 
+    app._menu_top_row = 3
+    app.selected_index = 1
+    app._render_menu()
+    assert app._menu_top_row == 1
 
-def test_ensure_selected_entry_visible_skips_scroll_when_visible() -> None:
-    app = LaunchpadApp()
-    app._current_entries = [_MenuEntry(f"model:{i}", f"Model {i}") for i in range(20)]
-    app.selected_index = 3
-
-    menu_widget = MagicMock()
-    menu_widget.content_region = SimpleNamespace(height=0)
-    menu_widget.size.height = 6
-    menu_widget.scroll_y = 0
-    menu_widget.max_scroll_y = 30
-
-    app._ensure_selected_entry_visible(menu_widget)
-
-    menu_widget.scroll_to.assert_not_called()
+    app._menu_top_row = 2
+    app.selected_index = 4
+    app._render_menu()
+    assert app._menu_top_row == 2
 
 
 def test_select_entry_by_key_sets_selected_index() -> None:

@@ -47,7 +47,7 @@ def test_set_theme_persists_only_when_changed(monkeypatch) -> None:
 
     app = LaunchpadApp()
     messages: list[str] = []
-    app._set_status = messages.append
+    app._set_status = lambda message, _status_type="info": messages.append(message)
 
     changed = app._set_theme("glacier", persist=True)
     unchanged = app._set_theme("glacier", persist=True)

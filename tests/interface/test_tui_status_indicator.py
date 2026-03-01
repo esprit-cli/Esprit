@@ -25,6 +25,7 @@ def test_running_status_text_includes_spinner_indicator() -> None:
     app = EspritTUIApp.__new__(EspritTUIApp)
     app._spinner_frame_index = 0
     app.tracer = SimpleNamespace(compacting_agents=set())
+    app._streaming_start_time = {}
     app._agent_has_real_activity = lambda _agent_id: False
     app._get_animated_verb_text = lambda _agent_id, verb: Text(verb)
     app._sweep_colors = []
