@@ -57,6 +57,8 @@ class BaseAgent(metaclass=AgentMeta):
     default_llm_config: LLMConfig | None = None
     _DEFAULT_LLM_AUTO_RESUME_ATTEMPTS = 2
     _DEFAULT_LLM_AUTO_RESUME_COOLDOWN_SECONDS = 12.0
+    _DEFAULT_NON_INTERACTIVE_WAIT_TIMEOUT_SECONDS = 90.0
+    _DEFAULT_NON_INTERACTIVE_WAIT_RESUME_LIMIT = 4
     _RETRYABLE_LLM_STATUS_CODES = {408, 409, 425, 429, 500, 502, 503, 504}
 
     def __init__(self, config: dict[str, Any]):
@@ -108,6 +110,39 @@ class BaseAgent(metaclass=AgentMeta):
             )
         except (TypeError, ValueError):
             self._llm_auto_resume_cooldown = self._DEFAULT_LLM_AUTO_RESUME_COOLDOWN_SECONDS
+        non_interactive_wait_timeout = config.get("non_interactive_wait_timeout_seconds")
+        if non_interactive_wait_timeout is None:
+            non_interactive_wait_timeout = Config.get("esprit_non_interactive_wait_timeout_seconds")
+        non_interactive_wait_resume_limit = config.get("non_interactive_wait_resume_limit")
+        if non_interactive_wait_resume_limit is None:
+            non_interactive_wait_resume_limit = Config.get(
+                "esprit_non_interactive_wait_resume_limit"
+            )
+        try:
+            self._non_interactive_wait_timeout_seconds = max(
+                5.0,
+                float(
+                    non_interactive_wait_timeout
+                    or self._DEFAULT_NON_INTERACTIVE_WAIT_TIMEOUT_SECONDS
+                ),
+            )
+        except (TypeError, ValueError):
+            self._non_interactive_wait_timeout_seconds = (
+                self._DEFAULT_NON_INTERACTIVE_WAIT_TIMEOUT_SECONDS
+            )
+        try:
+            self._non_interactive_wait_resume_limit = max(
+                1,
+                int(
+                    non_interactive_wait_resume_limit
+                    or self._DEFAULT_NON_INTERACTIVE_WAIT_RESUME_LIMIT
+                ),
+            )
+        except (TypeError, ValueError):
+            self._non_interactive_wait_resume_limit = (
+                self._DEFAULT_NON_INTERACTIVE_WAIT_RESUME_LIMIT
+            )
+        self._non_interactive_wait_resumes = 0
         self._llm_auto_resume_attempts = 0
         self._last_llm_failure_retryable = False
         self._last_llm_error_status_code: int | None = None
@@ -243,6 +278,7 @@ class BaseAgent(metaclass=AgentMeta):
                 self._current_task = iteration_task
                 should_finish = await iteration_task
                 self._current_task = None
+                self._non_interactive_wait_resumes = 0
                 self._llm_auto_resume_attempts = 0
                 self._last_llm_failure_retryable = False
                 self._last_llm_error_status_code = None
@@ -321,9 +357,54 @@ class BaseAgent(metaclass=AgentMeta):
             self._mark_agent_running()
             return
 
-        if self.state.has_waiting_timeout():
+        wait_timeout_seconds = self._get_wait_timeout_seconds()
+        if self.state.has_waiting_timeout(timeout_seconds=wait_timeout_seconds):
             self.state.resume_from_waiting()
-            self.state.add_message("user", "Waiting timeout reached. Resuming execution.")
+
+            if self._is_root_non_interactive_wait():
+                if self._has_active_subagents():
+                    self._non_interactive_wait_resumes = 0
+                    self.state.add_message(
+                        "user",
+                        (
+                            "System note: Sub-agents are still active. Resume coordination, "
+                            "avoid idle loops, and call finish_scan once all tasks are complete."
+                        ),
+                    )
+                else:
+                    self._non_interactive_wait_resumes += 1
+                    attempt = self._non_interactive_wait_resumes
+                    if attempt > self._non_interactive_wait_resume_limit:
+                        error_msg = (
+                            "Scan stalled in non-interactive mode: root agent kept waiting "
+                            "without active sub-agents or incoming messages."
+                        )
+                        self.state.add_error(error_msg)
+                        self.state.set_completed({"success": False, "error": error_msg})
+                        with contextlib.suppress(Exception):
+                            from esprit.telemetry.tracer import get_global_tracer
+
+                            tracer = get_global_tracer()
+                            if tracer:
+                                tracer.update_agent_status(
+                                    self.state.agent_id,
+                                    "failed",
+                                    error_msg,
+                                )
+                        return
+
+                    self.state.add_message(
+                        "user",
+                        (
+                            "System note: No new messages and no active sub-agents were detected "
+                            f"after {int(wait_timeout_seconds)}s. If work is complete, call "
+                            "finish_scan now. Otherwise, create/coordinate required sub-agents "
+                            f"immediately. Auto-resume {attempt}/"
+                            f"{self._non_interactive_wait_resume_limit}."
+                        ),
+                    )
+            else:
+                self.state.add_message("user", "Waiting timeout reached. Resuming execution.")
             self._mark_agent_running()
             return
 
@@ -344,6 +425,30 @@ class BaseAgent(metaclass=AgentMeta):
                 _agent_graph["nodes"][self.state.agent_id].pop("waiting_reason", None)
         except (ImportError, KeyError):
             pass
+
+    def _is_root_non_interactive_wait(self) -> bool:
+        return self.non_interactive and self.state.parent_id is None and not self.state.llm_failed
+
+    def _get_wait_timeout_seconds(self) -> float:
+        if self._is_root_non_interactive_wait():
+            return self._non_interactive_wait_timeout_seconds
+        return 600.0
+
+    def _has_active_subagents(self) -> bool:
+        try:
+            from esprit.tools.agents_graph.agents_graph_actions import _agent_graph
+
+            for agent_id, node in _agent_graph.get("nodes", {}).items():
+                if agent_id == self.state.agent_id:
+                    continue
+
+                status = str(node.get("status", "")).lower()
+                if status in {"running", "waiting", "stopping"}:
+                    return True
+        except (ImportError, AttributeError, TypeError):
+            return False
+
+        return False
 
     @classmethod
     def _is_retryable_llm_status_code(cls, status_code: int | None) -> bool:
@@ -673,6 +778,7 @@ class BaseAgent(metaclass=AgentMeta):
                         message["read"] = True
 
                 if has_new_messages and not state.is_waiting_for_input():
+                    self._non_interactive_wait_resumes = 0
                     from esprit.telemetry.tracer import get_global_tracer
 
                     tracer = get_global_tracer()

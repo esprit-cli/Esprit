@@ -1,5 +1,6 @@
 """Tests for BaseAgent native tool-call payload construction."""
 
+import asyncio
 from datetime import UTC, datetime, timedelta
 
 from esprit.agents.base_agent import BaseAgent
@@ -84,6 +85,14 @@ class TestWaitingResumePolicy:
 
         assert state.has_waiting_timeout() is False
 
+    def test_waiting_timeout_accepts_custom_threshold(self) -> None:
+        state = AgentState(parent_id="agent_parent")
+        state.enter_waiting_state(llm_failed=False)
+        state.waiting_start_time = datetime.now(UTC) - timedelta(seconds=20)
+
+        assert state.has_waiting_timeout(timeout_seconds=10) is True
+        assert state.has_waiting_timeout(timeout_seconds=40) is False
+
 
 class TestLLMAutoResumePolicy:
     @staticmethod
@@ -136,3 +145,70 @@ class TestLLMAutoResumePolicy:
         agent._llm_auto_resume_attempts = 2
 
         assert agent._should_auto_resume_llm_failure() is False
+
+
+class TestNonInteractiveWaitGuard:
+    @staticmethod
+    def _make_agent(state: AgentState) -> BaseAgent:
+        agent = BaseAgent.__new__(BaseAgent)
+        agent.state = state
+        agent.non_interactive = True
+        agent._force_stop = False
+        agent._non_interactive_wait_timeout_seconds = 5.0
+        agent._non_interactive_wait_resume_limit = 2
+        agent._non_interactive_wait_resumes = 0
+        agent._last_llm_failure_retryable = False
+        agent._llm_auto_resume_attempts = 0
+        agent._max_llm_auto_resume_attempts = 2
+        agent._llm_auto_resume_cooldown = 10.0
+        agent._last_llm_error_status_code = None
+        agent._mark_agent_running = lambda: None
+        return agent
+
+    def test_root_non_interactive_uses_custom_wait_timeout(self) -> None:
+        state = AgentState(parent_id=None)
+        state.enter_waiting_state(llm_failed=False)
+        agent = self._make_agent(state)
+
+        assert agent._get_wait_timeout_seconds() == 5.0
+
+    def test_root_non_interactive_stall_fails_after_resume_limit(self) -> None:
+        state = AgentState(parent_id=None)
+        agent = self._make_agent(state)
+        agent._has_active_subagents = lambda: False
+
+        # First timeout -> auto-resume
+        state.enter_waiting_state(llm_failed=False)
+        state.waiting_start_time = datetime.now(UTC) - timedelta(seconds=10)
+        asyncio.run(agent._wait_for_input())
+        assert state.completed is False
+        assert agent._non_interactive_wait_resumes == 1
+
+        # Second timeout -> still within limit
+        state.enter_waiting_state(llm_failed=False)
+        state.waiting_start_time = datetime.now(UTC) - timedelta(seconds=10)
+        asyncio.run(agent._wait_for_input())
+        assert state.completed is False
+        assert agent._non_interactive_wait_resumes == 2
+
+        # Third timeout -> exceeds limit and fails scan deterministically
+        state.enter_waiting_state(llm_failed=False)
+        state.waiting_start_time = datetime.now(UTC) - timedelta(seconds=10)
+        asyncio.run(agent._wait_for_input())
+        assert state.completed is True
+        assert state.final_result is not None
+        assert state.final_result["success"] is False
+        assert "stalled in non-interactive mode" in state.final_result["error"]
+
+    def test_active_subagents_reset_stall_counter(self) -> None:
+        state = AgentState(parent_id=None)
+        agent = self._make_agent(state)
+        agent._non_interactive_wait_resumes = 2
+        agent._has_active_subagents = lambda: True
+
+        state.enter_waiting_state(llm_failed=False)
+        state.waiting_start_time = datetime.now(UTC) - timedelta(seconds=10)
+        asyncio.run(agent._wait_for_input())
+
+        assert agent._non_interactive_wait_resumes == 0
+        assert state.completed is False
