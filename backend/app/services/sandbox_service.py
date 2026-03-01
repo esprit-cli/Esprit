@@ -4,6 +4,7 @@ Sandbox management service for AWS ECS.
 Handles creation, monitoring, and destruction of scan sandboxes.
 """
 
+import asyncio
 import hashlib
 import hmac
 import uuid
@@ -24,6 +25,8 @@ settings = get_settings()
 _TOOL_SERVER_CANDIDATE_PORTS = (48081, 5000)
 _TOOL_SERVER_TIMEOUT = httpx.Timeout(150.0, connect=5.0)
 _TOOL_SERVER_PROBE_TIMEOUT = httpx.Timeout(2.5, connect=1.0)
+_TOOL_SERVER_READY_ATTEMPTS = 8
+_TOOL_SERVER_READY_RETRY_SECONDS = 1.5
 
 
 class SandboxService:
@@ -172,6 +175,24 @@ class SandboxService:
             raise RuntimeError("Tool server is unavailable for this sandbox.")
         return tool_server_url
 
+    async def _resolve_tool_server_base_url_with_retry(
+        self,
+        sandbox_id: str,
+        user_id: str,
+    ) -> str:
+        last_error: RuntimeError | None = None
+        for attempt in range(1, _TOOL_SERVER_READY_ATTEMPTS + 1):
+            try:
+                return await self._resolve_tool_server_base_url(sandbox_id, user_id)
+            except RuntimeError as exc:
+                last_error = exc
+                if attempt >= _TOOL_SERVER_READY_ATTEMPTS:
+                    break
+                await asyncio.sleep(_TOOL_SERVER_READY_RETRY_SECONDS)
+        if last_error is not None:
+            raise last_error
+        raise RuntimeError("Tool server is unavailable for this sandbox.")
+
     async def create_sandbox(
         self,
         request: SandboxCreateRequest,
@@ -264,12 +285,19 @@ class SandboxService:
                     status="stopped",
                 )
 
-            task, _private_ip, public_ip = task_match
-            status = "running" if str(task.get("lastStatus", "")).upper() == "RUNNING" else "creating"
+            task, private_ip, public_ip = task_match
+            status = "creating"
+            tool_server_url: str | None = None
+            if str(task.get("lastStatus", "")).upper() == "RUNNING":
+                # Only mark the sandbox as running once the tool server is actually reachable.
+                resolved = await self._probe_tool_server_base_url(private_ip, public_ip)
+                if resolved:
+                    status = "running"
+                    tool_server_url = self._proxy_tool_server_url(sandbox_id)
             return SandboxStatusResponse(
                 sandbox_id=sandbox_id,
                 status=status,
-                tool_server_url=self._proxy_tool_server_url(sandbox_id) if status == "running" else None,
+                tool_server_url=tool_server_url,
                 public_ip=public_ip,
                 started_at=task.get("startedAt"),
             )
@@ -427,7 +455,7 @@ class SandboxService:
         if not isinstance(kwargs, dict):
             raise ValueError("kwargs must be an object.")
 
-        tool_server_url = await self._resolve_tool_server_base_url(sandbox_id, user_id)
+        tool_server_url = await self._resolve_tool_server_base_url_with_retry(sandbox_id, user_id)
         headers = {
             "Authorization": f"Bearer {self._tool_server_token_for_sandbox(sandbox_id)}",
             "Content-Type": "application/json",
@@ -457,7 +485,7 @@ class SandboxService:
         user_id: str,
     ) -> dict[str, Any]:
         """Proxy edit diff retrieval from the sandbox tool server."""
-        tool_server_url = await self._resolve_tool_server_base_url(sandbox_id, user_id)
+        tool_server_url = await self._resolve_tool_server_base_url_with_retry(sandbox_id, user_id)
         headers = {
             "Authorization": f"Bearer {self._tool_server_token_for_sandbox(sandbox_id)}",
         }
