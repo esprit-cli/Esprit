@@ -235,7 +235,6 @@ class SandboxService:
             return SandboxCreateResponse(
                 sandbox_id=sandbox_id,
                 status="creating",
-                tool_server_url=self._proxy_tool_server_url(sandbox_id),
                 expires_at=datetime.now(tz=timezone.utc) + timedelta(hours=2),
             )
 
@@ -270,7 +269,7 @@ class SandboxService:
             return SandboxStatusResponse(
                 sandbox_id=sandbox_id,
                 status=status,
-                tool_server_url=self._proxy_tool_server_url(sandbox_id),
+                tool_server_url=self._proxy_tool_server_url(sandbox_id) if status == "running" else None,
                 public_ip=public_ip,
                 started_at=task.get("startedAt"),
             )
