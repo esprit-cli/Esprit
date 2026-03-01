@@ -156,6 +156,12 @@ _llm_quota_locks: Dict[str, asyncio.Lock] = {}
 _llm_quota_locks_guard = asyncio.Lock()
 
 
+class SandboxToolExecutionRequest(BaseModel):
+    agent_id: str
+    tool_name: str
+    kwargs: Dict[str, Any] = {}
+
+
 async def _get_llm_quota_lock(user_id: str) -> asyncio.Lock:
     async with _llm_quota_locks_guard:
         lock = _llm_quota_locks.get(user_id)
@@ -368,6 +374,59 @@ async def destroy_sandbox(
             detail="Sandbox not found or already stopped",
         )
     return {"status": "destroyed"}
+
+
+@router.post("/sandbox/{sandbox_id}/execute")
+async def execute_sandbox_tool(
+    sandbox_id: str,
+    payload: SandboxToolExecutionRequest,
+    user: CurrentUser,
+):
+    """Proxy tool execution into a running sandbox owned by the user."""
+    try:
+        return await sandbox_service.execute_sandbox_tool(
+            sandbox_id=sandbox_id,
+            user_id=user.sub,
+            payload=payload.model_dump(),
+        )
+    except PermissionError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+        ) from exc
+
+
+@router.get("/sandbox/{sandbox_id}/diffs")
+async def get_sandbox_diffs(
+    sandbox_id: str,
+    user: CurrentUser,
+):
+    """Proxy edit diff retrieval from a running sandbox."""
+    try:
+        return await sandbox_service.fetch_sandbox_diffs(
+            sandbox_id=sandbox_id,
+            user_id=user.sub,
+        )
+    except PermissionError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        ) from exc
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+        ) from exc
 
 
 # LLM Proxy endpoints

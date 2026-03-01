@@ -155,3 +155,76 @@ def test_sandbox_create_free_claim_enforced(monkeypatch) -> None:
     assert second.status_code == 402
     assert second.json()["detail"] == "Free scan already used."
     app.dependency_overrides.clear()
+
+
+def test_sandbox_execute_proxy_success(monkeypatch) -> None:
+    async def fake_user() -> auth_module.TokenPayload:
+        return _fake_user()
+
+    async def fake_execute(*_args, **_kwargs):
+        return {"result": {"stdout": "ok"}, "error": None}
+
+    app.dependency_overrides[auth_module.get_current_user] = fake_user
+    monkeypatch.setattr(routes.sandbox_service, "execute_sandbox_tool", fake_execute)
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/v1/sandbox/sandbox-123/execute",
+            headers={"Authorization": "Bearer ignored.for.override"},
+            json={
+                "agent_id": "agent-1",
+                "tool_name": "terminal_execute",
+                "kwargs": {"command": "pwd"},
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {"result": {"stdout": "ok"}, "error": None}
+    app.dependency_overrides.clear()
+
+
+def test_sandbox_execute_proxy_not_found(monkeypatch) -> None:
+    async def fake_user() -> auth_module.TokenPayload:
+        return _fake_user()
+
+    async def fake_execute(*_args, **_kwargs):
+        raise PermissionError("Sandbox not found or access denied.")
+
+    app.dependency_overrides[auth_module.get_current_user] = fake_user
+    monkeypatch.setattr(routes.sandbox_service, "execute_sandbox_tool", fake_execute)
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/v1/sandbox/sandbox-missing/execute",
+            headers={"Authorization": "Bearer ignored.for.override"},
+            json={
+                "agent_id": "agent-1",
+                "tool_name": "terminal_execute",
+                "kwargs": {"command": "pwd"},
+            },
+        )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Sandbox not found or access denied."
+    app.dependency_overrides.clear()
+
+
+def test_sandbox_diffs_proxy_success(monkeypatch) -> None:
+    async def fake_user() -> auth_module.TokenPayload:
+        return _fake_user()
+
+    async def fake_diffs(*_args, **_kwargs):
+        return {"edits": [], "count": 0}
+
+    app.dependency_overrides[auth_module.get_current_user] = fake_user
+    monkeypatch.setattr(routes.sandbox_service, "fetch_sandbox_diffs", fake_diffs)
+
+    with TestClient(app) as client:
+        response = client.get(
+            "/api/v1/sandbox/sandbox-123/diffs",
+            headers={"Authorization": "Bearer ignored.for.override"},
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {"edits": [], "count": 0}
+    app.dependency_overrides.clear()

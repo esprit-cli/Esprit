@@ -4,10 +4,14 @@ Sandbox management service for AWS ECS.
 Handles creation, monitoring, and destruction of scan sandboxes.
 """
 
+import hashlib
+import hmac
 import uuid
 from datetime import datetime, timedelta, timezone
+from typing import Any
 
 import boto3
+import httpx
 import structlog
 from botocore.exceptions import ClientError
 
@@ -16,6 +20,10 @@ from app.models.schemas import SandboxCreateRequest, SandboxCreateResponse, Sand
 
 logger = structlog.get_logger()
 settings = get_settings()
+
+_TOOL_SERVER_CANDIDATE_PORTS = (48081, 5000)
+_TOOL_SERVER_TIMEOUT = httpx.Timeout(150.0, connect=5.0)
+_TOOL_SERVER_PROBE_TIMEOUT = httpx.Timeout(2.5, connect=1.0)
 
 
 class SandboxService:
@@ -34,6 +42,135 @@ class SandboxService:
             aws_access_key_id=settings.aws_access_key_id,
             aws_secret_access_key=settings.aws_secret_access_key,
         )
+
+    @staticmethod
+    def _tool_server_token_for_sandbox(sandbox_id: str) -> str:
+        secret = (
+            settings.auth_jwt_secret
+            or settings.supabase_jwt_secret
+            or settings.supabase_service_key
+            or "esprit-sandbox"
+        )
+        digest = hmac.new(
+            secret.encode("utf-8"),
+            sandbox_id.encode("utf-8"),
+            hashlib.sha256,
+        ).hexdigest()
+        return digest
+
+    @staticmethod
+    def _proxy_tool_server_url(sandbox_id: str) -> str:
+        return f"{settings.api_base_url.rstrip('/')}/sandbox/{sandbox_id}"
+
+    def _extract_network_interface_id(self, task: dict[str, Any]) -> str | None:
+        attachments = task.get("attachments", [])
+        for attachment in attachments:
+            if attachment.get("type") != "ElasticNetworkInterface":
+                continue
+            for detail in attachment.get("details", []):
+                if detail.get("name") == "networkInterfaceId":
+                    return str(detail.get("value") or "")
+        return None
+
+    def _get_task_ips(self, task: dict[str, Any]) -> tuple[str | None, str | None]:
+        eni_id = self._extract_network_interface_id(task)
+        if not eni_id:
+            return None, None
+
+        try:
+            eni_response = self.ec2_client.describe_network_interfaces(NetworkInterfaceIds=[eni_id])
+        except ClientError:
+            return None, None
+
+        interfaces = eni_response.get("NetworkInterfaces", [])
+        if not interfaces:
+            return None, None
+
+        first = interfaces[0]
+        private_ip = first.get("PrivateIpAddress")
+        public_ip = first.get("Association", {}).get("PublicIp")
+        return (
+            str(private_ip) if private_ip else None,
+            str(public_ip) if public_ip else None,
+        )
+
+    def _find_owned_sandbox_task(
+        self,
+        sandbox_id: str,
+        user_id: str,
+    ) -> tuple[dict[str, Any], str | None, str | None] | None:
+        task_arns = self._list_tasks_paginated("RUNNING")
+        task_arns.extend(self._list_tasks_paginated("PENDING"))
+
+        if not task_arns:
+            return None
+
+        tasks: list[dict[str, Any]] = []
+        for index in range(0, len(task_arns), 100):
+            chunk = task_arns[index:index + 100]
+            tasks_response = self.ecs_client.describe_tasks(
+                cluster=settings.ecs_cluster_name,
+                tasks=chunk,
+                include=["TAGS"],
+            )
+            tasks.extend(tasks_response.get("tasks", []))
+
+        for task in tasks:
+            tags = {t["key"]: t["value"] for t in task.get("tags", [])}
+            if tags.get("SandboxId") != sandbox_id or tags.get("UserId") != user_id:
+                continue
+            private_ip, public_ip = self._get_task_ips(task)
+            return task, private_ip, public_ip
+
+        return None
+
+    async def _probe_tool_server_base_url(
+        self,
+        private_ip: str | None,
+        public_ip: str | None,
+    ) -> str | None:
+        candidate_hosts: list[str] = []
+        if private_ip:
+            candidate_hosts.append(private_ip)
+        if public_ip and public_ip not in candidate_hosts:
+            candidate_hosts.append(public_ip)
+
+        if not candidate_hosts:
+            return None
+
+        async with httpx.AsyncClient(timeout=_TOOL_SERVER_PROBE_TIMEOUT, trust_env=False) as client:
+            for host in candidate_hosts:
+                for port in _TOOL_SERVER_CANDIDATE_PORTS:
+                    base_url = f"http://{host}:{port}"
+                    try:
+                        response = await client.get(f"{base_url}/health")
+                        if response.status_code != 200:
+                            continue
+                        payload = response.json()
+                        if str(payload.get("status", "")).lower() == "healthy":
+                            return base_url
+                    except (httpx.HTTPError, ValueError):
+                        continue
+
+        return None
+
+    async def _resolve_tool_server_base_url(
+        self,
+        sandbox_id: str,
+        user_id: str,
+    ) -> str:
+        task_match = self._find_owned_sandbox_task(sandbox_id, user_id)
+        if task_match is None:
+            raise PermissionError("Sandbox not found or access denied.")
+
+        task, private_ip, public_ip = task_match
+        if str(task.get("lastStatus", "")).upper() != "RUNNING":
+            raise RuntimeError("Sandbox is not running yet.")
+
+        tool_server_url = await self._probe_tool_server_base_url(private_ip, public_ip)
+        if not tool_server_url:
+            raise RuntimeError("Tool server is unavailable for this sandbox.")
+        return tool_server_url
 
     async def create_sandbox(
         self,
@@ -69,6 +206,7 @@ class SandboxService:
                                 {"name": "SCAN_TYPE", "value": request.scan_type},
                                 {"name": "USER_ID", "value": user_id},
                                 {"name": "SANDBOX_ID", "value": sandbox_id},
+                                {"name": "TOOL_SERVER_TOKEN", "value": self._tool_server_token_for_sandbox(sandbox_id)},
                                 # The sandbox will call back to our API for LLM requests
                                 {"name": "LLM_PROXY_URL", "value": f"{settings.api_base_url.rstrip('/')}/llm/generate"},
                                 # Optional test credentials for authenticated testing
@@ -97,6 +235,7 @@ class SandboxService:
             return SandboxCreateResponse(
                 sandbox_id=sandbox_id,
                 status="creating",
+                tool_server_url=self._proxy_tool_server_url(sandbox_id),
                 expires_at=datetime.now(tz=timezone.utc) + timedelta(hours=2),
             )
 
@@ -119,59 +258,21 @@ class SandboxService:
         Get the status of a sandbox.
         """
         try:
-            task_arns = self._list_tasks_paginated("RUNNING")
-            task_arns.extend(self._list_tasks_paginated("PENDING"))
-
-            if not task_arns:
+            task_match = self._find_owned_sandbox_task(sandbox_id, user_id)
+            if task_match is None:
                 return SandboxStatusResponse(
                     sandbox_id=sandbox_id,
                     status="stopped",
                 )
 
-            # Describe tasks in chunks and include tags for ownership checks.
-            tasks: list[dict] = []
-            for index in range(0, len(task_arns), 100):
-                chunk = task_arns[index:index + 100]
-                tasks_response = self.ecs_client.describe_tasks(
-                    cluster=settings.ecs_cluster_name,
-                    tasks=chunk,
-                    include=["TAGS"],
-                )
-                tasks.extend(tasks_response.get("tasks", []))
-
-            for task in tasks:
-                tags = {t["key"]: t["value"] for t in task.get("tags", [])}
-                if tags.get("SandboxId") == sandbox_id and tags.get("UserId") == user_id:
-                    # Get public IP
-                    public_ip = None
-                    attachments = task.get("attachments", [])
-                    for attachment in attachments:
-                        if attachment["type"] == "ElasticNetworkInterface":
-                            for detail in attachment.get("details", []):
-                                if detail["name"] == "networkInterfaceId":
-                                    eni_id = detail["value"]
-                                    # Get ENI details for public IP
-                                    eni_response = self.ec2_client.describe_network_interfaces(
-                                        NetworkInterfaceIds=[eni_id]
-                                    )
-                                    if eni_response["NetworkInterfaces"]:
-                                        association = eni_response["NetworkInterfaces"][0].get("Association", {})
-                                        public_ip = association.get("PublicIp")
-
-                    status = "running" if task["lastStatus"] == "RUNNING" else "creating"
-                    tool_server_url = f"http://{public_ip}:5000" if public_ip else None
-
-                    return SandboxStatusResponse(
-                        sandbox_id=sandbox_id,
-                        status=status,
-                        tool_server_url=tool_server_url,
-                        public_ip=public_ip,
-                        started_at=task.get("startedAt"),
-                    )
-
+            task, _private_ip, public_ip = task_match
+            status = "running" if str(task.get("lastStatus", "")).upper() == "RUNNING" else "creating"
             return SandboxStatusResponse(
                 sandbox_id=sandbox_id,
-                status="stopped",
+                status=status,
+                tool_server_url=self._proxy_tool_server_url(sandbox_id),
+                public_ip=public_ip,
+                started_at=task.get("startedAt"),
             )
 
         except ClientError as e:
@@ -241,6 +342,7 @@ class SandboxService:
                                 # Scan identification
                                 {"name": "SCAN_ID", "value": scan_id},
                                 {"name": "USER_ID", "value": user_id},
+                                {"name": "TOOL_SERVER_TOKEN", "value": self._tool_server_token_for_sandbox(scan_id)},
                                 # Target configuration
                                 {"name": "TARGET_TYPE", "value": target_type},
                                 {"name": "TARGET_VALUE", "value": target_value},
@@ -309,6 +411,73 @@ class SandboxService:
                 error=str(e),
             )
             raise
+
+    async def execute_sandbox_tool(
+        self,
+        sandbox_id: str,
+        user_id: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Proxy a tool execution request to the sandbox tool server."""
+        agent_id = str(payload.get("agent_id") or "").strip()
+        tool_name = str(payload.get("tool_name") or "").strip()
+        kwargs = payload.get("kwargs", {})
+
+        if not agent_id or not tool_name:
+            raise ValueError("agent_id and tool_name are required.")
+        if not isinstance(kwargs, dict):
+            raise ValueError("kwargs must be an object.")
+
+        tool_server_url = await self._resolve_tool_server_base_url(sandbox_id, user_id)
+        headers = {
+            "Authorization": f"Bearer {self._tool_server_token_for_sandbox(sandbox_id)}",
+            "Content-Type": "application/json",
+        }
+        request_body = {"agent_id": agent_id, "tool_name": tool_name, "kwargs": kwargs}
+
+        async with httpx.AsyncClient(timeout=_TOOL_SERVER_TIMEOUT, trust_env=False) as client:
+            try:
+                response = await client.post(
+                    f"{tool_server_url}/execute",
+                    json=request_body,
+                    headers=headers,
+                )
+                response.raise_for_status()
+            except httpx.HTTPStatusError as exc:
+                raise RuntimeError(
+                    f"Tool server returned HTTP {exc.response.status_code}"
+                ) from exc
+            except httpx.RequestError as exc:
+                raise RuntimeError(f"Tool server request failed: {exc}") from exc
+
+        return response.json()
+
+    async def fetch_sandbox_diffs(
+        self,
+        sandbox_id: str,
+        user_id: str,
+    ) -> dict[str, Any]:
+        """Proxy edit diff retrieval from the sandbox tool server."""
+        tool_server_url = await self._resolve_tool_server_base_url(sandbox_id, user_id)
+        headers = {
+            "Authorization": f"Bearer {self._tool_server_token_for_sandbox(sandbox_id)}",
+        }
+
+        async with httpx.AsyncClient(timeout=_TOOL_SERVER_TIMEOUT, trust_env=False) as client:
+            try:
+                response = await client.get(
+                    f"{tool_server_url}/diffs",
+                    headers=headers,
+                )
+                response.raise_for_status()
+            except httpx.HTTPStatusError as exc:
+                raise RuntimeError(
+                    f"Tool server returned HTTP {exc.response.status_code}"
+                ) from exc
+            except httpx.RequestError as exc:
+                raise RuntimeError(f"Tool server request failed: {exc}") from exc
+
+        return response.json()
 
     async def stop_task(self, task_arn: str) -> bool:
         """
