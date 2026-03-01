@@ -220,6 +220,9 @@ class SandboxService:
                     "containerOverrides": [
                         {
                             "name": "sandbox",
+                            # Keep cloud runtime sandboxes alive for interactive tool execution.
+                            # The scan-worker path uses launch_scan_task(), not create_sandbox().
+                            "command": ["tail", "-f", "/dev/null"],
                             "environment": [
                                 {"name": "SCAN_ID", "value": request.scan_id},
                                 {"name": "TARGET", "value": request.target},
