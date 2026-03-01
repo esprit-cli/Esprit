@@ -34,7 +34,7 @@ class GUIServer:
     # Public API
     # ------------------------------------------------------------------
 
-    def start(self, tracer: "Tracer", open_browser: bool = True) -> None:
+    def start(self, tracer: "Tracer", open_browser: bool = False) -> None:
         """Start the GUI server in a daemon thread."""
         if self._thread and self._thread.is_alive():
             return

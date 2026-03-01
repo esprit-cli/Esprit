@@ -1,6 +1,7 @@
 """Tests for the GUI server module."""
 
 import asyncio
+import inspect
 import json
 import threading
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -61,6 +62,12 @@ class TestGUIServerInit:
         server.start(tracer, open_browser=False)
         # Should not create a new thread
         assert server._thread is mock_thread
+
+    def test_start_does_not_auto_open_browser_by_default(self) -> None:
+        from esprit.gui.server import GUIServer
+
+        default_value = inspect.signature(GUIServer.start).parameters["open_browser"].default
+        assert default_value is False
 
 
 class TestGUIServerStaticDir:
