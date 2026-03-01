@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "esprit-cli"
-version = "0.7.15"
+version = "0.7.16"
 description = "Open-source AI Hackers for your apps"
 authors = ["Esprit <support@esprit.dev>"]
 readme = "README.md"
