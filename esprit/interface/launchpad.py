@@ -742,7 +742,6 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
         query = filter_text.lower().strip()
         models_by_provider = get_available_models()
         public_opencode_models = get_public_opencode_models(models_by_provider)
-        runtime_profile = self._runtime_profile
 
         # Provider badges and display info
         _BADGES: dict[str, str] = {
@@ -764,16 +763,9 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
             "github-copilot": "COPILOT",
         }
 
-        def _is_provider_visible(provider_id: str) -> bool:
-            if runtime_profile == "cloud":
-                return provider_id == "esprit"
-            return provider_id != "esprit"
-
         # Check which providers are connected
         connected: dict[str, bool] = {}
         for provider_id in models_by_provider:
-            if not _is_provider_visible(provider_id):
-                continue
             if provider_id in _MULTI_ACCOUNT_PROVIDERS:
                 connected[provider_id] = self._account_pool.has_accounts(provider_id)
             elif provider_id == "esprit":
@@ -801,19 +793,9 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
         )
 
         if not providers_sorted:
-            if runtime_profile == "cloud":
-                entries.append(
-                    _MenuEntry(
-                        "info:no_cloud_models",
-                        "No Esprit Cloud models available",
-                        "log in with Esprit in Provider Config",
-                    )
-                )
-                entries.append(_MenuEntry("provider", "Open Provider Config", "connect Esprit"))
-            else:
-                entries.append(
-                    _MenuEntry("info:no_connected_providers", "No connected providers", "open Provider Config")
-                )
+            entries.append(
+                _MenuEntry("info:no_connected_providers", "No connected providers", "open Provider Config")
+            )
             entries.append(_MenuEntry("back", "\u2190 Back"))
             return entries
 

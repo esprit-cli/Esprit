@@ -561,18 +561,12 @@ def _get_available_models(configured_providers: list[tuple[str, str]]) -> list[t
 
     catalog = get_available_models()
     provider_ids = {p[0] for p in configured_providers}
-    runtime_profile = Config.get_runtime_profile()
     models = []
     token_store = TokenStore()
     public_opencode_models = get_public_opencode_models(catalog)
 
-    def _is_provider_visible(provider_id: str) -> bool:
-        if runtime_profile == "cloud":
-            return provider_id == "esprit"
-        return provider_id != "esprit"
-
     for provider_id, model_list in catalog.items():
-        if provider_id in provider_ids and _is_provider_visible(provider_id):
+        if provider_id in provider_ids:
             models_to_show = model_list
             if provider_id == "opencode" and not token_store.has_credentials("opencode"):
                 models_to_show = [

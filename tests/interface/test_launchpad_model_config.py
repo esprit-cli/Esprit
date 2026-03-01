@@ -5,7 +5,7 @@ from esprit.interface.launchpad import LaunchpadApp
 
 def test_model_config_shows_only_connected_providers() -> None:
     app = LaunchpadApp()
-    app._runtime_profile = "connectors"
+    app._runtime_profile = "cloud"
 
     app._account_pool = MagicMock()
     app._token_store = MagicMock()
@@ -13,10 +13,11 @@ def test_model_config_shows_only_connected_providers() -> None:
     app._account_pool.has_accounts.side_effect = lambda provider_id: provider_id == "openai"
     app._token_store.has_credentials.side_effect = lambda provider_id: provider_id == "anthropic"
 
-    with patch("esprit.auth.credentials.is_authenticated", return_value=False):
+    with patch("esprit.auth.credentials.is_authenticated", return_value=True):
         entries = app._build_model_entries()
     keys = [entry.key for entry in entries]
 
+    assert "separator:esprit" in keys
     assert "separator:anthropic" in keys
     assert "separator:openai" in keys
     assert "separator:opencode" in keys
@@ -26,7 +27,7 @@ def test_model_config_shows_only_connected_providers() -> None:
 
 def test_model_config_limits_public_opencode_to_no_auth_models() -> None:
     app = LaunchpadApp()
-    app._runtime_profile = "connectors"
+    app._runtime_profile = "cloud"
 
     app._account_pool = MagicMock()
     app._token_store = MagicMock()
@@ -44,7 +45,7 @@ def test_model_config_limits_public_opencode_to_no_auth_models() -> None:
 
 def test_model_config_shows_empty_state_when_no_provider_connected() -> None:
     app = LaunchpadApp()
-    app._runtime_profile = "connectors"
+    app._runtime_profile = "cloud"
 
     app._account_pool = MagicMock()
     app._token_store = MagicMock()
@@ -63,7 +64,7 @@ def test_model_config_shows_empty_state_when_no_provider_connected() -> None:
     assert keys[-1] == "back"
 
 
-def test_model_config_cloud_profile_shows_only_esprit_models() -> None:
+def test_model_config_runtime_profile_does_not_hide_connected_connectors() -> None:
     app = LaunchpadApp()
     app._runtime_profile = "cloud"
 
@@ -72,11 +73,12 @@ def test_model_config_cloud_profile_shows_only_esprit_models() -> None:
     app._account_pool.has_accounts.return_value = False
     app._token_store.has_credentials.return_value = False
 
-    with patch("esprit.auth.credentials.is_authenticated", return_value=True):
+    with (
+        patch("esprit.auth.credentials.is_authenticated", return_value=True),
+        patch("esprit.interface.launchpad.get_public_opencode_models", return_value={"minimax-m2.5-free"}),
+    ):
         entries = app._build_model_entries()
     keys = [entry.key for entry in entries]
 
     assert "separator:esprit" in keys
-    assert "separator:opencode" not in keys
-    assert "separator:openai" not in keys
-    assert "separator:anthropic" not in keys
+    assert "separator:opencode" in keys

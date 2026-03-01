@@ -30,7 +30,6 @@ def test_ensure_provider_configured_accepts_public_opencode_model() -> None:
 def test_get_available_models_limits_opencode_to_public_without_api_key() -> None:
     with (
         patch("esprit.providers.token_store.TokenStore") as token_store_cls,
-        patch("esprit.interface.main.Config.get_runtime_profile", return_value="connectors"),
     ):
         token_store = MagicMock()
         token_store.has_credentials.return_value = False
@@ -43,10 +42,9 @@ def test_get_available_models_limits_opencode_to_public_without_api_key() -> Non
     assert "opencode/gpt-5.2-codex" not in model_ids
 
 
-def test_get_available_models_cloud_profile_shows_only_esprit() -> None:
+def test_get_available_models_shows_all_configured_providers() -> None:
     with (
         patch("esprit.providers.token_store.TokenStore") as token_store_cls,
-        patch("esprit.interface.main.Config.get_runtime_profile", return_value="cloud"),
     ):
         token_store = MagicMock()
         token_store.has_credentials.return_value = False
@@ -58,7 +56,8 @@ def test_get_available_models_cloud_profile_shows_only_esprit() -> None:
 
     model_ids = [model_id for model_id, _ in models]
     assert model_ids
-    assert all(model_id.startswith("esprit/") for model_id in model_ids)
+    assert any(model_id.startswith("esprit/") for model_id in model_ids)
+    assert "opencode/minimax-m2.5-free" in model_ids
 
 
 def test_esprit_cloud_block_reason_requires_login_for_esprit_models() -> None:
