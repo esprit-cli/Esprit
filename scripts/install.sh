@@ -48,6 +48,61 @@ require_command() {
   fi
 }
 
+validate_python_runtime() {
+  local py_bin="$1"
+  local missing_modules
+
+  if ! missing_modules=$("$py_bin" - <<'PY'
+import importlib.util
+required = ("venv", "ensurepip", "ssl")
+missing = [name for name in required if importlib.util.find_spec(name) is None]
+if missing:
+    print(",".join(missing))
+    raise SystemExit(1)
+print("")
+PY
+  ); then
+    print_message error "Python runtime is missing required stdlib modules: ${missing_modules:-unknown}."
+    print_message info "Install a full Python 3.12+ build (with venv + ensurepip) and retry."
+    exit 1
+  fi
+
+  if ! "$py_bin" -m pip --version >/dev/null 2>&1; then
+    print_message error "pip is unavailable for ${py_bin}."
+    print_message info "Install pip/ensurepip for your Python distribution and retry."
+    exit 1
+  fi
+}
+
+warn_if_musl_build_toolchain_missing() {
+  if [ "$(uname -s)" != "Linux" ]; then
+    return
+  fi
+
+  if ! command -v ldd >/dev/null 2>&1; then
+    return
+  fi
+
+  if ! ldd --version 2>&1 | grep -qi "musl"; then
+    return
+  fi
+
+  local missing=()
+  local cmd
+  for cmd in gcc g++ make cargo rustc; do
+    if ! command -v "$cmd" >/dev/null 2>&1; then
+      missing+=("$cmd")
+    fi
+  done
+
+  if [ "${#missing[@]}" -gt 0 ]; then
+    print_message warning "Detected musl-based Linux (for example Alpine)."
+    print_message warning "Some Python dependencies may compile from source."
+    print_message info "Missing build tools: ${missing[*]}"
+    print_message info "Recommended: apk add --no-cache build-base linux-headers rust cargo"
+  fi
+}
+
 verify_signature() {
     if ! command -v gpg &> /dev/null; then
         echo "⚠ gpg not found — skipping signature verification"
@@ -259,8 +314,15 @@ warm_docker_image() {
 }
 
 main() {
+  local install_channel="${ESPRIT_INSTALL_CHANNEL:-curl}"
+  print_message info "${MUTED}Running install preflight checks...${NC}"
   require_command git "Install git and re-run the installer."
   require_command curl "Install curl and re-run the installer."
+
+  if [ "$install_channel" = "npm" ]; then
+    require_command node "Install Node.js 18+ and re-run npm install."
+    require_command npm "Install npm and re-run npm install."
+  fi
 
   local py_bin
   py_bin=$(choose_python || true)
@@ -269,6 +331,9 @@ main() {
     print_message info "Install Python 3.12 and re-run this installer."
     exit 1
   fi
+  validate_python_runtime "$py_bin"
+  warn_if_musl_build_toolchain_missing
+  print_message success "✓ Preflight checks passed"
 
   print_message info "${CYAN}Installing Esprit${NC} ${MUTED}(source mode)${NC}"
   print_message info "${MUTED}Runtime source:${NC} $REPO_URL@$REPO_REF"

@@ -27,6 +27,7 @@ $RUNTIME_DIR  = Join-Path $INSTALL_ROOT 'runtime'
 $VENV_DIR     = Join-Path $INSTALL_ROOT 'venv'
 $LAUNCHER_CMD = Join-Path $BIN_DIR 'esprit.cmd'
 $ESPRIT_IMAGE = if ($env:ESPRIT_IMAGE)     { $env:ESPRIT_IMAGE }     else { 'improdead/esprit-sandbox:latest' }
+$INSTALL_CHANNEL = if ($env:ESPRIT_INSTALL_CHANNEL) { $env:ESPRIT_INSTALL_CHANNEL } else { 'manual' }
 
 function Print-Message {
     param([string]$Level, [string]$Message)
@@ -83,6 +84,30 @@ function Invoke-Python {
     if ($LASTEXITCODE -ne 0) {
         throw "Command '$Candidate $($Arguments -join ' ')' failed with exit code $LASTEXITCODE"
     }
+}
+
+function Validate-PythonRuntime {
+    param([string]$PyBin)
+
+    $parts = $PyBin -split ' ', 2
+    $exe = $parts[0]
+    $prefix = @()
+    if ($parts.Length -gt 1) { $prefix += $parts[1] }
+
+    $moduleCheck = @()
+    $moduleCheck += $prefix
+    $moduleCheck += '-c'
+    $moduleCheck += 'import importlib.util; required=("venv","ensurepip","ssl"); missing=[m for m in required if importlib.util.find_spec(m) is None]; print(",".join(missing)); raise SystemExit(0 if not missing else 1)'
+
+    $missingModules = (& $exe @moduleCheck 2>$null | Out-String).Trim()
+    if ($LASTEXITCODE -ne 0) {
+        if (-not $missingModules) { $missingModules = 'unknown' }
+        Print-Message 'error' "Python runtime is missing required stdlib modules: $missingModules."
+        Print-Message 'info'  'Install a full Python 3.12+ build (with venv + ensurepip) and retry.'
+        exit 1
+    }
+
+    Invoke-Python $PyBin @('-m', 'pip', '--version')
 }
 
 function Sync-RuntimeRepo {
@@ -202,7 +227,13 @@ function Warm-DockerImage {
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 try {
+    Print-Message 'info' 'Running install preflight checks...'
     Require-Command 'git' 'Install git and re-run the installer.'
+
+    if ($INSTALL_CHANNEL -eq 'npm') {
+        Require-Command 'node' 'Install Node.js 18+ and re-run npm install.'
+        Require-Command 'npm'  'Install npm and re-run npm install.'
+    }
 
     $pyBin = Choose-Python
     if (-not $pyBin) {
@@ -210,6 +241,8 @@ try {
         Print-Message 'info'  'Install Python 3.12 and re-run this installer.'
         exit 1
     }
+    Validate-PythonRuntime -PyBin $pyBin
+    Print-Message 'success' '✓ Preflight checks passed'
 
     Print-Message 'info' "Installing Esprit (source mode)"
     Print-Message 'info' "Runtime source: $REPO_URL@$REPO_REF"

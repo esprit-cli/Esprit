@@ -14,10 +14,19 @@ const installerPath = path.resolve(
   isWindows ? "install.ps1" : "install.sh"
 );
 
+const majorNode = Number.parseInt(process.versions.node.split(".")[0], 10);
+if (!Number.isFinite(majorNode) || majorNode < 18) {
+  console.error(
+    `Node.js 18+ is required for esprit-cli npm install (detected ${process.versions.node}).`
+  );
+  process.exit(1);
+}
+
 const installEnv = {
   ...process.env,
   // npm installs should be fast/predictable; sandbox image is pulled at first scan.
   ESPRIT_SKIP_DOCKER_WARM: "1",
+  ESPRIT_INSTALL_CHANNEL: "npm",
 };
 
 const result = isWindows
