@@ -379,6 +379,7 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
         self._oauth_timer: Any | None = None
         self._oauth_task: asyncio.Task[Any] | None = None
         self._oauth_start_time: float = 0.0
+        self._oauth_provider_name: str = ""
         self._model_filter = ""
         self._unfiltered_entries: list[_MenuEntry] = []
         self._menu_top_row: int = 0
@@ -586,17 +587,11 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
             self._current_hint = "up/down to navigate  enter to select  q to quit"
         elif view == "wizard_welcome":
             self._current_entries = [
-                _MenuEntry("wizard_cloud", "Log in with Esprit (Recommended)"),
-                _MenuEntry("wizard_local", "Bring your own model (connectors)"),
+                _MenuEntry("wizard_setup", "Set up provider and model (Recommended)"),
+                _MenuEntry("wizard_skip", "Skip setup for now"),
             ]
             self._current_title = "Welcome to Esprit"
             self._current_hint = "up/down to navigate  enter to select"
-        elif view == "wizard_complete":
-            self._current_entries = [
-                _MenuEntry("wizard_finish", "✓ You're all set! Running your first scan..."),
-            ]
-            self._current_title = "Setup Complete"
-            self._current_hint = "press enter to continue"
         elif view == "scan_choose":
             self._current_entries = self._build_scan_target_entries()
             self._current_title = "Scan Target"
@@ -1291,10 +1286,7 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
             self._cancel_oauth_task()
             self._stop_oauth_timer()
             self._set_status("Authorization cancelled", "warning")
-            if self._wizard_mode:
-                self._set_view("wizard_welcome", push=False)
-            else:
-                self._set_view("provider", push=False)
+            self._set_view("provider", push=False)
             return
         if self._input_mode == "menu_search":
             # Cancel search and restore the current view
@@ -1341,30 +1333,14 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
             return
 
         # Wizard entries
-        if key == "wizard_cloud":
-            self._selected_provider_id = "esprit"
-            self._set_runtime_profile("cloud")
-            configured_model = (Config.get("esprit_llm") or "").strip().lower()
-            if not configured_model.startswith("esprit/"):
-                os.environ["ESPRIT_LLM"] = "esprit/default"
-                Config.save_current()
-            await self._connect_selected_provider()
-            return
-        if key == "wizard_local":
-            self._set_runtime_profile("connectors")
-            configured_model = (Config.get("esprit_llm") or "").strip().lower()
-            if configured_model.startswith("esprit/") or configured_model.startswith("bedrock/"):
-                os.environ["ESPRIT_LLM"] = ""
-                Config.save_current()
-            self._mark_wizard_done()
-            self._wizard_mode = False
+        if key == "wizard_setup":
             self._set_view("provider")
-            self._set_status("Connect a provider to continue", "info")
+            self._set_status("Connect any provider, then choose a model", "info")
             return
-        if key == "wizard_finish":
+        if key == "wizard_skip":
             self._mark_wizard_done()
             self._wizard_mode = False
-            self._set_view("scan_choose", push=False)
+            self._set_view("main", push=False)
             return
 
         if key == "model":
@@ -1404,6 +1380,11 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
             os.environ["ESPRIT_LLM"] = model_name
             Config.save_current()
             self._set_status(f"Model set: {model_name}", "success")
+            if self._wizard_mode:
+                self._mark_wizard_done()
+                self._wizard_mode = False
+                self._set_view("scan_choose", push=False)
+                return
             if self._history and self._history[-1] == "pre_scan":
                 self._set_view("pre_scan", push=False)
             else:
@@ -1529,7 +1510,11 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
 
     def _tick_oauth_status(self) -> None:
         elapsed = int(time.monotonic() - self._oauth_start_time)
-        self._set_status(f"⏳ Waiting for browser authorization... ({elapsed}s elapsed)", "info")
+        provider_name = self._oauth_provider_name or "provider"
+        self._set_status(
+            f"⏳ Waiting for {provider_name} authorization... ({elapsed}s, no CLI redirect required)",
+            "info",
+        )
 
     async def _run_provider_auto_callback(
         self,
@@ -1569,7 +1554,7 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
                 if is_authenticated():
                     self._set_status("Already logged in with Esprit", "success")
                     if self._wizard_mode:
-                        self._set_view("wizard_complete", push=False)
+                        self._set_view("model", push=False)
                     else:
                         self._set_view("provider", push=False)
                     return
@@ -1592,9 +1577,18 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
         except Exception:
             opened = False
         if not opened:
-            self._set_status(f"Open manually: {auth_result.url}", "warning")
+            self._set_status(
+                f"Open manually: {auth_result.url} (finish in browser, then return to terminal)",
+                "warning",
+            )
         else:
-            self._set_status(f"Browser opened for {provider_name}", "info")
+            if auth_result.method == AuthMethod.AUTO:
+                self._set_status(
+                    f"Browser opened for {provider_name}. Complete login in browser; CLI will continue automatically.",
+                    "info",
+                )
+            else:
+                self._set_status(f"Browser opened for {provider_name}", "info")
 
         if auth_result.method == AuthMethod.CODE:
             self._pending_auth = (provider_id, provider, auth_result)
@@ -1617,7 +1611,7 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
                 "error",
             )
             if self._wizard_mode:
-                self._set_view("wizard_welcome", push=False)
+                self._set_view("provider", push=False)
             else:
                 self._set_view("provider", push=False)
             return
@@ -1642,7 +1636,7 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
             self._set_runtime_profile("connectors")
         self._set_status(f"Connected {PROVIDER_NAMES.get(provider_id, provider_id)}", "success")
         if self._wizard_mode:
-            self._set_view("wizard_complete", push=False)
+            self._set_view("model", push=False)
         else:
             self._set_view("provider", push=False)
 
@@ -1718,7 +1712,7 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
                 self._token_store.set(provider_id, creds)
             self._set_status(f"Saved API key for {PROVIDER_NAMES.get(provider_id, provider_id)}", "success")
             if self._wizard_mode:
-                self._set_view("wizard_complete", push=False)
+                self._set_view("model", push=False)
             else:
                 self._set_view("provider", push=False)
             return
