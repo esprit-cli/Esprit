@@ -9,10 +9,13 @@ The provider reads the platform credentials from ~/.esprit/credentials.json
 and injects the Esprit access token into each proxied request.
 """
 
+import asyncio
 import logging
 import os
 import time
 from typing import Any
+
+import httpx
 
 from esprit.providers.base import (
     AuthCallbackResult,
@@ -112,16 +115,14 @@ class EspritSubsProvider(ProviderAuth):
         client = SupabaseAuthClient()
 
         # Request device code from the Esprit API
-        import requests as sync_requests
-
         try:
-            response = sync_requests.post(
-                f"{AUTH_API_URL}/auth/device/code",
-                json={"client_id": "esprit-cli"},
-                timeout=30,
-            )
-            response.raise_for_status()
-            data = response.json()
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.post(
+                    f"{AUTH_API_URL}/auth/device/code",
+                    json={"client_id": "esprit-cli"},
+                )
+                response.raise_for_status()
+                data = response.json()
         except Exception as exc:
             raise RuntimeError(f"Failed to start Esprit device login: {exc}") from exc
 
@@ -142,7 +143,6 @@ class EspritSubsProvider(ProviderAuth):
         code: str | None = None,
     ) -> AuthCallbackResult:
         """Poll until the user completes the device-flow authorization."""
-        import requests as sync_requests
         from esprit.auth.client import API_BASE_URL as AUTH_API_URL
         from esprit.auth.credentials import save_credentials
 
@@ -151,20 +151,23 @@ class EspritSubsProvider(ProviderAuth):
             return AuthCallbackResult(success=False, error="Missing device code")
 
         max_wait = 300  # 5 minutes
-        start = time.time()
+        deadline = time.monotonic() + max_wait
 
-        while time.time() - start < max_wait:
-            await _async_sleep(auth_result.interval)
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            while time.monotonic() < deadline:
+                await asyncio.sleep(auth_result.interval)
 
-            try:
-                resp = sync_requests.post(
-                    f"{AUTH_API_URL}/auth/device/token",
-                    json={
-                        "device_code": device_code,
-                        "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
-                    },
-                    timeout=30,
-                )
+                try:
+                    resp = await client.post(
+                        f"{AUTH_API_URL}/auth/device/token",
+                        json={
+                            "device_code": device_code,
+                            "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
+                        },
+                    )
+                except httpx.HTTPError:
+                    # Network blip — keep polling
+                    continue
 
                 if resp.status_code == 200:
                     token_data = resp.json()
@@ -214,10 +217,6 @@ class EspritSubsProvider(ProviderAuth):
                     return AuthCallbackResult(
                         success=False, error=f"Auth failed: {error_code}"
                     )
-
-            except Exception:  # noqa: BLE001
-                # Network blip — keep polling
-                continue
 
         return AuthCallbackResult(
             success=False, error="Authorization timed out. Please try again."
@@ -294,10 +293,3 @@ class EspritSubsProvider(ProviderAuth):
         return [
             {"type": "oauth", "label": "Login with Esprit (subscription)"},
         ]
-
-
-async def _async_sleep(seconds: int) -> None:
-    """Async-compatible sleep."""
-    import asyncio
-
-    await asyncio.sleep(seconds)

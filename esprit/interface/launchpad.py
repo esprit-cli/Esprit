@@ -1,3 +1,4 @@
+import asyncio
 import os
 import random
 import time
@@ -21,7 +22,7 @@ from esprit.config import Config
 from esprit.interface.utils import infer_target_type
 from esprit.llm.config import DEFAULT_MODEL
 from esprit.providers import PROVIDER_NAMES, get_provider_auth
-from esprit.providers.base import AuthMethod, OAuthCredentials
+from esprit.providers.base import AuthCallbackResult, AuthMethod, OAuthCredentials
 from esprit.providers.config import get_available_models, get_public_opencode_models
 from esprit.providers.token_store import TokenStore
 from esprit.providers.account_pool import get_account_pool
@@ -376,12 +377,14 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
         self._animation_step = 0
         self._ghost_timer: Any | None = None
         self._oauth_timer: Any | None = None
+        self._oauth_task: asyncio.Task[Any] | None = None
         self._oauth_start_time: float = 0.0
         self._model_filter = ""
         self._unfiltered_entries: list[_MenuEntry] = []
         self._menu_top_row: int = 0
         self._pending_scan_target: str | None = None
         self._theme_id = self._normalize_theme_id(Config.get_launchpad_theme())
+        self._runtime_profile = self._normalize_runtime_profile(Config.get_runtime_profile())
 
         # First-run wizard state
         self._wizard_mode = False
@@ -418,6 +421,8 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
     def on_unmount(self) -> None:
         if self._ghost_timer is not None:
             self._ghost_timer.stop()
+        self._stop_oauth_timer()
+        self._cancel_oauth_task()
 
     def _tick_animation(self) -> None:
         self._animation_step += 1
@@ -427,6 +432,13 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
         if theme_id and theme_id in self.THEMES:
             return theme_id
         return self.DEFAULT_THEME
+
+    @staticmethod
+    def _normalize_runtime_profile(profile: str | None) -> str:
+        normalized = (profile or "").strip().lower()
+        if normalized in {"cloud", "connectors"}:
+            return normalized
+        return "cloud"
 
     def _active_theme(self) -> _LaunchpadTheme:
         return self.THEMES[self._theme_id]
@@ -481,6 +493,16 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
                 self._set_status(f"Theme set: {self._active_theme().label}", "success")
             else:
                 self._set_status("Failed to save theme", "error")
+
+        return changed
+
+    def _set_runtime_profile(self, profile: str, persist: bool = True) -> bool:
+        next_profile = self._normalize_runtime_profile(profile)
+        changed = next_profile != self._runtime_profile
+        self._runtime_profile = next_profile
+
+        if persist and changed:
+            Config.save_runtime_profile(next_profile)
 
         return changed
 
@@ -564,10 +586,10 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
             self._current_hint = "up/down to navigate  enter to select  q to quit"
         elif view == "wizard_welcome":
             self._current_entries = [
-                _MenuEntry("wizard_cloud", "☁️  Esprit Cloud (No Docker required)"),
-                _MenuEntry("wizard_local", "🖥️  Local Mode (Docker + your own API keys)"),
+                _MenuEntry("wizard_cloud", "Log in with Esprit (Recommended)"),
+                _MenuEntry("wizard_local", "Bring your own model (connectors)"),
             ]
-            self._current_title = "Welcome to Esprit! Choose your setup:"
+            self._current_title = "Welcome to Esprit"
             self._current_hint = "up/down to navigate  enter to select"
         elif view == "wizard_complete":
             self._current_entries = [
@@ -725,9 +747,11 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
         query = filter_text.lower().strip()
         models_by_provider = get_available_models()
         public_opencode_models = get_public_opencode_models(models_by_provider)
+        runtime_profile = self._runtime_profile
 
         # Provider badges and display info
         _BADGES: dict[str, str] = {
+            "esprit": "ES",
             "antigravity": "AG",
             "opencode": "OZ",
             "openai": "OAI",
@@ -736,6 +760,7 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
             "github-copilot": "CO",
         }
         _PROVIDER_LABELS: dict[str, str] = {
+            "esprit": "ESPRIT CLOUD",
             "antigravity": "ANTIGRAVITY",
             "opencode": "OPENCODE ZEN",
             "openai": "OPENAI",
@@ -744,9 +769,16 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
             "github-copilot": "COPILOT",
         }
 
+        def _is_provider_visible(provider_id: str) -> bool:
+            if runtime_profile == "cloud":
+                return provider_id == "esprit"
+            return provider_id != "esprit"
+
         # Check which providers are connected
         connected: dict[str, bool] = {}
         for provider_id in models_by_provider:
+            if not _is_provider_visible(provider_id):
+                continue
             if provider_id in _MULTI_ACCOUNT_PROVIDERS:
                 connected[provider_id] = self._account_pool.has_accounts(provider_id)
             elif provider_id == "esprit":
@@ -761,12 +793,32 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
                 connected[provider_id] = self._token_store.has_credentials(provider_id)
 
         # Show only connected providers
-        providers_sorted = sorted(
-            [provider_id for provider_id in models_by_provider if connected.get(provider_id, False)]
+        provider_order = ["esprit", "anthropic", "openai", "github-copilot", "google", "antigravity", "opencode"]
+        providers_sorted = [
+            provider_id for provider_id in provider_order
+            if provider_id in models_by_provider and connected.get(provider_id, False)
+        ]
+        providers_sorted.extend(
+            sorted(
+                provider_id for provider_id in connected
+                if provider_id not in provider_order and connected.get(provider_id, False)
+            )
         )
 
         if not providers_sorted:
-            entries.append(_MenuEntry("info:no_connected_providers", "No connected providers", "open Provider Config"))
+            if runtime_profile == "cloud":
+                entries.append(
+                    _MenuEntry(
+                        "info:no_cloud_models",
+                        "No Esprit Cloud models available",
+                        "log in with Esprit in Provider Config",
+                    )
+                )
+                entries.append(_MenuEntry("provider", "Open Provider Config", "connect Esprit"))
+            else:
+                entries.append(
+                    _MenuEntry("info:no_connected_providers", "No connected providers", "open Provider Config")
+                )
             entries.append(_MenuEntry("back", "\u2190 Back"))
             return entries
 
@@ -1235,6 +1287,15 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
             await self._activate_entry(self._current_entries[self.selected_index])
 
     def action_go_back(self) -> None:
+        if self._oauth_task is not None and not self._oauth_task.done():
+            self._cancel_oauth_task()
+            self._stop_oauth_timer()
+            self._set_status("Authorization cancelled", "warning")
+            if self._wizard_mode:
+                self._set_view("wizard_welcome", push=False)
+            else:
+                self._set_view("provider", push=False)
+            return
         if self._input_mode == "menu_search":
             # Cancel search and restore the current view
             self._set_view(self._view, push=False)
@@ -1249,6 +1310,8 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
             self._go_back()
 
     def action_quit_app(self) -> None:
+        self._cancel_oauth_task()
+        self._stop_oauth_timer()
         self.exit(LaunchpadResult(action="exit", scan_mode=self._scan_mode))
 
     def action_start_search(self) -> None:
@@ -1280,11 +1343,23 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
         # Wizard entries
         if key == "wizard_cloud":
             self._selected_provider_id = "esprit"
-            self._set_view("provider_actions")
+            self._set_runtime_profile("cloud")
+            configured_model = (Config.get("esprit_llm") or "").strip().lower()
+            if not configured_model.startswith("esprit/"):
+                os.environ["ESPRIT_LLM"] = "esprit/default"
+                Config.save_current()
+            await self._connect_selected_provider()
             return
         if key == "wizard_local":
-            self._wizard_mode = True
+            self._set_runtime_profile("connectors")
+            configured_model = (Config.get("esprit_llm") or "").strip().lower()
+            if configured_model.startswith("esprit/") or configured_model.startswith("bedrock/"):
+                os.environ["ESPRIT_LLM"] = ""
+                Config.save_current()
+            self._mark_wizard_done()
+            self._wizard_mode = False
             self._set_view("provider")
+            self._set_status("Connect a provider to continue", "info")
             return
         if key == "wizard_finish":
             self._mark_wizard_done()
@@ -1321,6 +1396,11 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
 
         if key.startswith("model:"):
             model_name = key.split(":", 1)[1]
+            model_name_lower = model_name.lower()
+            if model_name_lower.startswith("esprit/") or model_name_lower.startswith("bedrock/"):
+                self._set_runtime_profile("cloud")
+            else:
+                self._set_runtime_profile("connectors")
             os.environ["ESPRIT_LLM"] = model_name
             Config.save_current()
             self._set_status(f"Model set: {model_name}", "success")
@@ -1442,19 +1522,59 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
             self._oauth_timer.stop()
             self._oauth_timer = None
 
+    def _cancel_oauth_task(self) -> None:
+        if self._oauth_task is not None and not self._oauth_task.done():
+            self._oauth_task.cancel()
+        self._oauth_task = None
+
     def _tick_oauth_status(self) -> None:
         elapsed = int(time.monotonic() - self._oauth_start_time)
         self._set_status(f"⏳ Waiting for browser authorization... ({elapsed}s elapsed)", "info")
+
+    async def _run_provider_auto_callback(
+        self,
+        provider_id: str,
+        provider_impl: Any,
+        auth_result: Any,
+    ) -> None:
+        try:
+            callback_result = await provider_impl.callback(auth_result)
+        except asyncio.CancelledError:
+            return
+        except Exception as exc:  # noqa: BLE001
+            callback_result = AuthCallbackResult(success=False, error=str(exc))
+        finally:
+            self._stop_oauth_timer()
+
+        self._oauth_task = None
+        await self._handle_provider_callback(provider_id, callback_result)
 
     async def _connect_selected_provider(self) -> None:
         provider_id = self._selected_provider_id
         if not provider_id:
             return
 
+        if self._oauth_task is not None and not self._oauth_task.done():
+            self._set_status("Authorization already in progress", "warning")
+            return
+
         provider = get_provider_auth(provider_id)
         if not provider:
             self._set_status("Provider not available", "error")
             return
+
+        if provider_id == "esprit":
+            try:
+                from esprit.auth.credentials import is_authenticated
+                if is_authenticated():
+                    self._set_status("Already logged in with Esprit", "success")
+                    if self._wizard_mode:
+                        self._set_view("wizard_complete", push=False)
+                    else:
+                        self._set_view("provider", push=False)
+                    return
+            except Exception:
+                pass
 
         provider_name = PROVIDER_NAMES.get(provider_id, provider_id)
         self._set_status(f"Starting OAuth for {provider_name}...", "info")
@@ -1467,7 +1587,10 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
             self._set_status(_friendly_login_error(exc), "error")
             return
 
-        opened = webbrowser.open(auth_result.url)
+        try:
+            opened = await asyncio.to_thread(webbrowser.open, auth_result.url)
+        except Exception:
+            opened = False
         if not opened:
             self._set_status(f"Open manually: {auth_result.url}", "warning")
         else:
@@ -1479,12 +1602,13 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
             return
 
         self._start_oauth_timer(provider_name)
-        callback_result = await provider_impl.callback(auth_result)
-        self._stop_oauth_timer()
-        await self._handle_provider_callback(provider_id, callback_result)
+        self._oauth_task = asyncio.create_task(
+            self._run_provider_auto_callback(provider_id, provider_impl, auth_result)
+        )
 
     async def _handle_provider_callback(self, provider_id: str, callback_result: Any) -> None:
         self._stop_oauth_timer()
+        self._pending_auth = None
         if not callback_result.success:
             self._set_status(
                 _friendly_login_error(callback_result.error)
@@ -1492,7 +1616,10 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
                 else f"Login failed: {callback_result.error}. Please try again or use a different provider.",
                 "error",
             )
-            self._set_view("provider", push=False)
+            if self._wizard_mode:
+                self._set_view("wizard_welcome", push=False)
+            else:
+                self._set_view("provider", push=False)
             return
 
         if callback_result.credentials:
@@ -1509,6 +1636,10 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
                 # Esprit stores platform credentials outside provider token store.
                 if provider_id != "esprit":
                     self._token_store.set(provider_id, callback_result.credentials)
+        if provider_id == "esprit":
+            self._set_runtime_profile("cloud")
+        else:
+            self._set_runtime_profile("connectors")
         self._set_status(f"Connected {PROVIDER_NAMES.get(provider_id, provider_id)}", "success")
         if self._wizard_mode:
             self._set_view("wizard_complete", push=False)

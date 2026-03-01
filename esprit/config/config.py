@@ -52,6 +52,9 @@ class Config:
     _UI_SECTION_KEY = "ui"
     _LAUNCHPAD_THEME_KEY = "launchpad_theme"
     _DEFAULT_LAUNCHPAD_THEME = "esprit"
+    _RUNTIME_PROFILE_KEY = "runtime_profile"
+    _DEFAULT_RUNTIME_PROFILE = "cloud"
+    _RUNTIME_PROFILES = {"cloud", "connectors"}
 
     @classmethod
     def _tracked_names(cls) -> list[str]:
@@ -209,6 +212,40 @@ class Config:
         if not isinstance(ui, dict):
             ui = {}
         ui[cls._LAUNCHPAD_THEME_KEY] = theme
+        saved[cls._UI_SECTION_KEY] = ui
+        return cls.save(saved)
+
+    @classmethod
+    def get_runtime_profile(cls) -> str:
+        saved = cls.load()
+        if isinstance(saved, dict):
+            ui = saved.get(cls._UI_SECTION_KEY, {})
+            if isinstance(ui, dict):
+                profile = ui.get(cls._RUNTIME_PROFILE_KEY)
+                if isinstance(profile, str):
+                    normalized = profile.strip().lower()
+                    if normalized in cls._RUNTIME_PROFILES:
+                        return normalized
+
+        model_name = (cls.get("esprit_llm") or "").strip().lower()
+        if model_name.startswith("esprit/") or model_name.startswith("bedrock/"):
+            return "cloud"
+        if model_name:
+            return "connectors"
+        return cls._DEFAULT_RUNTIME_PROFILE
+
+    @classmethod
+    def save_runtime_profile(cls, profile: str) -> bool:
+        normalized = (profile or "").strip().lower()
+        if normalized not in cls._RUNTIME_PROFILES:
+            return False
+        saved = cls.load()
+        if not isinstance(saved, dict):
+            saved = {}
+        ui = saved.get(cls._UI_SECTION_KEY, {})
+        if not isinstance(ui, dict):
+            ui = {}
+        ui[cls._RUNTIME_PROFILE_KEY] = normalized
         saved[cls._UI_SECTION_KEY] = ui
         return cls.save(saved)
 

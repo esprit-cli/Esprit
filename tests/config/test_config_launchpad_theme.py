@@ -57,3 +57,21 @@ def test_apply_saved_keeps_ui_section_when_env_is_rewritten(monkeypatch, tmp_pat
     saved = json.loads(config_file.read_text(encoding="utf-8"))
     assert "ESPRIT_LLM" not in saved["env"]
     assert saved["ui"]["launchpad_theme"] == "ember"
+
+
+def test_runtime_profile_round_trip(monkeypatch, tmp_path) -> None:
+    config_root = _configure_temp_config_dir(monkeypatch, tmp_path)
+
+    assert Config.get_runtime_profile() == "cloud"
+    assert Config.save_runtime_profile("connectors") is True
+
+    config_file = config_root / "cli-config.json"
+    saved = json.loads(config_file.read_text(encoding="utf-8"))
+    assert saved["ui"]["runtime_profile"] == "connectors"
+    assert Config.get_runtime_profile() == "connectors"
+
+
+def test_runtime_profile_infers_from_model_when_not_saved(monkeypatch, tmp_path) -> None:
+    _configure_temp_config_dir(monkeypatch, tmp_path)
+    monkeypatch.setenv("ESPRIT_LLM", "openai/gpt-5.3-codex")
+    assert Config.get_runtime_profile() == "connectors"
