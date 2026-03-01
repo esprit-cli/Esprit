@@ -786,23 +786,8 @@ class LLM:
                 if not tool_name:
                     continue
 
-                raw_args = tc.get("args")
-                if raw_args is None:
-                    raw_args = tc.get("arguments")
-                if raw_args is None:
-                    raw_args = function_payload.get("arguments", function_payload.get("args", {}))
-
-                tc_args: dict[str, Any]
-                if isinstance(raw_args, str):
-                    try:
-                        parsed = json.loads(raw_args)
-                        tc_args = parsed if isinstance(parsed, dict) else {}
-                    except (json.JSONDecodeError, ValueError):
-                        tc_args = {}
-                elif isinstance(raw_args, dict):
-                    tc_args = raw_args
-                else:
-                    tc_args = {}
+                raw_args = self._extract_raw_native_args(tc, function_payload)
+                tc_args = self._normalize_native_tool_args(str(tool_name), raw_args)
 
                 tool_call_id = tc.get("id") or tc.get("tool_call_id", "")
 
@@ -1011,6 +996,81 @@ class LLM:
             pass
         return None
 
+    @staticmethod
+    def _extract_raw_native_args(tc: Any, function_payload: Any) -> Any:
+        raw_args: Any = None
+
+        if function_payload is not None:
+            raw_args = getattr(function_payload, "arguments", None)
+            if raw_args is None:
+                raw_args = getattr(function_payload, "args", None)
+            if isinstance(function_payload, dict):
+                raw_args = function_payload.get(
+                    "arguments",
+                    function_payload.get("args", raw_args),
+                )
+
+        if raw_args is None:
+            raw_args = getattr(tc, "arguments", None)
+        if raw_args is None:
+            raw_args = getattr(tc, "args", None)
+        if isinstance(tc, dict):
+            raw_args = tc.get("arguments", tc.get("args", raw_args))
+            if raw_args is None:
+                function_call = tc.get("function_call")
+                if isinstance(function_call, dict):
+                    raw_args = function_call.get("arguments", function_call.get("args"))
+
+        return raw_args
+
+    @staticmethod
+    def _normalize_native_tool_args(tool_name: str, raw_args: Any) -> dict[str, Any]:
+        tool_name = (tool_name or "").strip()
+        args: dict[str, Any] = {}
+
+        if isinstance(raw_args, dict):
+            args = dict(raw_args)
+        elif isinstance(raw_args, str):
+            trimmed = raw_args.strip()
+            if trimmed:
+                try:
+                    parsed = json.loads(trimmed)
+                except (json.JSONDecodeError, ValueError):
+                    parsed = None
+
+                if isinstance(parsed, dict):
+                    args = parsed
+                elif (
+                    tool_name == "terminal_execute"
+                    and not trimmed.startswith("{")
+                    and not trimmed.startswith("[")
+                ):
+                    # Some providers return terminal_execute args as a plain string.
+                    if trimmed.lower().startswith("command="):
+                        command = trimmed.split("=", 1)[1].strip()
+                    else:
+                        command = trimmed
+                    if command:
+                        args = {"command": command}
+        elif (
+            tool_name == "terminal_execute"
+            and isinstance(raw_args, list)
+            and raw_args
+            and isinstance(raw_args[0], str)
+        ):
+            command = raw_args[0].strip()
+            if command:
+                args = {"command": command}
+
+        if tool_name == "terminal_execute" and "command" not in args:
+            for alias in ("cmd", "input", "text", "query"):
+                alias_value = args.get(alias)
+                if isinstance(alias_value, str) and alias_value.strip():
+                    args["command"] = alias_value.strip()
+                    break
+
+        return args
+
     def _extract_native_tool_calls(self, response: Any) -> list[dict[str, Any]] | None:
         """Extract native tool calls from a litellm assembled response."""
         if not response:
@@ -1035,34 +1095,28 @@ class LLM:
             tool_call_id = ""
             args: dict[str, Any] = {}
 
-            try:
-                function_payload = getattr(tc, "function", None)
-                if isinstance(tc, dict) and not function_payload:
-                    function_payload = tc.get("function")
+            function_payload = getattr(tc, "function", None)
+            if isinstance(tc, dict) and not function_payload:
+                function_payload = tc.get("function")
+                if function_payload is None:
+                    function_payload = tc.get("function_call")
 
-                raw_name = getattr(function_payload, "name", "")
-                if isinstance(function_payload, dict):
-                    raw_name = function_payload.get("name", raw_name)
-                tool_name = str(raw_name or "")
+            raw_name = getattr(function_payload, "name", "")
+            if isinstance(function_payload, dict):
+                raw_name = function_payload.get("name", raw_name)
+            if not raw_name:
+                raw_name = getattr(tc, "name", "")
+            if isinstance(tc, dict):
+                raw_name = tc.get("name", raw_name)
+            tool_name = str(raw_name or "")
 
-                raw_call_id = getattr(tc, "id", "")
-                if isinstance(tc, dict):
-                    raw_call_id = tc.get("id", raw_call_id)
-                tool_call_id = str(raw_call_id or "")
+            raw_call_id = getattr(tc, "id", "")
+            if isinstance(tc, dict):
+                raw_call_id = tc.get("id", raw_call_id)
+            tool_call_id = str(raw_call_id or "")
 
-                raw_args: Any = None
-                if function_payload is not None:
-                    raw_args = getattr(function_payload, "arguments", None)
-                    if isinstance(function_payload, dict):
-                        raw_args = function_payload.get("arguments", raw_args)
-
-                if isinstance(raw_args, str):
-                    parsed = json.loads(raw_args)
-                    args = parsed if isinstance(parsed, dict) else {}
-                elif isinstance(raw_args, dict):
-                    args = raw_args
-            except (AttributeError, TypeError, ValueError, json.JSONDecodeError):
-                args = {}
+            raw_args = self._extract_raw_native_args(tc, function_payload)
+            args = self._normalize_native_tool_args(tool_name, raw_args)
 
             if not tool_name:
                 continue

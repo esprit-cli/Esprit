@@ -41,6 +41,18 @@ def parse_tool_invocations(content: str) -> list[dict[str, Any]] | None:
             param_value = html.unescape(param_value)
             args[param_name] = param_value
 
+        if not args and fn_name == "terminal_execute":
+            # Some models emit terminal_execute with raw body text instead of
+            # <parameter=command>...</parameter>.
+            raw_body = html.unescape(fn_body).strip()
+            if raw_body and "<" not in raw_body and ">" not in raw_body:
+                if raw_body.lower().startswith("command="):
+                    command = raw_body.split("=", 1)[1].strip()
+                else:
+                    command = raw_body
+                if command:
+                    args["command"] = command
+
         tool_invocations.append({"toolName": fn_name, "args": args})
 
     return tool_invocations if tool_invocations else None

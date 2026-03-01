@@ -107,6 +107,64 @@ class TestExtractNativeToolCalls:
             }
         ]
 
+    def test_terminal_execute_plain_string_arguments_are_coerced(self) -> None:
+        llm = LLM.__new__(LLM)
+
+        response = SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        tool_calls=[
+                            {
+                                "id": "call_raw",
+                                "function": {
+                                    "name": "terminal_execute",
+                                    "arguments": "ls -la",
+                                },
+                            }
+                        ]
+                    )
+                )
+            ]
+        )
+
+        parsed = llm._extract_native_tool_calls(response)
+        assert parsed == [
+            {
+                "toolName": "terminal_execute",
+                "args": {"command": "ls -la"},
+                "tool_call_id": "call_raw",
+            }
+        ]
+
+    def test_accepts_top_level_arguments_when_function_payload_missing(self) -> None:
+        llm = LLM.__new__(LLM)
+
+        response = SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        tool_calls=[
+                            {
+                                "id": "call_top_level",
+                                "name": "terminal_execute",
+                                "arguments": "pwd",
+                            }
+                        ]
+                    )
+                )
+            ]
+        )
+
+        parsed = llm._extract_native_tool_calls(response)
+        assert parsed == [
+            {
+                "toolName": "terminal_execute",
+                "args": {"command": "pwd"},
+                "tool_call_id": "call_top_level",
+            }
+        ]
+
     def test_returns_none_when_choices_missing(self) -> None:
         llm = LLM.__new__(LLM)
         response = SimpleNamespace(model="esprit/default")
