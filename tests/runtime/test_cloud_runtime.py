@@ -239,6 +239,76 @@ async def test_create_sandbox_raises_when_modern_endpoint_never_becomes_ready(
 
 
 @pytest.mark.asyncio
+async def test_create_sandbox_retries_once_after_modern_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state: dict[str, Any] = {"create_calls": 0, "destroyed": [], "polled": []}
+
+    class FakeAsyncClient:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            _ = (args, kwargs)
+
+        async def __aenter__(self) -> Self:
+            return self
+
+        async def __aexit__(
+            self,
+            _exc_type: type[BaseException] | None,
+            _exc: BaseException | None,
+            _tb: object,
+        ) -> None:
+            return None
+
+    async def _fake_create_request(
+        self: CloudRuntime,
+        client: httpx.AsyncClient,
+        agent_id: str,
+        sources_payload: list[dict[str, str]],
+    ) -> tuple[dict[str, Any], bool]:
+        _ = (self, client, agent_id, sources_payload)
+        state["create_calls"] += 1
+        idx = state["create_calls"]
+        return (
+            {
+                "sandbox_id": f"sbx-retry-{idx}",
+                "status": "creating",
+                "sandbox_token": f"token-{idx}",
+            },
+            True,
+        )
+
+    async def _fake_poll(self: CloudRuntime, sandbox_id: str) -> str | None:
+        _ = self
+        state["polled"].append(sandbox_id)
+        if sandbox_id.endswith("-1"):
+            return None
+        return "https://tool.example.test:5443"
+
+    async def _fake_destroy(self: CloudRuntime, sandbox_id: str) -> None:
+        _ = self
+        state["destroyed"].append(sandbox_id)
+
+    async def _no_wait(_seconds: float) -> None:
+        return None
+
+    monkeypatch.setattr("esprit.runtime.cloud_runtime.httpx.AsyncClient", FakeAsyncClient)
+    monkeypatch.setattr(CloudRuntime, "_create_sandbox_request", _fake_create_request)
+    monkeypatch.setattr(CloudRuntime, "_poll_tool_server_url", _fake_poll)
+    monkeypatch.setattr(CloudRuntime, "_destroy_unready_sandbox", _fake_destroy)
+    monkeypatch.setattr("esprit.runtime.cloud_runtime.asyncio.sleep", _no_wait)
+
+    runtime = CloudRuntime(access_token="access-token", api_base="https://api.example.test")
+    result = await runtime.create_sandbox(agent_id="agent-retry")
+
+    assert state["create_calls"] == 2
+    assert state["destroyed"] == ["sbx-retry-1"]
+    assert state["polled"] == ["sbx-retry-1", "sbx-retry-2"]
+    assert result["workspace_id"] == "sbx-retry-2"
+    assert result["api_url"] == "https://tool.example.test:5443"
+    assert result["tool_server_port"] == 5443
+
+
+@pytest.mark.asyncio
 async def test_track_and_untrack_sandbox_state_file(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

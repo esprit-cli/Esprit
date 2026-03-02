@@ -20,6 +20,8 @@ _STATUS_POLL_REQUEST_TIMEOUT_SECONDS = 8
 _STATUS_POLL_CONNECT_TIMEOUT_SECONDS = 5
 _TOOL_SERVER_READY_TIMEOUT_SECONDS = 240
 _TOOL_SERVER_READY_POLL_INTERVAL_SECONDS = 1.5
+_CREATE_SANDBOX_MAX_ATTEMPTS = 2
+_CREATE_SANDBOX_RETRY_DELAY_SECONDS = 2
 _STATE_FILE_ENV = "ESPRIT_CLOUD_SANDBOX_STATE_FILE"
 _DEFAULT_STATE_FILE = Path.home() / ".esprit" / "state" / "cloud_sandboxes.json"
 
@@ -278,6 +280,24 @@ class CloudRuntime(AbstractRuntime):
                 await asyncio.sleep(_TOOL_SERVER_READY_POLL_INTERVAL_SECONDS)
         return None
 
+    async def _destroy_unready_sandbox(self, sandbox_id: str) -> None:
+        """Best-effort cleanup for a sandbox that never reached tool-server readiness."""
+        sandbox_id = (sandbox_id or "").strip()
+        if not sandbox_id:
+            return
+
+        try:
+            async with httpx.AsyncClient(timeout=_DEFAULT_TIMEOUT_SECONDS, trust_env=False) as client:
+                response = await client.delete(
+                    f"{self.api_base}/sandbox/{sandbox_id}",
+                    headers={"Authorization": f"Bearer {self.access_token}"},
+                )
+                if response.status_code not in {200, 202, 204, 404}:
+                    response.raise_for_status()
+        except Exception:  # noqa: BLE001
+            # Best effort only; failure should not mask the original initialization issue.
+            return
+
     async def create_sandbox(
         self,
         agent_id: str,
@@ -285,70 +305,82 @@ class CloudRuntime(AbstractRuntime):
         local_sources: list[dict[str, str]] | None = None,
     ) -> SandboxInfo:
         sources_payload = self._sanitize_local_sources(local_sources)
-        used_modern_endpoint = False
+        attempt = 0
+        while attempt < _CREATE_SANDBOX_MAX_ATTEMPTS:
+            attempt += 1
+            used_modern_endpoint = False
 
-        try:
-            async with httpx.AsyncClient(timeout=_DEFAULT_TIMEOUT_SECONDS, trust_env=False) as client:
-                data, used_modern_endpoint = await self._create_sandbox_request(
-                    client=client,
-                    agent_id=agent_id,
-                    sources_payload=sources_payload,
+            try:
+                async with httpx.AsyncClient(timeout=_DEFAULT_TIMEOUT_SECONDS, trust_env=False) as client:
+                    data, used_modern_endpoint = await self._create_sandbox_request(
+                        client=client,
+                        agent_id=agent_id,
+                        sources_payload=sources_payload,
+                    )
+            except httpx.HTTPStatusError as exc:
+                details = (
+                    f"Cloud sandbox API returned HTTP {exc.response.status_code}: "
+                    f"{exc.response.text[:500]}"
                 )
-        except httpx.HTTPStatusError as exc:
-            details = (
-                f"Cloud sandbox API returned HTTP {exc.response.status_code}: "
-                f"{exc.response.text[:500]}"
-            )
-            raise SandboxInitializationError("Failed to create cloud sandbox.", details) from exc
-        except httpx.RequestError as exc:
-            raise SandboxInitializationError(
-                "Failed to connect to Esprit Cloud sandbox API.",
-                str(exc),
-            ) from exc
-
-        sandbox_id = str(data.get("sandbox_id") or data.get("workspace_id") or "").strip()
-        if not sandbox_id:
-            raise SandboxInitializationError(
-                "Invalid cloud sandbox response.",
-                "Response did not include sandbox_id/workspace_id.",
-            )
-
-        api_url = str(data.get("api_url") or data.get("tool_server_url") or "").rstrip("/")
-        if used_modern_endpoint and not api_url:
-            api_url = (await self._poll_tool_server_url(sandbox_id)) or ""
-            if not api_url:
+                raise SandboxInitializationError("Failed to create cloud sandbox.", details) from exc
+            except httpx.RequestError as exc:
                 raise SandboxInitializationError(
-                    "Cloud sandbox is still provisioning.",
-                    (
-                        "Tool server did not become ready in time. "
-                        "Please retry in a few moments."
-                    ),
+                    "Failed to connect to Esprit Cloud sandbox API.",
+                    str(exc),
+                ) from exc
+
+            sandbox_id = str(data.get("sandbox_id") or data.get("workspace_id") or "").strip()
+            if not sandbox_id:
+                raise SandboxInitializationError(
+                    "Invalid cloud sandbox response.",
+                    "Response did not include sandbox_id/workspace_id.",
                 )
-        if not api_url:
-            api_url = f"{self.api_base}/sandbox/{sandbox_id}"
 
-        tool_server_port = int(data.get("tool_server_port") or _DEFAULT_CLOUD_TOOL_PORT)
-        parsed_port = urlparse(api_url).port
-        if parsed_port:
-            tool_server_port = int(parsed_port)
+            api_url = str(data.get("api_url") or data.get("tool_server_url") or "").rstrip("/")
+            if used_modern_endpoint and not api_url:
+                api_url = (await self._poll_tool_server_url(sandbox_id)) or ""
+                if not api_url:
+                    await self._destroy_unready_sandbox(sandbox_id)
+                    if attempt < _CREATE_SANDBOX_MAX_ATTEMPTS:
+                        await asyncio.sleep(_CREATE_SANDBOX_RETRY_DELAY_SECONDS)
+                        continue
+                    raise SandboxInitializationError(
+                        "Cloud sandbox is still provisioning.",
+                        (
+                            "Tool server did not become ready in time after retry. "
+                            "Please retry in a few moments."
+                        ),
+                    )
+            if not api_url:
+                api_url = f"{self.api_base}/sandbox/{sandbox_id}"
 
-        auth_token = data.get("auth_token") or data.get("sandbox_token") or existing_token or self.access_token
+            tool_server_port = int(data.get("tool_server_port") or _DEFAULT_CLOUD_TOOL_PORT)
+            parsed_port = urlparse(api_url).port
+            if parsed_port:
+                tool_server_port = int(parsed_port)
 
-        self._sandboxes[sandbox_id] = {
-            "api_url": api_url,
-            "auth_token": str(auth_token) if auth_token else None,
-            "tool_server_port": tool_server_port,
-            "agent_id": agent_id,
-        }
-        self._track_sandbox(sandbox_id)
+            auth_token = data.get("auth_token") or data.get("sandbox_token") or existing_token or self.access_token
 
-        return {
-            "workspace_id": sandbox_id,
-            "api_url": api_url,
-            "auth_token": str(auth_token) if auth_token else None,
-            "tool_server_port": tool_server_port,
-            "agent_id": agent_id,
-        }
+            self._sandboxes[sandbox_id] = {
+                "api_url": api_url,
+                "auth_token": str(auth_token) if auth_token else None,
+                "tool_server_port": tool_server_port,
+                "agent_id": agent_id,
+            }
+            self._track_sandbox(sandbox_id)
+
+            return {
+                "workspace_id": sandbox_id,
+                "api_url": api_url,
+                "auth_token": str(auth_token) if auth_token else None,
+                "tool_server_port": tool_server_port,
+                "agent_id": agent_id,
+            }
+
+        raise SandboxInitializationError(
+            "Cloud sandbox is still provisioning.",
+            "Tool server did not become ready in time. Please retry in a few moments.",
+        )
 
     async def get_sandbox_url(self, container_id: str, _port: int) -> str:
         sandbox = self._sandboxes.get(container_id)
