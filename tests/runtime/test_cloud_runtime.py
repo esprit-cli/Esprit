@@ -250,6 +250,76 @@ async def test_create_sandbox_uses_local_upload_shape_for_sources(
 
 
 @pytest.mark.asyncio
+async def test_create_sandbox_uses_scan_target_from_tracer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state: dict[str, Any] = {"modern_payload": None}
+
+    class _FakeTracer:
+        scan_config = {
+            "targets": [
+                {
+                    "type": "web_application",
+                    "original": "https://trystud.me",
+                    "details": {"target_url": "https://trystud.me"},
+                }
+            ]
+        }
+
+    class FakeAsyncClient:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            _ = (args, kwargs)
+
+        async def __aenter__(self) -> Self:
+            return self
+
+        async def __aexit__(
+            self,
+            _exc_type: type[BaseException] | None,
+            _exc: BaseException | None,
+            _tb: object,
+        ) -> None:
+            return None
+
+        async def post(
+            self,
+            url: str,
+            *,
+            json: dict[str, Any],
+            headers: dict[str, str],
+        ) -> _FakeResponse:
+            _ = headers
+            if url.endswith("/sandbox/create"):
+                return _FakeResponse(404, {"detail": "Not Found"})
+            if url.endswith("/sandbox"):
+                state["modern_payload"] = json
+                return _FakeResponse(
+                    200,
+                    {
+                        "sandbox_id": "sbx-target",
+                        "status": "running",
+                        "tool_server_url": "https://tool.example.test",
+                    },
+                )
+            raise AssertionError(f"Unexpected POST URL: {url}")
+
+        async def get(self, _url: str, *, headers: dict[str, str]) -> _FakeResponse:
+            _ = headers
+            raise AssertionError("Status polling should not run when tool_server_url is present")
+
+    monkeypatch.setattr("esprit.runtime.cloud_runtime.httpx.AsyncClient", FakeAsyncClient)
+    monkeypatch.setattr("esprit.telemetry.tracer.get_global_tracer", lambda: _FakeTracer())
+
+    runtime = CloudRuntime(access_token="access-token", api_base="https://api.example.test")
+    await runtime.create_sandbox(agent_id="agent-target")
+
+    modern_payload = state["modern_payload"]
+    assert modern_payload is not None
+    assert modern_payload["target"] == "https://trystud.me"
+    assert modern_payload["target_type"] == "url"
+
+
+@pytest.mark.asyncio
 async def test_create_sandbox_raises_when_modern_endpoint_never_becomes_ready(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

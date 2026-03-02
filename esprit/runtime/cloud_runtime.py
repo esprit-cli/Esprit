@@ -173,6 +173,56 @@ class CloudRuntime(AbstractRuntime):
         return cleaned
 
     @staticmethod
+    def _infer_scan_target() -> tuple[str, str] | None:
+        """Infer runtime target from tracer scan config when available."""
+        try:
+            from esprit.telemetry.tracer import get_global_tracer
+        except Exception:  # noqa: BLE001
+            return None
+
+        tracer = get_global_tracer()
+        scan_config = getattr(tracer, "scan_config", None)
+        if not isinstance(scan_config, dict):
+            return None
+
+        targets = scan_config.get("targets")
+        if not isinstance(targets, list) or not targets:
+            return None
+
+        first_target = targets[0]
+        if not isinstance(first_target, dict):
+            return None
+
+        target_type = str(first_target.get("type") or "").strip().lower()
+        details = first_target.get("details")
+        details_dict = details if isinstance(details, dict) else {}
+        original = str(first_target.get("original") or "").strip()
+
+        if target_type == "repository":
+            repo = str(details_dict.get("target_repo") or original).strip()
+            if repo:
+                return repo, "repository"
+
+        if target_type == "local_code":
+            local_path = str(details_dict.get("target_path") or original).strip()
+            if local_path:
+                return local_path, "local_upload"
+
+        if target_type in {"web_application", "ip_address"}:
+            url_target = str(
+                details_dict.get("target_url")
+                or details_dict.get("target_ip")
+                or original
+            ).strip()
+            if url_target:
+                return url_target, "url"
+
+        if original:
+            return original, "url"
+
+        return None
+
+    @staticmethod
     def _sanitize_local_sources(
         local_sources: list[dict[str, str]] | None,
     ) -> list[dict[str, str]]:
@@ -210,6 +260,10 @@ class CloudRuntime(AbstractRuntime):
         if sources_payload:
             target = sources_payload[0].get("workspace_subdir") or default_target
             target_type = "local_upload"
+        else:
+            inferred = CloudRuntime._infer_scan_target()
+            if inferred:
+                target, target_type = inferred
 
         return {
             "scan_id": f"cli-{agent_id}",
