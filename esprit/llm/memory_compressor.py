@@ -20,6 +20,24 @@ try:
 except ImportError:
     PROVIDERS_AVAILABLE = False
 
+try:
+    from esprit.providers.esprit_subs import (
+        LLM_PROXY_URL,
+        _load_esprit_credentials,
+        resolve_bedrock_model,
+    )
+
+    ESPRIT_PROVIDER_AVAILABLE = True
+except ImportError:
+    ESPRIT_PROVIDER_AVAILABLE = False
+    LLM_PROXY_URL = ""
+
+    def _load_esprit_credentials() -> Any:  # type: ignore[no-redef]
+        return None
+
+    def resolve_bedrock_model(model_alias: str) -> str:  # type: ignore[no-redef]
+        return model_alias
+
 
 logger = logging.getLogger(__name__)
 
@@ -175,15 +193,41 @@ def summarize_messages(
             "messages": [{"role": "user", "content": prompt}],
             "timeout": timeout,
         }
-        if api_key:
-            completion_args["api_key"] = api_key
-        if api_base:
-            completion_args["api_base"] = api_base
-        if extra_headers:
-            completion_args["extra_headers"] = extra_headers
+
+        model_lower = model.lower().strip()
+        esprit_proxy_configured = False
+        if ESPRIT_PROVIDER_AVAILABLE and model_lower.startswith("esprit/"):
+            creds = _load_esprit_credentials()
+            if creds and getattr(creds, "access_token", ""):
+                alias = model.split("/", 1)[1] if "/" in model else model
+                bedrock_model = resolve_bedrock_model(alias)
+                completion_args["model"] = f"openai/{bedrock_model}"
+                completion_args["api_base"] = LLM_PROXY_URL
+                completion_args["api_key"] = creds.access_token
+                completion_args["extra_headers"] = {
+                    **(extra_headers if isinstance(extra_headers, dict) else {}),
+                    "X-Esprit-Provider": "bedrock",
+                    "X-Esprit-Model": bedrock_model,
+                }
+                esprit_proxy_configured = True
+            else:
+                # Without platform credentials we cannot route esprit/* through
+                # litellm. Skip compression to avoid noisy provider errors.
+                return messages[0]
+
+        if not esprit_proxy_configured:
+            if api_key:
+                completion_args["api_key"] = api_key
+            if api_base:
+                completion_args["api_base"] = api_base
+            if extra_headers:
+                completion_args["extra_headers"] = extra_headers
 
         if PROVIDERS_AVAILABLE:
             provider_id = get_auth_client().detect_provider(model)
+            if provider_id == "esprit" and not esprit_proxy_configured:
+                # litellm cannot call esprit/* without the proxy remap above.
+                return messages[0]
             if provider_id == "openai" and should_use_oauth(model):
                 completion_args["store"] = False
                 extra_body = completion_args.get("extra_body")
