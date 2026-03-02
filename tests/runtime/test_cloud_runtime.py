@@ -7,6 +7,7 @@ from typing import Any, Self
 import httpx
 import pytest
 
+from esprit.runtime import SandboxInitializationError
 from esprit.runtime.cloud_runtime import CloudRuntime
 
 
@@ -181,6 +182,60 @@ async def test_create_sandbox_uses_local_upload_shape_for_sources(
     assert modern_payload["target_type"] == "local_upload"
     assert result["workspace_id"] == "sbx-local"
     assert result["api_url"] == "https://tool.example.test"
+
+
+@pytest.mark.asyncio
+async def test_create_sandbox_raises_when_modern_endpoint_never_becomes_ready(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeAsyncClient:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            _ = (args, kwargs)
+
+        async def __aenter__(self) -> Self:
+            return self
+
+        async def __aexit__(
+            self,
+            _exc_type: type[BaseException] | None,
+            _exc: BaseException | None,
+            _tb: object,
+        ) -> None:
+            return None
+
+        async def post(
+            self,
+            url: str,
+            *,
+            json: dict[str, Any],
+            headers: dict[str, str],
+        ) -> _FakeResponse:
+            _ = (json, headers)
+            if url.endswith("/sandbox/create"):
+                return _FakeResponse(405, {"detail": "Method Not Allowed"})
+            if url.endswith("/sandbox"):
+                return _FakeResponse(
+                    200,
+                    {
+                        "sandbox_id": "sbx-never-ready",
+                        "status": "creating",
+                        "sandbox_token": "value-1",
+                    },
+                )
+            raise AssertionError(f"Unexpected POST URL: {url}")
+
+    async def _no_ready(_self: CloudRuntime, _sandbox_id: str) -> str | None:
+        return None
+
+    monkeypatch.setattr("esprit.runtime.cloud_runtime.httpx.AsyncClient", FakeAsyncClient)
+    monkeypatch.setattr(CloudRuntime, "_poll_tool_server_url", _no_ready)
+
+    runtime = CloudRuntime(access_token="access-token", api_base="https://api.example.test")
+
+    with pytest.raises(SandboxInitializationError) as exc:
+        await runtime.create_sandbox(agent_id="agent-1")
+
+    assert "still provisioning" in exc.value.message.lower()
 
 
 @pytest.mark.asyncio

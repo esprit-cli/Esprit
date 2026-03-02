@@ -16,6 +16,10 @@ from .runtime import AbstractRuntime, SandboxInfo
 
 _DEFAULT_TIMEOUT_SECONDS = 30
 _DEFAULT_CLOUD_TOOL_PORT = 443
+_STATUS_POLL_REQUEST_TIMEOUT_SECONDS = 8
+_STATUS_POLL_CONNECT_TIMEOUT_SECONDS = 5
+_TOOL_SERVER_READY_TIMEOUT_SECONDS = 240
+_TOOL_SERVER_READY_POLL_INTERVAL_SECONDS = 1.5
 _STATE_FILE_ENV = "ESPRIT_CLOUD_SANDBOX_STATE_FILE"
 _DEFAULT_STATE_FILE = Path.home() / ".esprit" / "state" / "cloud_sandboxes.json"
 
@@ -248,18 +252,30 @@ class CloudRuntime(AbstractRuntime):
     async def _poll_tool_server_url(self, sandbox_id: str) -> str | None:
         headers = {"Authorization": f"Bearer {self.access_token}"}
         status_url = f"{self.api_base}/sandbox/{sandbox_id}"
-        timeout = httpx.Timeout(_DEFAULT_TIMEOUT_SECONDS, connect=10)
+        timeout = httpx.Timeout(
+            _STATUS_POLL_REQUEST_TIMEOUT_SECONDS,
+            connect=_STATUS_POLL_CONNECT_TIMEOUT_SECONDS,
+        )
+        deadline = time.monotonic() + _TOOL_SERVER_READY_TIMEOUT_SECONDS
         async with httpx.AsyncClient(timeout=timeout, trust_env=False) as client:
-            for _ in range(20):
-                response = await client.get(status_url, headers=headers)
+            while time.monotonic() < deadline:
+                try:
+                    response = await client.get(status_url, headers=headers)
+                except httpx.RequestError:
+                    await asyncio.sleep(_TOOL_SERVER_READY_POLL_INTERVAL_SECONDS)
+                    continue
+
                 if response.status_code == 200:
-                    data = response.json()
+                    try:
+                        data = response.json()
+                    except ValueError:
+                        data = {}
                     tool_server_url = str(data.get("tool_server_url") or "").strip()
                     if tool_server_url:
                         return tool_server_url.rstrip("/")
                 elif response.status_code in {404, 410}:
                     return None
-                await asyncio.sleep(1)
+                await asyncio.sleep(_TOOL_SERVER_READY_POLL_INTERVAL_SECONDS)
         return None
 
     async def create_sandbox(
@@ -300,6 +316,14 @@ class CloudRuntime(AbstractRuntime):
         api_url = str(data.get("api_url") or data.get("tool_server_url") or "").rstrip("/")
         if used_modern_endpoint and not api_url:
             api_url = (await self._poll_tool_server_url(sandbox_id)) or ""
+            if not api_url:
+                raise SandboxInitializationError(
+                    "Cloud sandbox is still provisioning.",
+                    (
+                        "Tool server did not become ready in time. "
+                        "Please retry in a few moments."
+                    ),
+                )
         if not api_url:
             api_url = f"{self.api_base}/sandbox/{sandbox_id}"
 
