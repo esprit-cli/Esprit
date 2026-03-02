@@ -121,6 +121,71 @@ async def test_create_sandbox_falls_back_to_modern_endpoint_on_405(
 
 
 @pytest.mark.asyncio
+async def test_create_sandbox_uses_fallback_api_when_running_without_tool_url(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state: dict[str, Any] = {"status_calls": 0}
+
+    class FakeAsyncClient:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            _ = (args, kwargs)
+
+        async def __aenter__(self) -> Self:
+            return self
+
+        async def __aexit__(
+            self,
+            _exc_type: type[BaseException] | None,
+            _exc: BaseException | None,
+            _tb: object,
+        ) -> None:
+            return None
+
+        async def post(
+            self,
+            url: str,
+            *,
+            json: dict[str, Any],
+            headers: dict[str, str],
+        ) -> _FakeResponse:
+            _ = (json, headers)
+            if url.endswith("/sandbox/create"):
+                return _FakeResponse(405, {"detail": "Method Not Allowed"})
+            if url.endswith("/sandbox"):
+                return _FakeResponse(
+                    200,
+                    {
+                        "sandbox_id": "sbx-running-no-url",
+                        "status": "creating",
+                        "sandbox_token": "token-value",
+                    },
+                )
+            raise AssertionError(f"Unexpected POST URL: {url}")
+
+        async def get(self, url: str, *, headers: dict[str, str]) -> _FakeResponse:
+            _ = headers
+            assert url.endswith("/sandbox/sbx-running-no-url")
+            state["status_calls"] += 1
+            if state["status_calls"] == 1:
+                return _FakeResponse(200, {"status": "creating"})
+            return _FakeResponse(200, {"status": "running"})
+
+    async def _no_wait(_seconds: float) -> None:
+        return None
+
+    monkeypatch.setattr("esprit.runtime.cloud_runtime.httpx.AsyncClient", FakeAsyncClient)
+    monkeypatch.setattr("esprit.runtime.cloud_runtime.asyncio.sleep", _no_wait)
+
+    runtime = CloudRuntime(access_token="access-token", api_base="https://api.example.test")
+    result = await runtime.create_sandbox(agent_id="agent-no-url")
+
+    assert state["status_calls"] == 2
+    assert result["workspace_id"] == "sbx-running-no-url"
+    assert result["api_url"] == "https://api.example.test/sandbox/sbx-running-no-url"
+    assert result["tool_server_port"] == 443
+
+
+@pytest.mark.asyncio
 async def test_create_sandbox_uses_local_upload_shape_for_sources(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

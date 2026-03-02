@@ -275,6 +275,14 @@ class CloudRuntime(AbstractRuntime):
                     tool_server_url = str(data.get("tool_server_url") or "").strip()
                     if tool_server_url:
                         return tool_server_url.rstrip("/")
+                    status = str(data.get("status") or "").strip().lower()
+                    if status in {"running", "ready", "active"}:
+                        # Some backend revisions report running state before
+                        # emitting tool_server_url; the fallback endpoint
+                        # remains valid and prevents startup deadlocks.
+                        return f"{self.api_base}/sandbox/{sandbox_id}"
+                    if status in {"stopped", "failed", "error", "terminated"}:
+                        return None
                 elif response.status_code in {404, 410}:
                     return None
                 await asyncio.sleep(_TOOL_SERVER_READY_POLL_INTERVAL_SECONDS)
@@ -440,5 +448,20 @@ class CloudRuntime(AbstractRuntime):
             asyncio.run(self._cleanup_all(sandbox_ids))
             return
 
-        for sandbox_id in sandbox_ids:
-            loop.create_task(self.destroy_sandbox(sandbox_id))
+        if loop.is_running():
+            # We are inside an active loop (e.g. CLI/TUI shutdown path).
+            # Run cleanup in a dedicated thread so destroy requests complete
+            # before process teardown; fire-and-forget tasks can be dropped.
+            import concurrent.futures
+
+            try:
+                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                    pool.submit(asyncio.run, self._cleanup_all(sandbox_ids)).result(timeout=20)
+                return
+            except Exception:  # noqa: BLE001
+                # Fallback to best-effort scheduling on current loop.
+                for sandbox_id in sandbox_ids:
+                    loop.create_task(self.destroy_sandbox(sandbox_id))
+                return
+
+        asyncio.run(self._cleanup_all(sandbox_ids))
