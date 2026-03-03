@@ -99,3 +99,6 @@ Thumbs.db
 schema.graphql
 
 .opencode/
+
+# Local-only account smoke/integration tests (contains live auth usage)
+tests/local_account/
