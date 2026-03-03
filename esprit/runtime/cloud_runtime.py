@@ -20,6 +20,7 @@ _STATUS_POLL_REQUEST_TIMEOUT_SECONDS = 8
 _STATUS_POLL_CONNECT_TIMEOUT_SECONDS = 5
 _TOOL_SERVER_READY_TIMEOUT_SECONDS = 240
 _TOOL_SERVER_READY_POLL_INTERVAL_SECONDS = 1.5
+_TOOL_SERVER_TRANSIENT_TERMINAL_GRACE_SECONDS = 30
 _CREATE_SANDBOX_MAX_ATTEMPTS = 2
 _CREATE_SANDBOX_RETRY_DELAY_SECONDS = 2
 _STATE_FILE_ENV = "ESPRIT_CLOUD_SANDBOX_STATE_FILE"
@@ -313,6 +314,7 @@ class CloudRuntime(AbstractRuntime):
             connect=_STATUS_POLL_CONNECT_TIMEOUT_SECONDS,
         )
         deadline = time.monotonic() + _TOOL_SERVER_READY_TIMEOUT_SECONDS
+        ready_poll_started = time.monotonic()
         async with httpx.AsyncClient(timeout=timeout, trust_env=False) as client:
             while time.monotonic() < deadline:
                 try:
@@ -336,8 +338,24 @@ class CloudRuntime(AbstractRuntime):
                         # remains valid and prevents startup deadlocks.
                         return f"{self.api_base}/sandbox/{sandbox_id}"
                     if status in {"stopped", "failed", "error", "terminated"}:
+                        # ECS/task discovery can transiently report stopped-like
+                        # states during first seconds of warmup.
+                        if (
+                            time.monotonic() - ready_poll_started
+                            < _TOOL_SERVER_TRANSIENT_TERMINAL_GRACE_SECONDS
+                        ):
+                            await asyncio.sleep(_TOOL_SERVER_READY_POLL_INTERVAL_SECONDS)
+                            continue
                         return None
                 elif response.status_code in {404, 410}:
+                    # A newly-created sandbox can return 404 briefly before
+                    # route/task state propagation catches up.
+                    if (
+                        time.monotonic() - ready_poll_started
+                        < _TOOL_SERVER_TRANSIENT_TERMINAL_GRACE_SECONDS
+                    ):
+                        await asyncio.sleep(_TOOL_SERVER_READY_POLL_INTERVAL_SECONDS)
+                        continue
                     return None
                 await asyncio.sleep(_TOOL_SERVER_READY_POLL_INTERVAL_SECONDS)
         return None

@@ -186,6 +186,89 @@ async def test_create_sandbox_uses_fallback_api_when_running_without_tool_url(
 
 
 @pytest.mark.asyncio
+async def test_poll_tool_server_tolerates_transient_404_during_warmup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state: dict[str, int] = {"status_calls": 0}
+
+    class FakeAsyncClient:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            _ = (args, kwargs)
+
+        async def __aenter__(self) -> Self:
+            return self
+
+        async def __aexit__(
+            self,
+            _exc_type: type[BaseException] | None,
+            _exc: BaseException | None,
+            _tb: object,
+        ) -> None:
+            return None
+
+        async def get(self, _url: str, *, headers: dict[str, str]) -> _FakeResponse:
+            _ = headers
+            state["status_calls"] += 1
+            if state["status_calls"] == 1:
+                return _FakeResponse(404, {"detail": "Not Found"})
+            return _FakeResponse(
+                200,
+                {"status": "running", "tool_server_url": "https://tool.example.test"},
+            )
+
+    async def _no_wait(_seconds: float) -> None:
+        return None
+
+    monkeypatch.setattr("esprit.runtime.cloud_runtime.httpx.AsyncClient", FakeAsyncClient)
+    monkeypatch.setattr("esprit.runtime.cloud_runtime.asyncio.sleep", _no_wait)
+
+    runtime = CloudRuntime(access_token="access-token", api_base="https://api.example.test")
+    tool_url = await runtime._poll_tool_server_url("sbx-transient-404")
+
+    assert state["status_calls"] == 2
+    assert tool_url == "https://tool.example.test"
+
+
+@pytest.mark.asyncio
+async def test_poll_tool_server_respects_terminal_status_after_grace(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeAsyncClient:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            _ = (args, kwargs)
+
+        async def __aenter__(self) -> Self:
+            return self
+
+        async def __aexit__(
+            self,
+            _exc_type: type[BaseException] | None,
+            _exc: BaseException | None,
+            _tb: object,
+        ) -> None:
+            return None
+
+        async def get(self, _url: str, *, headers: dict[str, str]) -> _FakeResponse:
+            _ = headers
+            return _FakeResponse(200, {"status": "stopped"})
+
+    async def _no_wait(_seconds: float) -> None:
+        return None
+
+    monkeypatch.setattr("esprit.runtime.cloud_runtime.httpx.AsyncClient", FakeAsyncClient)
+    monkeypatch.setattr("esprit.runtime.cloud_runtime.asyncio.sleep", _no_wait)
+    monkeypatch.setattr(
+        "esprit.runtime.cloud_runtime._TOOL_SERVER_TRANSIENT_TERMINAL_GRACE_SECONDS",
+        0,
+    )
+
+    runtime = CloudRuntime(access_token="access-token", api_base="https://api.example.test")
+    tool_url = await runtime._poll_tool_server_url("sbx-stopped")
+
+    assert tool_url is None
+
+
+@pytest.mark.asyncio
 async def test_create_sandbox_uses_local_upload_shape_for_sources(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
