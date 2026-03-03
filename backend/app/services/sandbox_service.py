@@ -27,6 +27,7 @@ _TOOL_SERVER_TIMEOUT = httpx.Timeout(150.0, connect=5.0)
 _TOOL_SERVER_PROBE_TIMEOUT = httpx.Timeout(2.5, connect=1.0)
 _TOOL_SERVER_READY_ATTEMPTS = 8
 _TOOL_SERVER_READY_RETRY_SECONDS = 1.5
+_SANDBOX_WARMUP_GRACE_SECONDS = 120
 
 
 class SandboxService:
@@ -45,6 +46,35 @@ class SandboxService:
             aws_access_key_id=settings.aws_access_key_id,
             aws_secret_access_key=settings.aws_secret_access_key,
         )
+        self._recent_sandboxes: dict[tuple[str, str], datetime] = {}
+
+    def _recent_sandbox_state(self) -> dict[tuple[str, str], datetime]:
+        state = getattr(self, "_recent_sandboxes", None)
+        if isinstance(state, dict):
+            return state
+        state = {}
+        setattr(self, "_recent_sandboxes", state)
+        return state
+
+    def _mark_recent_sandbox(self, sandbox_id: str, user_id: str) -> None:
+        self._recent_sandbox_state()[(sandbox_id, user_id)] = datetime.now(tz=timezone.utc)
+
+    def _clear_recent_sandbox(self, sandbox_id: str, user_id: str) -> None:
+        self._recent_sandbox_state().pop((sandbox_id, user_id), None)
+
+    def _is_recent_sandbox(self, sandbox_id: str, user_id: str) -> bool:
+        state = self._recent_sandbox_state()
+        now = datetime.now(tz=timezone.utc)
+        stale_after = timedelta(seconds=_SANDBOX_WARMUP_GRACE_SECONDS)
+
+        stale_keys = [key for key, created_at in state.items() if (now - created_at) > stale_after]
+        for key in stale_keys:
+            state.pop(key, None)
+
+        created_at = state.get((sandbox_id, user_id))
+        if not created_at:
+            return False
+        return (now - created_at) <= stale_after
 
     @staticmethod
     def _tool_server_token_for_sandbox(sandbox_id: str) -> str:
@@ -255,6 +285,7 @@ class SandboxService:
                 task_arn=task_arn,
                 user_id=user_id,
             )
+            self._mark_recent_sandbox(sandbox_id, user_id)
 
             return SandboxCreateResponse(
                 sandbox_id=sandbox_id,
@@ -283,6 +314,11 @@ class SandboxService:
         try:
             task_match = self._find_owned_sandbox_task(sandbox_id, user_id)
             if task_match is None:
+                if self._is_recent_sandbox(sandbox_id, user_id):
+                    return SandboxStatusResponse(
+                        sandbox_id=sandbox_id,
+                        status="creating",
+                    )
                 return SandboxStatusResponse(
                     sandbox_id=sandbox_id,
                     status="stopped",
@@ -297,6 +333,7 @@ class SandboxService:
                 if resolved:
                     status = "running"
                     tool_server_url = self._proxy_tool_server_url(sandbox_id)
+                    self._clear_recent_sandbox(sandbox_id, user_id)
             return SandboxStatusResponse(
                 sandbox_id=sandbox_id,
                 status=status,
@@ -570,6 +607,7 @@ class SandboxService:
                         task=task_arn,
                         reason="Sandbox destroyed by user",
                     )
+                    self._clear_recent_sandbox(sandbox_id, user_id)
                     logger.info("Sandbox destroyed", sandbox_id=sandbox_id, user_id=user_id)
                     return True
 

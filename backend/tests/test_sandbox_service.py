@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
-from app.services.sandbox_service import SandboxService
+from app.services.sandbox_service import SandboxService, _SANDBOX_WARMUP_GRACE_SECONDS
 
 
 class _FakeECSClient:
@@ -66,6 +66,7 @@ def _build_service() -> SandboxService:
     service = SandboxService.__new__(SandboxService)
     service.ecs_client = _FakeECSClient()  # type: ignore[attr-defined]
     service.ec2_client = _FakeEC2Client()  # type: ignore[attr-defined]
+    service._recent_sandboxes = {}  # type: ignore[attr-defined]
     return service
 
 
@@ -99,3 +100,23 @@ def test_get_sandbox_status_returns_running_only_for_owner() -> None:
     assert owner_status.status in {"running", "creating"}
     assert other_status is not None
     assert other_status.status == "stopped"
+
+
+def test_get_sandbox_status_returns_creating_during_warmup_grace() -> None:
+    service = _build_service()
+    service._mark_recent_sandbox("sandbox-new", "user-1")  # type: ignore[attr-defined]
+
+    status = asyncio.run(service.get_sandbox_status("sandbox-new", "user-1"))
+    assert status is not None
+    assert status.status == "creating"
+
+
+def test_get_sandbox_status_returns_stopped_after_warmup_grace() -> None:
+    service = _build_service()
+    service._recent_sandboxes[("sandbox-expired", "user-1")] = (  # type: ignore[attr-defined]
+        datetime.now(tz=timezone.utc) - timedelta(seconds=_SANDBOX_WARMUP_GRACE_SECONDS + 1)
+    )
+
+    status = asyncio.run(service.get_sandbox_status("sandbox-expired", "user-1"))
+    assert status is not None
+    assert status.status == "stopped"
