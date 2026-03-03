@@ -7,7 +7,7 @@ from datetime import datetime, timezone, timedelta
 from collections import defaultdict
 import json
 from typing import Any, Dict, List
-from uuid import NAMESPACE_URL, uuid4, uuid5
+from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 import httpx
 from fastapi import APIRouter, HTTPException, Request, status
@@ -40,6 +40,17 @@ router = APIRouter()
 
 # Supabase client for database operations
 supabase = create_client(settings.supabase_url, settings.supabase_service_key)
+
+
+def _normalize_scan_id_or_404(scan_id: str) -> str:
+    """Normalize scan id to canonical UUID form and fail safely for malformed values."""
+    try:
+        return str(UUID(scan_id))
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Scan not found",
+        ) from exc
 
 
 # Simple in-memory rate limiter for presigned URL generation
@@ -956,6 +967,7 @@ async def get_scan_status(
 
     Returns the current status, vulnerability counts, and timestamps.
     """
+    scan_id = _normalize_scan_id_or_404(scan_id)
     response = supabase.table("scans").select("*").eq("id", scan_id).execute()
 
     if not response.data or len(response.data) == 0:
@@ -1001,6 +1013,8 @@ async def get_scan_logs(
 
     Supports pagination via after_id parameter for streaming logs.
     """
+    scan_id = _normalize_scan_id_or_404(scan_id)
+
     # First verify scan belongs to user
     scan_response = supabase.table("scans").select("user_id").eq("id", scan_id).execute()
 
@@ -1069,6 +1083,8 @@ async def start_scan(
     3. Launches ECS Fargate task with repo credentials
     4. Updates scan status to 'running'
     """
+    scan_id = _normalize_scan_id_or_404(scan_id)
+
     # Fetch scan record
     scan_response = supabase.table("scans").select("*").eq("id", scan_id).single().execute()
 
@@ -1366,6 +1382,8 @@ async def get_patch_url(
     from botocore.config import Config
     from botocore.exceptions import ClientError
 
+    scan_id = _normalize_scan_id_or_404(scan_id)
+
     # Verify scan exists and belongs to user
     scan_response = supabase.table("scans").select("*").eq("id", scan_id).single().execute()
 
@@ -1449,6 +1467,8 @@ async def cancel_scan(
     import structlog
     logger = structlog.get_logger()
 
+    scan_id = _normalize_scan_id_or_404(scan_id)
+
     # Fetch scan to verify ownership
     scan_response = supabase.table("scans").select("*").eq("id", scan_id).single().execute()
 
@@ -1510,6 +1530,8 @@ async def delete_scan(
     """
     import structlog
     logger = structlog.get_logger()
+
+    scan_id = _normalize_scan_id_or_404(scan_id)
 
     try:
         # Fetch scan to verify ownership
@@ -1586,6 +1608,8 @@ async def replay_scan(
     from datetime import datetime, timezone
 
     logger = structlog.get_logger()
+
+    scan_id = _normalize_scan_id_or_404(scan_id)
 
     # Fetch scan to verify ownership
     scan_response = supabase.table("scans").select("*").eq("id", scan_id).single().execute()
@@ -1716,6 +1740,8 @@ async def create_pr_for_scan(
     """
     import structlog
     logger = structlog.get_logger()
+
+    scan_id = _normalize_scan_id_or_404(scan_id)
 
     # Fetch scan record
     scan_response = supabase.table("scans").select("*").eq("id", scan_id).single().execute()
