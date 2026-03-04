@@ -230,9 +230,11 @@ async def test_poll_tool_server_tolerates_transient_404_during_warmup(
 
 
 @pytest.mark.asyncio
-async def test_poll_tool_server_respects_terminal_status_after_grace(
+async def test_poll_tool_server_keeps_polling_through_transient_stopped_status(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    state: dict[str, int] = {"status_calls": 0}
+
     class FakeAsyncClient:
         def __init__(self, *args: Any, **kwargs: Any) -> None:
             _ = (args, kwargs)
@@ -250,22 +252,25 @@ async def test_poll_tool_server_respects_terminal_status_after_grace(
 
         async def get(self, _url: str, *, headers: dict[str, str]) -> _FakeResponse:
             _ = headers
-            return _FakeResponse(200, {"status": "stopped"})
+            state["status_calls"] += 1
+            if state["status_calls"] < 3:
+                return _FakeResponse(200, {"status": "stopped"})
+            return _FakeResponse(
+                200,
+                {"status": "running", "tool_server_url": "https://tool.example.test"},
+            )
 
     async def _no_wait(_seconds: float) -> None:
         return None
 
     monkeypatch.setattr("esprit.runtime.cloud_runtime.httpx.AsyncClient", FakeAsyncClient)
     monkeypatch.setattr("esprit.runtime.cloud_runtime.asyncio.sleep", _no_wait)
-    monkeypatch.setattr(
-        "esprit.runtime.cloud_runtime._TOOL_SERVER_TRANSIENT_TERMINAL_GRACE_SECONDS",
-        0,
-    )
 
     runtime = CloudRuntime(access_token="access-token", api_base="https://api.example.test")
     tool_url = await runtime._poll_tool_server_url("sbx-stopped")
 
-    assert tool_url is None
+    assert state["status_calls"] == 3
+    assert tool_url == "https://tool.example.test"
 
 
 @pytest.mark.asyncio
