@@ -675,24 +675,6 @@ def build_tui_stats_text(
         stats_text.append("  all-time ", style=f"dim {muted}")
         stats_text.append(f"${lifetime_cost:.2f}", style="dim #a78bfa")
 
-    projected_duration, projected_cost, remaining_seconds = _estimate_projection(
-        tracer,
-        elapsed_seconds=elapsed,
-        current_cost=session_cost,
-        scan_completed=scan_completed,
-        scan_failed=scan_failed,
-    )
-    if projected_duration > 0:
-        stats_text.append("\n")
-        stats_text.append("  Proj ", style=f"dim {muted}")
-        projection_color = warning if projected_cost > (session_cost * 1.25) and session_cost > 0 else text_color
-        stats_text.append(f"${projected_cost:.2f}", style=f"bold {projection_color}")
-        stats_text.append("  total ", style=f"dim {muted}")
-        stats_text.append(_format_elapsed(projected_duration), style=f"bold {projection_color}")
-        if remaining_seconds > 0:
-            stats_text.append("  left ", style=f"dim {muted}")
-            stats_text.append(_format_elapsed(remaining_seconds), style=f"dim {projection_color}")
-
     # Vulnerabilities
     vuln_count = (
         len(tracer.vulnerability_reports)

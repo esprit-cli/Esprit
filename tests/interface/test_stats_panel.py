@@ -92,7 +92,7 @@ def test_tui_stats_uses_ascii_markers_for_vulns_and_tips(monkeypatch: pytest.Mon
         assert removed_marker not in plain
 
 
-def test_tui_stats_show_projection_fields(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_tui_stats_hides_projection_fields(monkeypatch: pytest.MonkeyPatch) -> None:
     tracer = SimpleNamespace(
         agents={"agent_1": {"status": "running"}},
         tool_executions={},
@@ -119,8 +119,9 @@ def test_tui_stats_show_projection_fields(monkeypatch: pytest.MonkeyPatch) -> No
     text = build_tui_stats_text(tracer, agent_config=agent_config, spinner_frame=0)
     plain = text.plain
 
-    assert "Proj " in plain
-    assert "total " in plain
+    assert "Proj " not in plain
+    assert "total " not in plain
+    assert "left " not in plain
 
 
 def test_tui_stats_prefers_tracer_aggregated_cost(monkeypatch: pytest.MonkeyPatch) -> None:
