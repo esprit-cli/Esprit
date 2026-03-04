@@ -2267,7 +2267,10 @@ class EspritTUIApp(App):  # type: ignore[misc]
             status_icon = self._agent_status_marker(status)
             vuln_count = self._agent_vulnerability_count(agent_id)
             vuln_indicator = f" ({vuln_count})" if vuln_count > 0 else ""
-            agent_name = f"{status_icon} {agent_name_raw}{vuln_indicator}"
+            elapsed = self._format_short_duration(self._get_agent_elapsed_seconds(agent_data))
+            token_count, _ = self._get_agent_token_snapshot(agent_id)
+            metrics_suffix = f"{elapsed} · {format_token_count(token_count)} tok"
+            agent_name = f"{status_icon} {agent_name_raw}{vuln_indicator} · {metrics_suffix}"
 
             if agent_node.label != agent_name:
                 agent_node.set_label(agent_name)
@@ -2643,12 +2646,25 @@ class EspritTUIApp(App):  # type: ignore[misc]
             return self._truncate_snippet(tool_snippet)
         return "Initializing scan flow."
 
-    def _build_status_line_text(self, agent_id: str, agent_data: dict[str, Any]) -> Text:
+    def _build_status_line_text(
+        self,
+        agent_id: str,
+        agent_data: dict[str, Any],
+        *,
+        include_name: bool = False,
+        include_cost: bool = True,
+        include_streaming_metrics: bool = True,
+        max_snippet_len: int = 110,
+        shimmer_snippet: bool = False,
+    ) -> Text:
         palette = self._theme_palette()
         status = str(agent_data.get("status", "running"))
         elapsed = self._format_short_duration(self._get_agent_elapsed_seconds(agent_data))
         token_count, cost = self._get_agent_token_snapshot(agent_id)
-        snippet = self._get_agent_live_snippet(agent_id, status)
+        snippet = self._truncate_snippet(
+            self._get_agent_live_snippet(agent_id, status),
+            max_len=max_snippet_len,
+        )
 
         text = Text()
         if status in {"running", "waiting"}:
@@ -2662,15 +2678,19 @@ class EspritTUIApp(App):  # type: ignore[misc]
 
         dim_style = f"dim {str(palette.get('muted', '#9ca3af'))}"
         info_style = str(palette.get("info", "#60a5fa"))
+        body_style = str(palette.get("text", "#e8d5d5"))
+        if include_name:
+            text.append(str(agent_data.get("name", agent_id)), style=f"bold {body_style}")
+            text.append(" · ", style=dim_style)
         text.append(elapsed, style=dim_style)
         text.append(" · ", style=dim_style)
         text.append(f"{format_token_count(token_count)} tok", style=dim_style)
-        if cost > 0:
+        if include_cost and cost > 0:
             text.append(" · ", style=dim_style)
             text.append(f"${cost:.2f}", style=dim_style)
 
         # Streaming tok/s and elapsed time
-        if agent_id in self._streaming_start_time:
+        if include_streaming_metrics and agent_id in self._streaming_start_time:
             stream_elapsed = time.monotonic() - self._streaming_start_time[agent_id]
             if stream_elapsed >= 0.5:
                 stream_content = self.tracer.get_streaming_content(agent_id) or ""
@@ -2683,7 +2703,10 @@ class EspritTUIApp(App):  # type: ignore[misc]
                 text.append(f"~{tps:.0f} tok/s", style=f"dim {info_style}")
 
         text.append(" · ", style=dim_style)
-        text.append(snippet, style=str(palette.get("text", "#e8d5d5")))
+        if shimmer_snippet and status in {"running", "waiting"}:
+            text.append_text(self._shimmer_text(snippet, max_len=max_snippet_len))
+        else:
+            text.append(snippet, style=body_style)
         return text
 
     def _build_global_status_snapshot_text(self) -> Text:
@@ -2727,7 +2750,7 @@ class EspritTUIApp(App):  # type: ignore[misc]
         return enriched
 
     def _build_subagent_dashboard(self, root_agent_id: str) -> Any:
-        """Build a renderable dashboard showing snippets of all child agents."""
+        """Build a renderable dashboard showing status lines for root + child agents."""
         children = self._get_child_agents(root_agent_id)
         if not children:
             return None
@@ -2743,29 +2766,41 @@ class EspritTUIApp(App):  # type: ignore[misc]
         header.append("─" * 40, style=f"dim {header_color}")
         renderables.append(header)
 
-        spinner = self._running_status_frame()
-
-        status_styles: dict[str, tuple[str, str]] = {
-            "running": (f"[{spinner}]", self._marker_color("run")),
-            "waiting": ("[warn]", self._marker_color("warn")),
-            "completed": ("[ok]", self._marker_color("ok")),
-            "failed": ("[err]", self._marker_color("err")),
-            "stopped": ("[ok]", self._marker_color("ok")),
-            "stopping": ("[warn]", self._marker_color("warn")),
-            "llm_failed": ("[err]", self._marker_color("err")),
-        }
+        root_data = self.tracer.agents.get(root_agent_id, {})
+        if isinstance(root_data, dict):
+            root_card = Text("  ")
+            root_card.append_text(
+                self._build_status_line_text(
+                    root_agent_id,
+                    root_data,
+                    include_name=True,
+                    include_cost=False,
+                    include_streaming_metrics=False,
+                    max_snippet_len=84,
+                    shimmer_snippet=root_data.get("status", "running") in ("running", "waiting"),
+                )
+            )
+            renderables.append(root_card)
+            renderables.append(Text(""))
 
         for child in children:
             agent_id = child["id"]
-            agent_name = child.get("name", "Agent")
             status = child.get("status", "running")
-            icon, color = status_styles.get(status, ("[run]", str(palette.get("status_idle", "#947575"))))
             is_active = status in ("running", "waiting")
 
             card = Text()
-            # Agent name line with status icon
-            card.append(f"  {icon} ", style=color)
-            card.append(agent_name, style=f"bold {color}")
+            card.append("  ")
+            card.append_text(
+                self._build_status_line_text(
+                    agent_id,
+                    child,
+                    include_name=True,
+                    include_cost=False,
+                    include_streaming_metrics=False,
+                    max_snippet_len=84,
+                    shimmer_snippet=is_active,
+                )
+            )
 
             vuln_count = self._agent_vulnerability_count(agent_id)
             if vuln_count > 0:
@@ -2773,22 +2808,6 @@ class EspritTUIApp(App):  # type: ignore[misc]
                     f"  [warn:{vuln_count}]",
                     style=f"bold {self._marker_color('warn')}",
                 )
-
-            snippet = self._get_agent_snippet(agent_id)
-            if snippet:
-                card.append("\n")
-                if is_active:
-                    # Shimmer effect for running agents
-                    card.append("    ")
-                    shimmer = self._shimmer_text(snippet, max_len=90)
-                    card.append_text(shimmer)
-                else:
-                    card.append("    ", style="dim")
-                    display = snippet if len(snippet) <= 90 else snippet[:89] + "…"
-                    card.append(display, style="dim")
-            elif is_active:
-                card.append("\n    ", style="dim")
-                card.append_text(self._shimmer_text("Initializing…", max_len=90))
 
             renderables.append(card)
 
@@ -3164,7 +3183,7 @@ class EspritTUIApp(App):  # type: ignore[misc]
 
     def _start_dot_animation(self) -> None:
         if self._dot_animation_timer is None:
-            self._dot_animation_timer = self.set_interval(0.06, self._animate_dots)
+            self._dot_animation_timer = self.set_interval(0.033, self._animate_dots)
 
     def _stop_dot_animation(self) -> None:
         if self._dot_animation_timer is not None:
@@ -3185,7 +3204,7 @@ class EspritTUIApp(App):  # type: ignore[misc]
                 total_range = max_pos + offset
                 cycle_length = total_range * 2
                 self._spinner_frame_index = (self._spinner_frame_index + 1) % cycle_length
-                self._shimmer_frame_index += 1
+                self._shimmer_frame_index += 2
                 self._update_agent_status_display()
                 if (
                     self.selected_agent_id == self._get_root_agent_id()

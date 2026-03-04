@@ -536,10 +536,12 @@ def build_tui_stats_text(
     marker_colors = {marker: get_marker_color(tokens, marker) for marker in ("run", "ok", "warn", "err", "web")}
 
     model = ""
+    session_mode = "deep"
     # Model name with provider badge
     if agent_config:
-        llm_config = agent_config["llm_config"]
+        llm_config = agent_config.get("llm_config")
         model = getattr(llm_config, "model_name", "Unknown")
+        session_mode = str(getattr(llm_config, "scan_mode", session_mode) or session_mode)
         bare_model = model.split("/", 1)[-1] if "/" in model else model
         is_antigravity = model.startswith("antigravity/")
 
@@ -555,6 +557,20 @@ def build_tui_stats_text(
         elif "claude" in bare_model.lower():
             stats_text.append("CC ", style="bold #d97706")
         stats_text.append(bare_model, style=text_color)
+
+    normalized_mode = session_mode.strip().lower()
+    session_labels = {
+        "quick": ("Quick", success),
+        "standard": ("Standard", info),
+        "deep": ("Deep", warning),
+    }
+    session_label, session_color = session_labels.get(
+        normalized_mode, (normalized_mode.title() or "Deep", warning)
+    )
+    stats_text.append("\n")
+    stats_text.append("[run] ", style=f"bold {marker_colors['run']}")
+    stats_text.append("Session ", style=f"dim {muted}")
+    stats_text.append(session_label, style=f"bold {session_color}")
 
     # Elapsed time and scan status
     elapsed = 0.0
