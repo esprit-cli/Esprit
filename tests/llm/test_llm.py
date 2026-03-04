@@ -518,6 +518,21 @@ class TestEspritModelFallback:
         assert llm._try_esprit_model_fallback(err) is True
         assert llm.config.model_name == "esprit/default"
 
+    def test_paid_plan_falls_back_from_default_to_kimi_on_gateway_timeout(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        llm = LLM.__new__(LLM)
+        llm.config = SimpleNamespace(model_name="esprit/default")
+
+        monkeypatch.setattr("esprit.auth.credentials.get_user_plan", lambda: "pro")
+        monkeypatch.setattr("esprit.llm.llm.Config.get", lambda _name: None)
+
+        err = RuntimeError("gateway timeout")
+        err.status_code = 504  # type: ignore[attr-defined]
+
+        assert llm._try_esprit_model_fallback(err) is True
+        assert llm.config.model_name == "esprit/kimi-k2.5"
+
 
 class TestBuildCompletionArgs:
     @pytest.mark.parametrize("configured_model", ["openai/codex-5.3", "codex-5.3"])
@@ -910,6 +925,115 @@ class TestEspritProxyRouting:
                 pass
 
         assert "request_id: test-edge-id" in (exc.value.details or "")
+
+    @pytest.mark.asyncio
+    async def test_stream_esprit_proxy_retries_transient_gateway_timeout(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        llm = LLM.__new__(LLM)
+        llm.config = SimpleNamespace(model_name="esprit/default", timeout=120)
+        llm._total_stats = SimpleNamespace(
+            requests=0,
+            input_tokens=0,
+            output_tokens=0,
+            cached_tokens=0,
+            cost=0.0,
+            last_input_tokens=0,
+        )
+        llm._reasoning_effort = "high"
+
+        monkeypatch.setattr(LLM, "_supports_reasoning", lambda self: False)
+        monkeypatch.setattr(LLM, "_update_usage_stats", lambda self, _response: None)
+        monkeypatch.setattr(
+            "esprit.providers.esprit_subs._load_esprit_credentials",
+            lambda: SimpleNamespace(access_token="token"),
+        )
+        monkeypatch.setattr(
+            "esprit.providers.esprit_subs.resolve_bedrock_model",
+            lambda _model: "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+        )
+        monkeypatch.setattr(
+            "esprit.providers.esprit_subs.LLM_PROXY_URL",
+            "https://example.test/api/v1/llm/generate",
+        )
+        monkeypatch.setattr(
+            "esprit.llm.llm.Config.get",
+            lambda name: "2" if name == "esprit_proxy_transient_retries" else None,
+        )
+
+        sleep_calls: list[float] = []
+
+        async def fake_sleep(seconds: float) -> None:
+            sleep_calls.append(seconds)
+
+        monkeypatch.setattr("esprit.llm.llm.asyncio.sleep", fake_sleep)
+
+        class FakeGatewayTimeoutResponse:
+            status_code = 504
+            text = "<html><title>504 Gateway Time-out</title></html>"
+            headers: dict[str, str] = {}
+
+            @staticmethod
+            def json() -> dict[str, object]:
+                return {}
+
+        class FakeSuccessResponse:
+            status_code = 200
+            text = ""
+            headers: dict[str, str] = {}
+
+            @staticmethod
+            def json() -> dict[str, object]:
+                return {
+                    "choices": [{"message": {"content": "proxy-ok"}}],
+                    "usage": {"prompt_tokens": 10, "completion_tokens": 2},
+                }
+
+        responses: list[object] = [
+            FakeGatewayTimeoutResponse(),
+            FakeGatewayTimeoutResponse(),
+            FakeSuccessResponse(),
+        ]
+
+        class FakeAsyncClient:
+            def __init__(self, timeout: int):
+                _ = timeout
+
+            async def __aenter__(self) -> "FakeAsyncClient":
+                return self
+
+            async def __aexit__(self, _exc_type, _exc, _tb) -> None:
+                return None
+
+            async def post(
+                self, url: str, headers: dict[str, str], json: dict[str, object]
+            ) -> object:
+                _ = (url, headers, json)
+                return responses.pop(0)
+
+        monkeypatch.setattr("esprit.llm.llm.httpx.AsyncClient", FakeAsyncClient)
+
+        outputs: list[str] = []
+        async for item in llm._stream_esprit_proxy([{"role": "user", "content": "ping"}]):
+            outputs.append(item.content)
+
+        assert outputs == ["proxy-ok"]
+        assert sleep_calls == [2, 4]
+        assert llm._total_stats.requests == 3
+
+    def test_format_esprit_proxy_error_details_rewrites_gateway_timeout_html(self) -> None:
+        llm = LLM.__new__(LLM)
+
+        response = SimpleNamespace(
+            status_code=504,
+            text="<html><head><title>504 Gateway Time-out</title></head><body>504 Gateway Time-out</body></html>",
+            headers={"x-vercel-id": "edge-123"},
+        )
+
+        details = llm._format_esprit_proxy_error_details(response)
+        assert "Upstream model gateway timed out" in details
+        assert "<html>" not in details.lower()
+        assert "request_id: edge-123" in details
 
 
 class TestRaiseError:

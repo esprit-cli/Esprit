@@ -83,6 +83,9 @@ _AUTH_ERROR_TEXT_MARKERS = (
     "unauthorized",
 )
 
+_ESPRIT_PROXY_TRANSIENT_STATUS_CODES = {502, 503, 504}
+_ESPRIT_PROXY_MAX_TRANSIENT_RETRIES = 2
+
 _OPENCODE_UPSTREAM_ERROR_MARKERS = (
     "prompt_tokens",
     "upstream model error",
@@ -414,22 +417,61 @@ class LLM:
             "Content-Type": "application/json",
         }
 
-        self._total_stats.requests += 1
+        response: httpx.Response | None = None
+        max_proxy_retries = max(
+            0,
+            int(Config.get("esprit_proxy_transient_retries") or _ESPRIT_PROXY_MAX_TRANSIENT_RETRIES),
+        )
 
         try:
             async with httpx.AsyncClient(timeout=self.config.timeout) as client:
-                response = await client.post(LLM_PROXY_URL, headers=headers, json=request_body)
-        except httpx.HTTPError as e:
+                for attempt in range(max_proxy_retries + 1):
+                    self._total_stats.requests += 1
+                    try:
+                        response = await client.post(LLM_PROXY_URL, headers=headers, json=request_body)
+                    except httpx.HTTPError as e:
+                        if attempt < max_proxy_retries:
+                            wait = min(8, 2 * (2**attempt))
+                            logger.warning(
+                                "Esprit proxy transport error (%s), retrying in %.0fs...",
+                                type(e).__name__,
+                                wait,
+                            )
+                            await asyncio.sleep(wait)
+                            continue
+                        raise LLMRequestFailedError(
+                            "LLM request failed: Esprit proxy request failed",
+                            details=str(e),
+                        ) from e
+
+                    if response.status_code < 400:
+                        break
+
+                    if (
+                        attempt < max_proxy_retries
+                        and response.status_code in _ESPRIT_PROXY_TRANSIENT_STATUS_CODES
+                    ):
+                        wait = min(8, 2 * (2**attempt))
+                        logger.warning(
+                            "Esprit proxy transient HTTP %s, retrying in %.0fs...",
+                            response.status_code,
+                            wait,
+                        )
+                        await asyncio.sleep(wait)
+                        continue
+
+                    raise LLMRequestFailedError(
+                        f"LLM request failed: Esprit proxy returned HTTP {response.status_code}",
+                        details=self._format_esprit_proxy_error_details(response),
+                        status_code=response.status_code,
+                    )
+        except LLMRequestFailedError:
+            raise
+
+        if response is None:
             raise LLMRequestFailedError(
                 "LLM request failed: Esprit proxy request failed",
-                details=str(e),
-            ) from e
-
-        if response.status_code >= 400:
-            raise LLMRequestFailedError(
-                f"LLM request failed: Esprit proxy returned HTTP {response.status_code}",
-                details=self._format_esprit_proxy_error_details(response),
-                status_code=response.status_code,
+                details="Empty response from Esprit proxy",
             )
 
         try:
@@ -479,6 +521,14 @@ class LLM:
 
         if not details:
             details = "Empty error response"
+
+        lower_details = details.lower()
+        if response.status_code in _ESPRIT_PROXY_TRANSIENT_STATUS_CODES and (
+            "<html" in lower_details
+            or "gateway time-out" in lower_details
+            or "gateway timeout" in lower_details
+        ):
+            details = "Upstream model gateway timed out. Please retry shortly."
 
         if response.status_code >= 500 and details == "Internal Server Error":
             details = (
@@ -1421,7 +1471,7 @@ class LLM:
         return False
 
     def _try_esprit_model_fallback(self, e: Exception) -> bool:
-        """Switch Esprit cloud model on upstream throttling."""
+        """Switch Esprit cloud model on upstream throttling/transient outages."""
         if str(Config.get("esprit_auto_fallback") or "").lower() in ("false", "0", "no"):
             return False
 
@@ -1432,7 +1482,7 @@ class LLM:
         code = getattr(e, "status_code", None) or getattr(
             getattr(e, "response", None), "status_code", None
         )
-        if code != 429:
+        if code not in ({429} | _ESPRIT_PROXY_TRANSIENT_STATUS_CODES):
             return False
 
         from esprit.auth.credentials import get_user_plan
@@ -1471,10 +1521,12 @@ class LLM:
                 continue
             self.config.model_name = fallback_model
             tried.add(fallback_model)
+            reason = f"HTTP {code}" if code is not None else type(e).__name__
             logger.warning(
-                "Esprit cloud model rate limited, switching fallback from %s to %s",
+                "Esprit cloud model fallback from %s to %s due to %s",
                 current_model,
                 fallback_model,
+                reason,
             )
             return True
 
