@@ -1883,6 +1883,7 @@ class EspritTUIApp(App):  # type: ignore[misc]
         self.agent: EspritAgent | None = None
 
         self._spinner_frame_index: int = 0  # Current animation frame index
+        self._shimmer_frame_index: int = 0
         self._sweep_num_squares: int = 6  # Number of squares in sweep animation
         palette = self._theme_palette()
         self._sweep_colors: list[str] = list(palette.get("sweep_colors", []))
@@ -2448,7 +2449,7 @@ class EspritTUIApp(App):  # type: ignore[misc]
 
         # Sweep position advances each frame; cycle across the full text
         cycle = text_len + len(colors)
-        sweep_center = (self._stats_spinner_frame * 3) % cycle - half_w
+        sweep_center = self._shimmer_frame_index % cycle - half_w
 
         for i, char in enumerate(content):
             dist = abs(i - sweep_center)
@@ -3179,7 +3180,14 @@ class EspritTUIApp(App):  # type: ignore[misc]
                 total_range = max_pos + offset
                 cycle_length = total_range * 2
                 self._spinner_frame_index = (self._spinner_frame_index + 1) % cycle_length
+                self._shimmer_frame_index += 1
                 self._update_agent_status_display()
+                if (
+                    self.selected_agent_id == self._get_root_agent_id()
+                    and self._has_running_children(self.selected_agent_id)
+                ):
+                    # Repaint dashboard shimmer at the dot-animation cadence.
+                    self._update_chat_view()
 
         if not has_active_agents:
             has_active_agents = any(
@@ -3190,6 +3198,7 @@ class EspritTUIApp(App):  # type: ignore[misc]
         if not has_active_agents:
             self._stop_dot_animation()
             self._spinner_frame_index = 0
+            self._shimmer_frame_index = 0
 
     def _agent_has_real_activity(self, agent_id: str) -> bool:
         initial_tools = {"scan_start_info", "subagent_start_info"}
