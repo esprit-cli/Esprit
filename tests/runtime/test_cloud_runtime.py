@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import uuid
 from pathlib import Path
 from typing import Any, Self
 
@@ -107,7 +108,8 @@ async def test_create_sandbox_falls_back_to_modern_endpoint_on_405(
     assert state["status_calls"] == 2
 
     modern_payload = state["modern_payload"]
-    assert modern_payload["scan_id"] == "cli-agent-1"
+    assert modern_payload["scan_id"] != "cli-agent-1"
+    uuid.UUID(modern_payload["scan_id"])  # validates it's a proper UUID
     assert modern_payload["scan_type"] == "quick"
     assert modern_payload["target_type"] == "url"
 
@@ -321,6 +323,10 @@ async def test_create_sandbox_uses_local_upload_shape_for_sources(
             raise AssertionError("Status polling should not run when tool_server_url is present")
 
     monkeypatch.setattr("esprit.runtime.cloud_runtime.httpx.AsyncClient", FakeAsyncClient)
+    monkeypatch.setattr(
+        "esprit.runtime.cloud_runtime.upload_local_sources",
+        lambda **kwargs: "uploads/fake-key.tar.gz",
+    )
 
     runtime = CloudRuntime(access_token="access-token", api_base="https://api.example.test")
     result = await runtime.create_sandbox(
@@ -333,6 +339,7 @@ async def test_create_sandbox_uses_local_upload_shape_for_sources(
     modern_payload = state["modern_payload"]
     assert modern_payload["target"] == "workspace"
     assert modern_payload["target_type"] == "local_upload"
+    uuid.UUID(modern_payload["scan_id"])  # validates UUID format
     assert result["workspace_id"] == "sbx-local"
     assert result["api_url"] == "https://tool.example.test"
 
@@ -486,8 +493,9 @@ async def test_create_sandbox_avoids_retry_loop_when_modern_endpoint_is_slow(
         client: httpx.AsyncClient,
         agent_id: str,
         sources_payload: list[dict[str, str]],
+        scan_id: str | None = None,
     ) -> tuple[dict[str, Any], bool]:
-        _ = (self, client, agent_id, sources_payload)
+        _ = (self, client, agent_id, sources_payload, scan_id)
         state["create_calls"] += 1
         idx = state["create_calls"]
         return (

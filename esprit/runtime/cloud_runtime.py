@@ -4,12 +4,14 @@ import asyncio
 import json
 import os
 import time
+import uuid
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
 import httpx
 
+from esprit.interface.utils import upload_local_sources
 from . import SandboxInitializationError
 from .runtime import AbstractRuntime, SandboxInfo
 
@@ -249,6 +251,7 @@ class CloudRuntime(AbstractRuntime):
     def _build_modern_sandbox_payload(
         agent_id: str,
         sources_payload: list[dict[str, str]],
+        scan_id: str | None = None,
     ) -> dict[str, Any]:
         scan_mode = str(os.getenv("ESPRIT_SCAN_MODE", "quick")).strip().lower()
         if scan_mode not in {"quick", "deep", "compliance"}:
@@ -266,7 +269,7 @@ class CloudRuntime(AbstractRuntime):
                 target, target_type = inferred
 
         return {
-            "scan_id": f"cli-{agent_id}",
+            "scan_id": scan_id or str(uuid.uuid4()),
             "target": target,
             "target_type": target_type,
             "scan_type": scan_mode,
@@ -277,6 +280,7 @@ class CloudRuntime(AbstractRuntime):
         client: httpx.AsyncClient,
         agent_id: str,
         sources_payload: list[dict[str, str]],
+        scan_id: str | None = None,
     ) -> tuple[dict[str, Any], bool]:
         headers = {"Authorization": f"Bearer {self.access_token}"}
         legacy_payload: dict[str, Any] = {"agent_id": agent_id}
@@ -296,7 +300,7 @@ class CloudRuntime(AbstractRuntime):
             if legacy_exc.response.status_code not in {404, 405}:
                 raise
 
-        modern_payload = self._build_modern_sandbox_payload(agent_id, sources_payload)
+        modern_payload = self._build_modern_sandbox_payload(agent_id, sources_payload, scan_id=scan_id)
         modern_response = await client.post(
             f"{self.api_base}/sandbox",
             json=modern_payload,
@@ -374,6 +378,17 @@ class CloudRuntime(AbstractRuntime):
         local_sources: list[dict[str, str]] | None = None,
     ) -> SandboxInfo:
         sources_payload = self._sanitize_local_sources(local_sources)
+
+        # Generate a UUID scan_id and upload local sources to S3 before creating the sandbox.
+        scan_id = str(uuid.uuid4())
+        if sources_payload:
+            upload_local_sources(
+                local_sources=sources_payload,
+                scan_id=scan_id,
+                api_url=self.api_base,
+                api_token=self.access_token,
+            )
+
         attempt = 0
         while attempt < _CREATE_SANDBOX_MAX_ATTEMPTS:
             attempt += 1
@@ -385,6 +400,7 @@ class CloudRuntime(AbstractRuntime):
                         client=client,
                         agent_id=agent_id,
                         sources_payload=sources_payload,
+                        scan_id=scan_id,
                     )
             except httpx.HTTPStatusError as exc:
                 details = (
