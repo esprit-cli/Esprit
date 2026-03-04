@@ -2,6 +2,7 @@ import argparse
 import asyncio
 import atexit
 import logging
+import os
 import random
 import signal
 import sys
@@ -2100,7 +2101,11 @@ class EspritTUIApp(App):  # type: ignore[misc]
         # Start GUI server (always available for live dashboard)
         if self._gui_server is not None:
             try:
-                self._gui_server.start(self.tracer)
+                # Auto-open browser dashboard by default; allow opt-out with:
+                # ESPRIT_OPEN_GUI_BROWSER=0
+                open_gui_browser = os.getenv("ESPRIT_OPEN_GUI_BROWSER", "1").strip().lower()
+                should_open_browser = open_gui_browser not in {"0", "false", "no", "off"}
+                self._gui_server.start(self.tracer, open_browser=should_open_browser)
             except Exception:  # noqa: BLE001
                 logging.debug("Failed to start GUI server", exc_info=True)
 
