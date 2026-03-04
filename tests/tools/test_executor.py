@@ -2,6 +2,10 @@
 
 import asyncio
 from typing import Any
+from types import SimpleNamespace
+
+import httpx
+import pytest
 
 from esprit.tools import executor as executor_module
 from esprit.tools.executor import _extract_plain_result, process_tool_invocations
@@ -122,3 +126,157 @@ class TestProcessToolInvocations:
         assert conversation_history[0]["tool_call_id"] == "call_1"
         assert conversation_history[1]["role"] == "tool"
         assert conversation_history[1]["tool_call_id"] == "call_2"
+
+
+class TestSandboxExecuteRetries:
+    @pytest.mark.asyncio
+    async def test_retries_transient_http_status_before_succeeding(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        class FakeRuntime:
+            async def get_sandbox_url(self, _sandbox_id: str, _tool_server_port: int) -> str:
+                return "https://tool.example.test"
+
+        class FakeResponse:
+            def __init__(self, status_code: int, payload: dict[str, Any]) -> None:
+                self.status_code = status_code
+                self._payload = payload
+                self.request = httpx.Request("POST", "https://tool.example.test/execute")
+
+            def raise_for_status(self) -> None:
+                if self.status_code >= 400:
+                    raise httpx.HTTPStatusError(
+                        f"HTTP {self.status_code}",
+                        request=self.request,
+                        response=self,
+                    )
+
+            def json(self) -> dict[str, Any]:
+                return self._payload
+
+        state: dict[str, int] = {"calls": 0}
+        responses = [
+            FakeResponse(503, {}),
+            FakeResponse(200, {"result": "ok"}),
+        ]
+
+        class FakeAsyncClient:
+            def __init__(self, *args: Any, **kwargs: Any) -> None:
+                _ = (args, kwargs)
+
+            async def __aenter__(self) -> "FakeAsyncClient":
+                return self
+
+            async def __aexit__(
+                self,
+                _exc_type: type[BaseException] | None,
+                _exc: BaseException | None,
+                _tb: object,
+            ) -> None:
+                return None
+
+            async def post(
+                self,
+                _url: str,
+                *,
+                json: dict[str, Any],
+                headers: dict[str, str],
+                timeout: httpx.Timeout,
+            ) -> FakeResponse:
+                _ = (json, headers, timeout)
+                state["calls"] += 1
+                return responses.pop(0)
+
+        async def _no_sleep(_seconds: float) -> None:
+            return None
+
+        monkeypatch.setattr(executor_module, "get_runtime", lambda: FakeRuntime())
+        monkeypatch.setattr(executor_module.httpx, "AsyncClient", FakeAsyncClient)
+        monkeypatch.setattr(executor_module.asyncio, "sleep", _no_sleep)
+        monkeypatch.setattr(executor_module.posthog, "error", lambda *_args, **_kwargs: None)
+        monkeypatch.setattr(executor_module, "_EXECUTE_MAX_ATTEMPTS", 3)
+
+        agent_state = SimpleNamespace(
+            sandbox_id="sandbox-1",
+            sandbox_token="token-1",
+            sandbox_info={"tool_server_port": 443},
+            agent_id="agent-1",
+        )
+
+        result = await executor_module._execute_tool_in_sandbox(
+            "terminal_execute",
+            agent_state,
+            command="pwd",
+        )
+
+        assert result == "ok"
+        assert state["calls"] == 2
+
+    @pytest.mark.asyncio
+    async def test_does_not_retry_authentication_failure(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        class FakeRuntime:
+            async def get_sandbox_url(self, _sandbox_id: str, _tool_server_port: int) -> str:
+                return "https://tool.example.test"
+
+        class FakeResponse:
+            status_code = 401
+            request = httpx.Request("POST", "https://tool.example.test/execute")
+
+            def raise_for_status(self) -> None:
+                raise httpx.HTTPStatusError("HTTP 401", request=self.request, response=self)
+
+            @staticmethod
+            def json() -> dict[str, Any]:
+                return {}
+
+        state: dict[str, int] = {"calls": 0}
+
+        class FakeAsyncClient:
+            def __init__(self, *args: Any, **kwargs: Any) -> None:
+                _ = (args, kwargs)
+
+            async def __aenter__(self) -> "FakeAsyncClient":
+                return self
+
+            async def __aexit__(
+                self,
+                _exc_type: type[BaseException] | None,
+                _exc: BaseException | None,
+                _tb: object,
+            ) -> None:
+                return None
+
+            async def post(
+                self,
+                _url: str,
+                *,
+                json: dict[str, Any],
+                headers: dict[str, str],
+                timeout: httpx.Timeout,
+            ) -> FakeResponse:
+                _ = (json, headers, timeout)
+                state["calls"] += 1
+                return FakeResponse()
+
+        monkeypatch.setattr(executor_module, "get_runtime", lambda: FakeRuntime())
+        monkeypatch.setattr(executor_module.httpx, "AsyncClient", FakeAsyncClient)
+        monkeypatch.setattr(executor_module.posthog, "error", lambda *_args, **_kwargs: None)
+        monkeypatch.setattr(executor_module, "_EXECUTE_MAX_ATTEMPTS", 5)
+
+        agent_state = SimpleNamespace(
+            sandbox_id="sandbox-1",
+            sandbox_token="token-1",
+            sandbox_info={"tool_server_port": 443},
+            agent_id="agent-1",
+        )
+
+        with pytest.raises(RuntimeError, match="Authentication failed"):
+            await executor_module._execute_tool_in_sandbox(
+                "terminal_execute",
+                agent_state,
+                command="pwd",
+            )
+
+        assert state["calls"] == 1

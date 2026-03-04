@@ -1,3 +1,4 @@
+import asyncio
 import inspect
 import os
 from typing import Any
@@ -26,6 +27,8 @@ from .registry import (
 _SERVER_TIMEOUT = float(Config.get("esprit_sandbox_execution_timeout") or "120")
 SANDBOX_EXECUTION_TIMEOUT = _SERVER_TIMEOUT + 30
 SANDBOX_CONNECT_TIMEOUT = float(Config.get("esprit_sandbox_connect_timeout") or "10")
+_EXECUTE_RETRYABLE_STATUS_CODES = {404, 409, 425, 429, 500, 502, 503, 504}
+_EXECUTE_MAX_ATTEMPTS = max(1, int(Config.get("esprit_sandbox_execute_retries") or "6"))
 
 
 async def execute_tool(tool_name: str, agent_state: Any | None = None, **kwargs: Any) -> Any:
@@ -79,25 +82,33 @@ async def _execute_tool_in_sandbox(tool_name: str, agent_state: Any, **kwargs: A
     )
 
     async with httpx.AsyncClient(trust_env=False) as client:
-        try:
-            response = await client.post(
-                request_url, json=request_data, headers=headers, timeout=timeout
-            )
-            response.raise_for_status()
-            response_data = response.json()
-            if response_data.get("error"):
-                posthog.error("tool_execution_error", f"{tool_name}: {response_data['error']}")
-                raise RuntimeError(f"Sandbox execution error: {response_data['error']}")
-            return response_data.get("result")
-        except httpx.HTTPStatusError as e:
-            posthog.error("tool_http_error", f"{tool_name}: HTTP {e.response.status_code}")
-            if e.response.status_code == 401:
-                raise RuntimeError("Authentication failed: Invalid or missing sandbox token") from e
-            raise RuntimeError(f"HTTP error calling tool server: {e.response.status_code}") from e
-        except httpx.RequestError as e:
-            error_type = type(e).__name__
-            posthog.error("tool_request_error", f"{tool_name}: {error_type}")
-            raise RuntimeError(f"Request error calling tool server: {error_type}") from e
+        for attempt in range(1, _EXECUTE_MAX_ATTEMPTS + 1):
+            try:
+                response = await client.post(
+                    request_url, json=request_data, headers=headers, timeout=timeout
+                )
+                response.raise_for_status()
+                response_data = response.json()
+                if response_data.get("error"):
+                    posthog.error("tool_execution_error", f"{tool_name}: {response_data['error']}")
+                    raise RuntimeError(f"Sandbox execution error: {response_data['error']}")
+                return response_data.get("result")
+            except httpx.HTTPStatusError as e:
+                status_code = e.response.status_code
+                posthog.error("tool_http_error", f"{tool_name}: HTTP {status_code}")
+                if status_code == 401:
+                    raise RuntimeError("Authentication failed: Invalid or missing sandbox token") from e
+                if status_code in _EXECUTE_RETRYABLE_STATUS_CODES and attempt < _EXECUTE_MAX_ATTEMPTS:
+                    await asyncio.sleep(min(8.0, float(2 ** (attempt - 1))))
+                    continue
+                raise RuntimeError(f"HTTP error calling tool server: {status_code}") from e
+            except httpx.RequestError as e:
+                error_type = type(e).__name__
+                posthog.error("tool_request_error", f"{tool_name}: {error_type}")
+                if attempt < _EXECUTE_MAX_ATTEMPTS:
+                    await asyncio.sleep(min(8.0, float(2 ** (attempt - 1))))
+                    continue
+                raise RuntimeError(f"Request error calling tool server: {error_type}") from e
 
 
 async def _execute_tool_locally(tool_name: str, agent_state: Any | None, **kwargs: Any) -> Any:

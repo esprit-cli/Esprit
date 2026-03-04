@@ -408,7 +408,7 @@ async def test_create_sandbox_uses_scan_target_from_tracer(
 
 
 @pytest.mark.asyncio
-async def test_create_sandbox_raises_when_modern_endpoint_never_becomes_ready(
+async def test_create_sandbox_falls_back_to_proxy_url_when_modern_endpoint_never_becomes_ready(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class FakeAsyncClient:
@@ -454,18 +454,17 @@ async def test_create_sandbox_raises_when_modern_endpoint_never_becomes_ready(
     monkeypatch.setattr(CloudRuntime, "_poll_tool_server_url", _no_ready)
 
     runtime = CloudRuntime(access_token="access-token", api_base="https://api.example.test")
-
-    with pytest.raises(SandboxInitializationError) as exc:
-        await runtime.create_sandbox(agent_id="agent-1")
-
-    assert "still provisioning" in exc.value.message.lower()
+    result = await runtime.create_sandbox(agent_id="agent-1")
+    assert result["workspace_id"] == "sbx-never-ready"
+    assert result["api_url"] == "https://api.example.test/sandbox/sbx-never-ready"
+    assert result["tool_server_port"] == 443
 
 
 @pytest.mark.asyncio
-async def test_create_sandbox_retries_once_after_modern_timeout(
+async def test_create_sandbox_avoids_retry_loop_when_modern_endpoint_is_slow(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    state: dict[str, Any] = {"create_calls": 0, "destroyed": [], "polled": []}
+    state: dict[str, Any] = {"create_calls": 0, "polled": []}
 
     class FakeAsyncClient:
         def __init__(self, *args: Any, **kwargs: Any) -> None:
@@ -503,13 +502,7 @@ async def test_create_sandbox_retries_once_after_modern_timeout(
     async def _fake_poll(self: CloudRuntime, sandbox_id: str) -> str | None:
         _ = self
         state["polled"].append(sandbox_id)
-        if sandbox_id.endswith("-1"):
-            return None
-        return "https://tool.example.test:5443"
-
-    async def _fake_destroy(self: CloudRuntime, sandbox_id: str) -> None:
-        _ = self
-        state["destroyed"].append(sandbox_id)
+        return None
 
     async def _no_wait(_seconds: float) -> None:
         return None
@@ -517,18 +510,16 @@ async def test_create_sandbox_retries_once_after_modern_timeout(
     monkeypatch.setattr("esprit.runtime.cloud_runtime.httpx.AsyncClient", FakeAsyncClient)
     monkeypatch.setattr(CloudRuntime, "_create_sandbox_request", _fake_create_request)
     monkeypatch.setattr(CloudRuntime, "_poll_tool_server_url", _fake_poll)
-    monkeypatch.setattr(CloudRuntime, "_destroy_unready_sandbox", _fake_destroy)
     monkeypatch.setattr("esprit.runtime.cloud_runtime.asyncio.sleep", _no_wait)
 
     runtime = CloudRuntime(access_token="access-token", api_base="https://api.example.test")
     result = await runtime.create_sandbox(agent_id="agent-retry")
 
-    assert state["create_calls"] == 2
-    assert state["destroyed"] == ["sbx-retry-1"]
-    assert state["polled"] == ["sbx-retry-1", "sbx-retry-2"]
-    assert result["workspace_id"] == "sbx-retry-2"
-    assert result["api_url"] == "https://tool.example.test:5443"
-    assert result["tool_server_port"] == 5443
+    assert state["create_calls"] == 1
+    assert state["polled"] == ["sbx-retry-1"]
+    assert result["workspace_id"] == "sbx-retry-1"
+    assert result["api_url"] == "https://api.example.test/sandbox/sbx-retry-1"
+    assert result["tool_server_port"] == 443
 
 
 @pytest.mark.asyncio

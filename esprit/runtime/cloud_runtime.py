@@ -409,17 +409,10 @@ class CloudRuntime(AbstractRuntime):
             if used_modern_endpoint and not api_url:
                 api_url = (await self._poll_tool_server_url(sandbox_id)) or ""
                 if not api_url:
-                    await self._destroy_unready_sandbox(sandbox_id)
-                    if attempt < _CREATE_SANDBOX_MAX_ATTEMPTS:
-                        await asyncio.sleep(_CREATE_SANDBOX_RETRY_DELAY_SECONDS)
-                        continue
-                    raise SandboxInitializationError(
-                        "Cloud sandbox is still provisioning.",
-                        (
-                            "Tool server did not become ready in time after retry. "
-                            "Please retry in a few moments."
-                        ),
-                    )
+                    # Avoid failing sub-agents on transient warmup lag.
+                    # The proxy endpoint can become ready shortly after status
+                    # polling times out, and tool execution has its own retries.
+                    api_url = f"{self.api_base}/sandbox/{sandbox_id}"
             if not api_url:
                 api_url = f"{self.api_base}/sandbox/{sandbox_id}"
 
@@ -447,8 +440,8 @@ class CloudRuntime(AbstractRuntime):
             }
 
         raise SandboxInitializationError(
-            "Cloud sandbox is still provisioning.",
-            "Tool server did not become ready in time. Please retry in a few moments.",
+            "Failed to create cloud sandbox.",
+            "Cloud sandbox API did not return a usable workspace.",
         )
 
     async def get_sandbox_url(self, container_id: str, _port: int) -> str:
