@@ -266,6 +266,15 @@ class SandboxService:
                                 # Optional test credentials for authenticated testing
                                 {"name": "TEST_USERNAME", "value": request.test_username or ""},
                                 {"name": "TEST_PASSWORD", "value": request.test_password or ""},
+                                # S3 configuration for local_upload targets
+                                {"name": "S3_BUCKET", "value": settings.s3_bucket or ""},
+                                {"name": "UPLOAD_S3_KEY", "value": (
+                                    f"uploads/{user_id}/{request.scan_id}.tar.gz"
+                                    if request.target_type == "local_upload" else ""
+                                )},
+                                {"name": "AWS_DEFAULT_REGION", "value": settings.aws_region},
+                                {"name": "AWS_ACCESS_KEY_ID", "value": settings.aws_access_key_id or ""},
+                                {"name": "AWS_SECRET_ACCESS_KEY", "value": settings.aws_secret_access_key or ""},
                             ],
                         }
                     ]

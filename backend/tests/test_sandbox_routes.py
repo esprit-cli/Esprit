@@ -228,3 +228,97 @@ def test_sandbox_diffs_proxy_success(monkeypatch) -> None:
     assert response.status_code == 200
     assert response.json() == {"edits": [], "count": 0}
     app.dependency_overrides.clear()
+
+
+def test_sandbox_create_local_upload_succeeds(monkeypatch) -> None:
+    """local_upload target type should be accepted by the schema and route."""
+
+    async def fake_user() -> auth_module.TokenPayload:
+        return _fake_user()
+
+    async def fake_check_quota(*_args, **_kwargs):
+        return SimpleNamespace(has_quota=True, scans_remaining=5, tokens_remaining=0, message=None)
+
+    async def fake_get_user_plan(_user_id: str) -> str:
+        return "pro"
+
+    async def fake_create_sandbox(_request, _user_id):
+        return {
+            "sandbox_id": "sandbox-upload-1",
+            "status": "creating",
+            "tool_server_url": None,
+            "expires_at": None,
+        }
+
+    async def fake_increment_scan_count(*_args, **_kwargs):
+        return None
+
+    app.dependency_overrides[auth_module.get_current_user] = fake_user
+    monkeypatch.setattr(routes, "supabase", _FakeSupabase())
+    monkeypatch.setattr(routes.usage_service, "check_quota", fake_check_quota)
+    monkeypatch.setattr(routes.usage_service, "get_user_plan", fake_get_user_plan)
+    monkeypatch.setattr(routes.sandbox_service, "create_sandbox", fake_create_sandbox)
+    monkeypatch.setattr(routes.usage_service, "increment_scan_count", fake_increment_scan_count)
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/v1/sandbox",
+            headers={"Authorization": "Bearer ignored.for.override"},
+            json={
+                "scan_id": "scan-upload-1",
+                "target": "my-project",
+                "target_type": "local_upload",
+                "scan_type": "deep",
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json()["sandbox_id"] == "sandbox-upload-1"
+    app.dependency_overrides.clear()
+
+
+def test_sandbox_create_url_target_still_works(monkeypatch) -> None:
+    """Regression: URL target type must continue to work."""
+
+    async def fake_user() -> auth_module.TokenPayload:
+        return _fake_user()
+
+    async def fake_check_quota(*_args, **_kwargs):
+        return SimpleNamespace(has_quota=True, scans_remaining=5, tokens_remaining=0, message=None)
+
+    async def fake_get_user_plan(_user_id: str) -> str:
+        return "pro"
+
+    async def fake_create_sandbox(_request, _user_id):
+        return {
+            "sandbox_id": "sandbox-url-1",
+            "status": "creating",
+            "tool_server_url": None,
+            "expires_at": None,
+        }
+
+    async def fake_increment_scan_count(*_args, **_kwargs):
+        return None
+
+    app.dependency_overrides[auth_module.get_current_user] = fake_user
+    monkeypatch.setattr(routes, "supabase", _FakeSupabase())
+    monkeypatch.setattr(routes.usage_service, "check_quota", fake_check_quota)
+    monkeypatch.setattr(routes.usage_service, "get_user_plan", fake_get_user_plan)
+    monkeypatch.setattr(routes.sandbox_service, "create_sandbox", fake_create_sandbox)
+    monkeypatch.setattr(routes.usage_service, "increment_scan_count", fake_increment_scan_count)
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/v1/sandbox",
+            headers={"Authorization": "Bearer ignored.for.override"},
+            json={
+                "scan_id": "scan-url-reg-1",
+                "target": "https://example.com",
+                "target_type": "url",
+                "scan_type": "deep",
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json()["sandbox_id"] == "sandbox-url-1"
+    app.dependency_overrides.clear()

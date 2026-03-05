@@ -151,6 +151,31 @@ sudo -u pentester certutil -N -d sql:/home/pentester/.pki/nssdb --empty-password
 sudo -u pentester certutil -A -n "Testing Root CA" -t "C,," -i /app/certs/ca.crt -d sql:/home/pentester/.pki/nssdb
 echo "✅ CA added to browser trust store"
 
+# ===== S3 local_upload extraction =====
+if [ -n "${UPLOAD_S3_KEY:-}" ] && [ -n "${S3_BUCKET:-}" ]; then
+  echo "Downloading source archive from S3..."
+  no_proxy="s3.amazonaws.com,*.s3.amazonaws.com,*.s3.*.amazonaws.com" \
+  NO_PROXY="s3.amazonaws.com,*.s3.amazonaws.com,*.s3.*.amazonaws.com" \
+  aws s3 cp "s3://${S3_BUCKET}/${UPLOAD_S3_KEY}" /tmp/upload.tar.gz \
+    --region "${AWS_DEFAULT_REGION:-us-east-1}" --quiet
+
+  if [ $? -ne 0 ]; then
+    echo "ERROR: Failed to download source archive from S3"
+    exit 1
+  fi
+
+  tar -xzf /tmp/upload.tar.gz -C /workspace
+  if [ $? -ne 0 ]; then
+    echo "ERROR: Failed to extract archive"
+    exit 1
+  fi
+
+  rm -f /tmp/upload.tar.gz
+  chown -R pentester:pentester /workspace
+  echo "✅ Source files extracted to /workspace"
+fi
+# ===== End S3 extraction =====
+
 echo "Starting tool server..."
 cd /app
 export PYTHONPATH=/app
