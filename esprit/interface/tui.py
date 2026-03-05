@@ -2267,10 +2267,7 @@ class EspritTUIApp(App):  # type: ignore[misc]
             status_icon = self._agent_status_marker(status)
             vuln_count = self._agent_vulnerability_count(agent_id)
             vuln_indicator = f" ({vuln_count})" if vuln_count > 0 else ""
-            elapsed = self._format_short_duration(self._get_agent_elapsed_seconds(agent_data))
-            token_count, _ = self._get_agent_token_snapshot(agent_id)
-            metrics_suffix = f"{elapsed} · {format_token_count(token_count)} tok"
-            agent_name = f"{status_icon} {agent_name_raw}{vuln_indicator} · {metrics_suffix}"
+            agent_name = f"{status_icon} {agent_name_raw}{vuln_indicator}"
 
             if agent_node.label != agent_name:
                 agent_node.set_label(agent_name)

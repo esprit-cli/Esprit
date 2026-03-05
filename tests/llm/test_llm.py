@@ -356,6 +356,50 @@ class TestRaiseErrorDetails:
         assert "api.responses.write" in exc.value.details
         assert "Use a Project API key/token" in exc.value.details
 
+    def test_unwraps_litellm_none_wrapper_to_real_bad_request(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        llm = LLM.__new__(LLM)
+        monkeypatch.setattr("esprit.telemetry.posthog.error", lambda *_args, **_kwargs: None)
+
+        nested = RuntimeError('litellm.BadRequestError: OpenAIException - {"detail":"Stream must be set to true"}')
+        nested.status_code = 400  # type: ignore[attr-defined]
+        wrapped = RuntimeError(
+            "litellm.APIConnectionError: APIConnectionError: OpenAIException - argument of type 'NoneType' is not iterable"
+        )
+        wrapped.__cause__ = nested
+
+        with pytest.raises(LLMRequestFailedError) as exc:
+            llm._raise_error(wrapped)
+
+        assert exc.value.status_code == 400
+        assert exc.value.details == "Stream must be set to true"
+        assert llm._should_retry(wrapped) is False
+
+    def test_unwraps_litellm_none_wrapper_to_real_rate_limit(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        llm = LLM.__new__(LLM)
+        monkeypatch.setattr("esprit.telemetry.posthog.error", lambda *_args, **_kwargs: None)
+
+        nested = RuntimeError(
+            'litellm.RateLimitError: RateLimitError: OpenAIException - {"error":{"type":"usage_limit_reached","message":"The usage limit has been reached","resets_in_seconds":923}}'
+        )
+        nested.status_code = 429  # type: ignore[attr-defined]
+        wrapped = RuntimeError(
+            "litellm.APIConnectionError: APIConnectionError: OpenAIException - argument of type 'NoneType' is not iterable"
+        )
+        wrapped.__cause__ = nested
+
+        with pytest.raises(LLMRequestFailedError) as exc:
+            llm._raise_error(wrapped)
+
+        assert exc.value.status_code == 429
+        assert exc.value.details is not None
+        assert "usage_limit_reached" in exc.value.details
+        assert "usage limit has been reached" in exc.value.details.lower()
+        assert llm._should_retry(wrapped) is False
+
 
 class TestStreamIdleTimeout:
     @pytest.mark.asyncio
