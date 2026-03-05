@@ -58,6 +58,25 @@ esprit
 
 ---
 
+## Browser Preview Quality (TUI)
+
+Esprit includes a browser screenshot preview in the TUI. For best quality:
+
+- Install via the official installer (`install.sh` / `install.ps1`), which now verifies the image stack:
+  - `textual`
+  - `textual-image`
+  - `Pillow`
+- Use a terminal session with pixel image protocol support (Kitty TGP or Sixel).
+- Avoid running inside terminal wrappers/multiplexers that can block image protocol passthrough.
+
+If one machine looks sharp and another looks pixelated, re-run the installer on the affected machine:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/esprit-cli/Esprit/main/scripts/install.sh | bash -- --force
+```
+
+---
+
 ## Choose Your Setup
 
 Esprit supports two runtime modes depending on how you want to run scans.

@@ -449,6 +449,30 @@ def _format_elapsed(seconds: float) -> str:
     return f"{m}:{s:02d}"
 
 
+def _append_shimmer_label(
+    text: Text,
+    label: str,
+    *,
+    spinner_frame: int,
+    base_color: str,
+    highlight_color: str,
+) -> None:
+    """Append *label* with a lightweight shimmer sweep animation."""
+    if not label:
+        return
+
+    sweep_radius = 2
+    sweep_center = spinner_frame % (len(label) + 6) - 3
+    for idx, ch in enumerate(label):
+        dist = abs(idx - sweep_center)
+        if dist == 0:
+            text.append(ch, style=f"bold {highlight_color}")
+        elif dist <= sweep_radius:
+            text.append(ch, style=f"bold {base_color}")
+        else:
+            text.append(ch, style=base_color)
+
+
 def _estimate_projection(
     tracer: Any,
     *,
@@ -512,10 +536,12 @@ def build_tui_stats_text(
     marker_colors = {marker: get_marker_color(tokens, marker) for marker in ("run", "ok", "warn", "err", "web")}
 
     model = ""
+    session_mode = "deep"
     # Model name with provider badge
     if agent_config:
-        llm_config = agent_config["llm_config"]
+        llm_config = agent_config.get("llm_config")
         model = getattr(llm_config, "model_name", "Unknown")
+        session_mode = str(getattr(llm_config, "scan_mode", session_mode) or session_mode)
         bare_model = model.split("/", 1)[-1] if "/" in model else model
         is_antigravity = model.startswith("antigravity/")
 
@@ -531,6 +557,20 @@ def build_tui_stats_text(
         elif "claude" in bare_model.lower():
             stats_text.append("CC ", style="bold #d97706")
         stats_text.append(bare_model, style=text_color)
+
+    normalized_mode = session_mode.strip().lower()
+    session_labels = {
+        "quick": ("Quick", success),
+        "standard": ("Standard", info),
+        "deep": ("Deep", warning),
+    }
+    session_label, session_color = session_labels.get(
+        normalized_mode, (normalized_mode.title() or "Deep", warning)
+    )
+    stats_text.append("\n")
+    stats_text.append("[run] ", style=f"bold {marker_colors['run']}")
+    stats_text.append("Session ", style=f"dim {muted}")
+    stats_text.append(session_label, style=f"bold {session_color}")
 
     # Elapsed time and scan status
     elapsed = 0.0
@@ -559,8 +599,16 @@ def build_tui_stats_text(
             stats_text.append("[ok] ", style=f"bold {marker_colors['ok']}")
             stats_text.append(f"Completed  {elapsed_str}", style=success)
         else:
-            stats_text.append("[run] ", style=f"bold {marker_colors['run']}")
-            stats_text.append(f"Scanning  {elapsed_str}", style=accent)
+            spinner = _ACTIVITY_SPINNER[spinner_frame % len(_ACTIVITY_SPINNER)]
+            stats_text.append(f"{spinner} ", style=f"bold {marker_colors['run']}")
+            _append_shimmer_label(
+                stats_text,
+                "Scanning",
+                spinner_frame=spinner_frame,
+                base_color=accent,
+                highlight_color=success,
+            )
+            stats_text.append(f"  {elapsed_str}", style=accent)
 
     # Divider
     stats_text.append("\n")
@@ -674,6 +722,42 @@ def build_tui_stats_text(
     if lifetime_cost >= 0.01:
         stats_text.append("  all-time ", style=f"dim {muted}")
         stats_text.append(f"${lifetime_cost:.2f}", style="dim #a78bfa")
+
+    # Projection (ETA + estimated total cost)
+    if elapsed > 0 and not scan_completed and not scan_failed:
+        projected_total_duration, projected_cost, remaining_seconds = _estimate_projection(
+            tracer,
+            elapsed_seconds=elapsed,
+            current_cost=session_cost,
+            scan_completed=scan_completed,
+            scan_failed=scan_failed,
+        )
+        eta_color = success if remaining_seconds < 300 else warning if remaining_seconds < 1800 else error
+        coin_frames = ["(o)", "(O)", "(0)", "(O)"]
+        coin = coin_frames[spinner_frame % len(coin_frames)]
+        sweep = _ACTIVITY_SPINNER[spinner_frame % len(_ACTIVITY_SPINNER)]
+
+        stats_text.append("\n")
+        stats_text.append("─" * 28, style="dim #3f3f3f")
+        stats_text.append("\n")
+        stats_text.append(f"{sweep} ", style=f"bold {marker_colors['run']}")
+        stats_text.append("Est ", style=f"bold {info}")
+        stats_text.append(_format_elapsed(projected_total_duration), style=f"bold {info}")
+        stats_text.append(" total", style=f"dim {muted}")
+        stats_text.append("  ·  ", style="dim #3f3f3f")
+        stats_text.append(_format_elapsed(remaining_seconds), style=f"bold {eta_color}")
+        stats_text.append(" left", style=f"dim {muted}")
+
+        stats_text.append("\n")
+        stats_text.append(f"{coin} ", style=f"bold {warning}")
+        stats_text.append("Est ", style=f"dim {muted}")
+        stats_text.append(f"${projected_cost:.2f}", style=f"bold {warning}")
+        stats_text.append(" total", style=f"dim {muted}")
+        projected_remaining_cost = max(0.0, projected_cost - session_cost)
+        if projected_remaining_cost > 0.004:
+            stats_text.append("  (+", style=f"dim {muted}")
+            stats_text.append(f"${projected_remaining_cost:.2f}", style=f"bold {info}")
+            stats_text.append(" left)", style=f"dim {muted}")
 
     # Vulnerabilities
     vuln_count = (

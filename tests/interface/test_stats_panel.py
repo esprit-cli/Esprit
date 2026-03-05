@@ -58,6 +58,37 @@ def test_tui_stats_shows_billable_input_and_cache_hit(monkeypatch: pytest.Monkey
     assert "$0.12" in plain
 
 
+def test_tui_stats_shows_session_type(monkeypatch: pytest.MonkeyPatch) -> None:
+    tracer = SimpleNamespace(
+        agents={"agent_1": {}},
+        tool_executions={},
+        vulnerability_reports=[],
+        start_time=datetime.now(timezone.utc).isoformat(),
+        get_real_tool_count=lambda: 0,
+        get_total_llm_stats=lambda: {
+            "total": {
+                "input_tokens": 10,
+                "output_tokens": 5,
+                "cached_tokens": 0,
+                "cost": 0.01,
+                "requests": 1,
+            },
+            "max_context_tokens": 10,
+            "uncached_input_tokens": 10,
+            "cache_hit_ratio": 0.0,
+        },
+    )
+    agent_config = {"llm_config": SimpleNamespace(model_name="openai/gpt-5", scan_mode="quick")}
+
+    monkeypatch.setattr("esprit.llm.pricing.get_pricing_db", lambda: _FakePricingDB())
+    monkeypatch.setattr("esprit.llm.pricing.get_lifetime_cost", lambda: 0.0)
+
+    text = build_tui_stats_text(tracer, agent_config=agent_config, spinner_frame=0)
+    plain = text.plain
+
+    assert "Session Quick" in plain
+
+
 def test_tui_stats_uses_ascii_markers_for_vulns_and_tips(monkeypatch: pytest.MonkeyPatch) -> None:
     tracer = SimpleNamespace(
         agents={"agent_1": {}},
@@ -92,7 +123,7 @@ def test_tui_stats_uses_ascii_markers_for_vulns_and_tips(monkeypatch: pytest.Mon
         assert removed_marker not in plain
 
 
-def test_tui_stats_hides_projection_fields(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_tui_stats_shows_estimated_time_and_cost(monkeypatch: pytest.MonkeyPatch) -> None:
     tracer = SimpleNamespace(
         agents={"agent_1": {"status": "running"}},
         tool_executions={},
@@ -119,9 +150,9 @@ def test_tui_stats_hides_projection_fields(monkeypatch: pytest.MonkeyPatch) -> N
     text = build_tui_stats_text(tracer, agent_config=agent_config, spinner_frame=0)
     plain = text.plain
 
-    assert "Proj " not in plain
-    assert "total " not in plain
-    assert "left " not in plain
+    assert "Est " in plain
+    assert " left" in plain
+    assert "$" in plain
 
 
 def test_tui_stats_prefers_tracer_aggregated_cost(monkeypatch: pytest.MonkeyPatch) -> None:

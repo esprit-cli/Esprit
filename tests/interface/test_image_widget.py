@@ -43,6 +43,22 @@ class TestCheckTextualImage:
         mod._TEXTUAL_IMAGE_AVAILABLE = original
 
 
+class TestSupportsPixelProtocols:
+    """Tests protocol gating for textual-image rendering."""
+
+    def test_true_for_tgp(self) -> None:
+        with patch("esprit.interface.image_protocol.PROTOCOL", "tgp"):
+            from esprit.interface.image_widget import _supports_pixel_protocols
+
+            assert _supports_pixel_protocols() is True
+
+    def test_false_for_quarter(self) -> None:
+        with patch("esprit.interface.image_protocol.PROTOCOL", "quarter"):
+            from esprit.interface.image_widget import _supports_pixel_protocols
+
+            assert _supports_pixel_protocols() is False
+
+
 class TestDecodeBase64ToPil:
     """Tests for base64 to PIL conversion."""
 
@@ -128,3 +144,43 @@ class TestBrowserScreenshotWidgetRenderFallback:
             call_args = mock_content.update.call_args[0][0]
             assert isinstance(call_args, Text)
             assert "No screenshot" in call_args.plain
+
+    @patch("esprit.interface.image_widget._check_textual_image", return_value=True)
+    @patch("esprit.interface.image_widget._supports_pixel_protocols", return_value=False)
+    def test_uses_halfblock_when_only_quarter_protocol(
+        self, _mock_proto: MagicMock, _mock_check: MagicMock
+    ) -> None:
+        from esprit.interface.image_widget import BrowserScreenshotWidget
+
+        b64 = _make_test_png_b64()
+        widget = BrowserScreenshotWidget(screenshot_b64=b64)
+
+        mock_content = MagicMock()
+        with (
+            patch.object(widget, "query_one", return_value=mock_content),
+            patch.object(widget, "_render_with_halfblock") as mock_half,
+            patch.object(widget, "_render_with_textual_image") as mock_textual,
+        ):
+            widget._render_screenshot()
+            mock_half.assert_called_once()
+            mock_textual.assert_not_called()
+
+    @patch("esprit.interface.image_widget._check_textual_image", return_value=True)
+    @patch("esprit.interface.image_widget._supports_pixel_protocols", return_value=True)
+    def test_uses_textual_image_when_pixel_protocol_supported(
+        self, _mock_proto: MagicMock, _mock_check: MagicMock
+    ) -> None:
+        from esprit.interface.image_widget import BrowserScreenshotWidget
+
+        b64 = _make_test_png_b64()
+        widget = BrowserScreenshotWidget(screenshot_b64=b64)
+
+        mock_content = MagicMock()
+        with (
+            patch.object(widget, "query_one", return_value=mock_content),
+            patch.object(widget, "_render_with_halfblock") as mock_half,
+            patch.object(widget, "_render_with_textual_image") as mock_textual,
+        ):
+            widget._render_screenshot()
+            mock_textual.assert_called_once()
+            mock_half.assert_not_called()
