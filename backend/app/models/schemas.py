@@ -19,6 +19,8 @@ class SandboxCreateRequest(BaseModel):
     test_username: str | None = None  # Optional credentials for authenticated testing
     test_password: str | None = None  # Optional credentials for authenticated testing
     bypass_code: str | None = None  # Optional code to bypass quota limits
+    parent_sandbox_id: str | None = None
+    root_sandbox_id: str | None = None
 
 
 class SandboxCreateResponse(BaseModel):

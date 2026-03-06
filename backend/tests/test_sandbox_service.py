@@ -89,6 +89,51 @@ def test_destroy_sandbox_enforces_user_ownership() -> None:
     assert allowed is True
 
 
+def test_destroy_sandbox_stops_owned_descendants() -> None:
+    service = _build_service()
+    service.ecs_client._task_pages["RUNNING"][0]["taskArns"] = [  # type: ignore[attr-defined]
+        "arn:task/root",
+        "arn:task/child",
+        "arn:task/grandchild",
+        "arn:task/other-user-child",
+    ]
+    service.ecs_client._task_pages["PENDING"][0]["taskArns"] = []  # type: ignore[attr-defined]
+    service.ecs_client._task_tags = {  # type: ignore[attr-defined]
+        "arn:task/root": [
+            {"key": "SandboxId", "value": "sandbox-root"},
+            {"key": "UserId", "value": "user-1"},
+            {"key": "RootSandboxId", "value": "sandbox-root"},
+        ],
+        "arn:task/child": [
+            {"key": "SandboxId", "value": "sandbox-child"},
+            {"key": "UserId", "value": "user-1"},
+            {"key": "ParentSandboxId", "value": "sandbox-root"},
+            {"key": "RootSandboxId", "value": "sandbox-root"},
+        ],
+        "arn:task/grandchild": [
+            {"key": "SandboxId", "value": "sandbox-grandchild"},
+            {"key": "UserId", "value": "user-1"},
+            {"key": "ParentSandboxId", "value": "sandbox-child"},
+            {"key": "RootSandboxId", "value": "sandbox-root"},
+        ],
+        "arn:task/other-user-child": [
+            {"key": "SandboxId", "value": "sandbox-other"},
+            {"key": "UserId", "value": "user-2"},
+            {"key": "ParentSandboxId", "value": "sandbox-root"},
+            {"key": "RootSandboxId", "value": "sandbox-root"},
+        ],
+    }
+
+    destroyed = asyncio.run(service.destroy_sandbox("sandbox-root", "user-1"))
+
+    assert destroyed is True
+    assert sorted(service.ecs_client.stop_calls) == [  # type: ignore[attr-defined]
+        "arn:task/child",
+        "arn:task/grandchild",
+        "arn:task/root",
+    ]
+
+
 def test_get_sandbox_status_returns_running_only_for_owner() -> None:
     service = _build_service()
     service.ecs_client._task_tags["arn:task/run-1"].append({"key": "SandboxId", "value": "sandbox-owned"})  # type: ignore[attr-defined]

@@ -126,3 +126,25 @@ def test_create_sandbox_preserves_existing_env_vars() -> None:
     assert "LLM_PROXY_URL" in env
     assert env["TEST_USERNAME"] == ""
     assert env["TEST_PASSWORD"] == ""
+
+
+def test_create_sandbox_sets_lineage_env_and_tags_for_child_sandboxes() -> None:
+    service, ecs = _build_capturing_service()
+    request = SandboxCreateRequest(
+        scan_id="scan-child-1",
+        target="https://example.com",
+        target_type="url",
+        scan_type="quick",
+        parent_sandbox_id="sandbox-parent",
+        root_sandbox_id="sandbox-root",
+    )
+
+    asyncio.run(service.create_sandbox(request, "user-1"))
+
+    env = _env_dict(ecs)
+    assert env["PARENT_SANDBOX_ID"] == "sandbox-parent"
+    assert env["ROOT_SANDBOX_ID"] == "sandbox-root"
+
+    tags = {entry["key"]: entry["value"] for entry in ecs.run_task_calls[-1]["tags"]}
+    assert tags["ParentSandboxId"] == "sandbox-parent"
+    assert tags["RootSandboxId"] == "sandbox-root"

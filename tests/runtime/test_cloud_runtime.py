@@ -239,3 +239,49 @@ def test_sanitize_local_sources_strips_path_metadata() -> None:
     sanitized = CloudRuntime._sanitize_local_sources(local_sources)
 
     assert sanitized == [{"source_path": "passwd", "workspace_subdir": "unsafe-dir"}]
+
+
+def test_sandbox_lineage_payload_empty_outside_sandbox(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("SANDBOX_ID", raising=False)
+    monkeypatch.delenv("ROOT_SANDBOX_ID", raising=False)
+
+    assert CloudRuntime._sandbox_lineage_payload() == {}
+
+
+def test_sandbox_lineage_payload_uses_current_and_root_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SANDBOX_ID", "sandbox-parent")
+    monkeypatch.setenv("ROOT_SANDBOX_ID", "sandbox-root")
+
+    assert CloudRuntime._sandbox_lineage_payload() == {
+        "parent_sandbox_id": "sandbox-parent",
+        "root_sandbox_id": "sandbox-root",
+    }
+
+
+@pytest.mark.asyncio
+async def test_create_sandbox_includes_lineage_when_running_inside_sandbox(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = CloudRuntime(access_token="token-123", api_base="https://api.example.com/v1")
+    create_response = _response(
+        200,
+        {
+            "sandbox_id": "sbx-1",
+            "api_url": "https://runtime.example.com/sandbox/sbx-1",
+            "auth_token": "sandbox-token",
+            "tool_server_port": 443,
+        },
+    )
+    mock_post = AsyncMock(return_value=create_response)
+    monkeypatch.setenv("SANDBOX_ID", "sandbox-parent")
+    monkeypatch.setenv("ROOT_SANDBOX_ID", "sandbox-root")
+
+    with patch(
+        "esprit.runtime.cloud_runtime.httpx.AsyncClient",
+        return_value=_FakeAsyncClient(post=mock_post),
+    ):
+        await runtime.create_sandbox(agent_id="agent-1")
+
+    request_payload = mock_post.await_args.kwargs["json"]
+    assert request_payload["parent_sandbox_id"] == "sandbox-parent"
+    assert request_payload["root_sandbox_id"] == "sandbox-root"

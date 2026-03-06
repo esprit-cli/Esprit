@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -77,6 +78,18 @@ class CloudRuntime(AbstractRuntime):
             return ".".join(segments[-2:])
         return host.lower().strip()
 
+    @staticmethod
+    def _sandbox_lineage_payload() -> dict[str, str]:
+        current_sandbox_id = str(os.getenv("SANDBOX_ID") or "").strip()
+        if not current_sandbox_id:
+            return {}
+
+        root_sandbox_id = str(os.getenv("ROOT_SANDBOX_ID") or current_sandbox_id).strip()
+        payload = {"parent_sandbox_id": current_sandbox_id}
+        if root_sandbox_id:
+            payload["root_sandbox_id"] = root_sandbox_id
+        return payload
+
     @classmethod
     def _is_trusted_runtime_host(cls, runtime_host: str, api_host: str) -> bool:
         runtime = runtime_host.lower().strip()
@@ -96,6 +109,7 @@ class CloudRuntime(AbstractRuntime):
         local_sources: list[dict[str, str]] | None = None,
     ) -> SandboxInfo:
         payload: dict[str, Any] = {"agent_id": agent_id}
+        payload.update(self._sandbox_lineage_payload())
         sources_payload = self._sanitize_local_sources(local_sources)
         if sources_payload:
             payload["local_sources"] = sources_payload

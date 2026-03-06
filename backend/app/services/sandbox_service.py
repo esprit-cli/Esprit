@@ -232,6 +232,8 @@ class SandboxService:
         Create a new sandbox (ECS Fargate task) for a scan.
         """
         sandbox_id = f"sandbox-{uuid.uuid4().hex[:12]}"
+        parent_sandbox_id = (request.parent_sandbox_id or "").strip()
+        root_sandbox_id = (request.root_sandbox_id or parent_sandbox_id or sandbox_id).strip()
 
         try:
             # Run ECS task
@@ -260,6 +262,8 @@ class SandboxService:
                                 {"name": "SCAN_TYPE", "value": request.scan_type},
                                 {"name": "USER_ID", "value": user_id},
                                 {"name": "SANDBOX_ID", "value": sandbox_id},
+                                {"name": "PARENT_SANDBOX_ID", "value": parent_sandbox_id},
+                                {"name": "ROOT_SANDBOX_ID", "value": root_sandbox_id},
                                 {"name": "TOOL_SERVER_TOKEN", "value": self._tool_server_token_for_sandbox(sandbox_id)},
                                 # The sandbox will call back to our API for LLM requests
                                 {"name": "LLM_PROXY_URL", "value": f"{settings.api_base_url.rstrip('/')}/llm/generate"},
@@ -283,6 +287,8 @@ class SandboxService:
                     {"key": "SandboxId", "value": sandbox_id},
                     {"key": "UserId", "value": user_id},
                     {"key": "ScanId", "value": request.scan_id},
+                    {"key": "ParentSandboxId", "value": parent_sandbox_id},
+                    {"key": "RootSandboxId", "value": root_sandbox_id},
                 ],
             )
 
@@ -315,6 +321,18 @@ class SandboxService:
         ):
             task_arns.extend(page.get("taskArns", []))
         return task_arns
+
+    def _list_active_task_tags(self) -> list[tuple[str, dict[str, str]]]:
+        task_arns: set[str] = set()
+        for desired_status in ("RUNNING", "PENDING"):
+            task_arns.update(self._list_tasks_paginated(desired_status))
+
+        tagged_tasks: list[tuple[str, dict[str, str]]] = []
+        for task_arn in task_arns:
+            tags_response = self.ecs_client.list_tags_for_resource(resourceArn=task_arn)
+            tags = {t["key"]: t["value"] for t in tags_response.get("tags", [])}
+            tagged_tasks.append((task_arn, tags))
+        return tagged_tasks
 
     async def get_sandbox_status(self, sandbox_id: str, user_id: str) -> SandboxStatusResponse | None:
         """
@@ -575,13 +593,7 @@ class SandboxService:
         """Stop all ECS tasks tagged with the given scan ID."""
         stopped = 0
         try:
-            task_arns: set[str] = set()
-            for desired_status in ("RUNNING", "PENDING"):
-                task_arns.update(self._list_tasks_paginated(desired_status))
-
-            for task_arn in task_arns:
-                tags_response = self.ecs_client.list_tags_for_resource(resourceArn=task_arn)
-                tags = {t["key"]: t["value"] for t in tags_response.get("tags", [])}
+            for task_arn, tags in self._list_active_task_tags():
                 if tags.get("ScanId") != scan_id:
                     continue
                 self.ecs_client.stop_task(
@@ -602,25 +614,56 @@ class SandboxService:
         Stop and clean up a sandbox.
         """
         try:
-            task_arns: set[str] = set()
-            for desired_status in ("RUNNING", "PENDING"):
-                task_arns.update(self._list_tasks_paginated(desired_status))
+            owned_tasks = [
+                (task_arn, tags)
+                for task_arn, tags in self._list_active_task_tags()
+                if tags.get("UserId") == user_id
+            ]
+            owned_sandbox_ids = {
+                str(tags.get("SandboxId") or "").strip()
+                for _, tags in owned_tasks
+                if str(tags.get("SandboxId") or "").strip()
+            }
+            if sandbox_id not in owned_sandbox_ids:
+                return False
 
-            for task_arn in task_arns:
-                tags_response = self.ecs_client.list_tags_for_resource(resourceArn=task_arn)
-                tags = {t["key"]: t["value"] for t in tags_response.get("tags", [])}
+            sandboxes_to_stop = {sandbox_id}
+            changed = True
+            while changed:
+                changed = False
+                for _, tags in owned_tasks:
+                    task_sandbox_id = str(tags.get("SandboxId") or "").strip()
+                    if not task_sandbox_id or task_sandbox_id in sandboxes_to_stop:
+                        continue
+                    if (
+                        tags.get("ParentSandboxId") in sandboxes_to_stop
+                        or tags.get("RootSandboxId") == sandbox_id
+                    ):
+                        sandboxes_to_stop.add(task_sandbox_id)
+                        changed = True
 
-                if tags.get("SandboxId") == sandbox_id and tags.get("UserId") == user_id:
-                    self.ecs_client.stop_task(
-                        cluster=settings.ecs_cluster_name,
-                        task=task_arn,
-                        reason="Sandbox destroyed by user",
-                    )
-                    self._clear_recent_sandbox(sandbox_id, user_id)
-                    logger.info("Sandbox destroyed", sandbox_id=sandbox_id, user_id=user_id)
-                    return True
+            stopped = 0
+            for task_arn, tags in owned_tasks:
+                if str(tags.get("SandboxId") or "").strip() not in sandboxes_to_stop:
+                    continue
+                self.ecs_client.stop_task(
+                    cluster=settings.ecs_cluster_name,
+                    task=task_arn,
+                    reason="Sandbox destroyed by user",
+                )
+                stopped += 1
 
-            return False
+            for owned_sandbox_id in sandboxes_to_stop:
+                self._clear_recent_sandbox(owned_sandbox_id, user_id)
+
+            logger.info(
+                "Sandbox destroyed",
+                sandbox_id=sandbox_id,
+                user_id=user_id,
+                stopped=stopped,
+                descendants=max(stopped - 1, 0),
+            )
+            return True
 
         except ClientError as e:
             logger.error("Failed to destroy sandbox", error=str(e))
