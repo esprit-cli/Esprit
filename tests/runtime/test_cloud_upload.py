@@ -359,3 +359,33 @@ def test_build_modern_payload_uses_uuid_scan_id() -> None:
     )
     uuid.UUID(payload2["scan_id"])  # validates format
     assert payload2["scan_id"] != "cli-agent-1"
+
+
+def test_build_modern_payload_omits_lineage_outside_sandbox(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("SANDBOX_ID", raising=False)
+    monkeypatch.delenv("ROOT_SANDBOX_ID", raising=False)
+
+    payload = CloudRuntime._build_modern_sandbox_payload(
+        agent_id="agent-1",
+        sources_payload=[],
+    )
+
+    assert "parent_sandbox_id" not in payload
+    assert "root_sandbox_id" not in payload
+
+
+def test_build_modern_payload_includes_lineage_inside_sandbox(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SANDBOX_ID", "sandbox-parent")
+    monkeypatch.setenv("ROOT_SANDBOX_ID", "sandbox-root")
+
+    payload = CloudRuntime._build_modern_sandbox_payload(
+        agent_id="agent-1",
+        sources_payload=[],
+    )
+
+    assert payload["parent_sandbox_id"] == "sandbox-parent"
+    assert payload["root_sandbox_id"] == "sandbox-root"

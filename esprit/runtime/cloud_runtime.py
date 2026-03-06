@@ -268,12 +268,19 @@ class CloudRuntime(AbstractRuntime):
             if inferred:
                 target, target_type = inferred
 
-        return {
+        payload = {
             "scan_id": scan_id or str(uuid.uuid4()),
             "target": target,
             "target_type": target_type,
             "scan_type": scan_mode,
         }
+        current_sandbox_id = str(os.getenv("SANDBOX_ID") or "").strip()
+        if current_sandbox_id:
+            payload["parent_sandbox_id"] = current_sandbox_id
+            payload["root_sandbox_id"] = str(
+                os.getenv("ROOT_SANDBOX_ID") or current_sandbox_id
+            ).strip()
+        return payload
 
     async def _create_sandbox_request(
         self,
