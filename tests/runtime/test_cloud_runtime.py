@@ -188,6 +188,46 @@ async def test_create_sandbox_uses_fallback_api_when_running_without_tool_url(
 
 
 @pytest.mark.asyncio
+async def test_create_sandbox_tracks_state_before_tool_server_poll(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    state_file = tmp_path / "cloud_state.json"
+    monkeypatch.setenv("ESPRIT_CLOUD_SANDBOX_STATE_FILE", str(state_file))
+
+    async def _fake_create_request(
+        self: CloudRuntime,
+        client: Any,
+        agent_id: str,
+        sources_payload: list[dict[str, str]],
+        scan_id: str | None = None,
+    ) -> tuple[dict[str, Any], bool]:
+        _ = (self, client, agent_id, sources_payload, scan_id)
+        return {
+            "sandbox_id": "sbx-poll-track",
+            "sandbox_token": "poll-token",
+        }, True
+
+    async def _fake_poll(self: CloudRuntime, sandbox_id: str) -> str | None:
+        assert sandbox_id == "sbx-poll-track"
+        assert sandbox_id in self._sandboxes
+        assert self._sandboxes[sandbox_id]["api_url"] == "https://api.example.test/sandbox/sbx-poll-track"
+        payload = json.loads(state_file.read_text(encoding="utf-8"))
+        assert payload["sandboxes"][0]["sandbox_id"] == sandbox_id
+        return "https://tool.example.test:5443"
+
+    monkeypatch.setattr(CloudRuntime, "_create_sandbox_request", _fake_create_request)
+    monkeypatch.setattr(CloudRuntime, "_poll_tool_server_url", _fake_poll)
+
+    runtime = CloudRuntime(access_token="access-token", api_base="https://api.example.test")
+    result = await runtime.create_sandbox(agent_id="agent-poll-track")
+
+    assert result["workspace_id"] == "sbx-poll-track"
+    assert result["api_url"] == "https://tool.example.test:5443"
+    assert result["tool_server_port"] == 5443
+
+
+@pytest.mark.asyncio
 async def test_poll_tool_server_tolerates_transient_404_during_warmup(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

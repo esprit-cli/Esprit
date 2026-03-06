@@ -428,6 +428,16 @@ class CloudRuntime(AbstractRuntime):
                     "Response did not include sandbox_id/workspace_id.",
                 )
 
+            fallback_api_url = f"{self.api_base}/sandbox/{sandbox_id}"
+            auth_token = data.get("auth_token") or data.get("sandbox_token") or existing_token or self.access_token
+            self._sandboxes[sandbox_id] = {
+                "api_url": fallback_api_url,
+                "auth_token": str(auth_token) if auth_token else None,
+                "tool_server_port": _DEFAULT_CLOUD_TOOL_PORT,
+                "agent_id": agent_id,
+            }
+            self._track_sandbox(sandbox_id)
+
             api_url = str(data.get("api_url") or data.get("tool_server_url") or "").rstrip("/")
             if used_modern_endpoint and not api_url:
                 api_url = (await self._poll_tool_server_url(sandbox_id)) or ""
@@ -435,16 +445,14 @@ class CloudRuntime(AbstractRuntime):
                     # Avoid failing sub-agents on transient warmup lag.
                     # The proxy endpoint can become ready shortly after status
                     # polling times out, and tool execution has its own retries.
-                    api_url = f"{self.api_base}/sandbox/{sandbox_id}"
+                    api_url = fallback_api_url
             if not api_url:
-                api_url = f"{self.api_base}/sandbox/{sandbox_id}"
+                api_url = fallback_api_url
 
             tool_server_port = int(data.get("tool_server_port") or _DEFAULT_CLOUD_TOOL_PORT)
             parsed_port = urlparse(api_url).port
             if parsed_port:
                 tool_server_port = int(parsed_port)
-
-            auth_token = data.get("auth_token") or data.get("sandbox_token") or existing_token or self.access_token
 
             self._sandboxes[sandbox_id] = {
                 "api_url": api_url,
