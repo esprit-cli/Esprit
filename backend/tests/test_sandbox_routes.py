@@ -322,3 +322,52 @@ def test_sandbox_create_url_target_still_works(monkeypatch) -> None:
     assert response.status_code == 200
     assert response.json()["sandbox_id"] == "sandbox-url-1"
     app.dependency_overrides.clear()
+
+
+def test_sandbox_create_accepts_standard_scan_mode(monkeypatch) -> None:
+    async def fake_user() -> auth_module.TokenPayload:
+        return _fake_user()
+
+    async def fake_check_quota(*_args, **_kwargs):
+        return SimpleNamespace(has_quota=True, scans_remaining=5, tokens_remaining=0, message=None)
+
+    async def fake_get_user_plan(_user_id: str) -> str:
+        return "pro"
+
+    captured: dict[str, str] = {}
+
+    async def fake_create_sandbox(request, _user_id):
+        captured["scan_type"] = request.scan_type
+        return {
+            "sandbox_id": "sandbox-standard-1",
+            "status": "creating",
+            "tool_server_url": None,
+            "expires_at": None,
+        }
+
+    async def fake_increment_scan_count(*_args, **_kwargs):
+        return None
+
+    app.dependency_overrides[auth_module.get_current_user] = fake_user
+    monkeypatch.setattr(routes, "supabase", _FakeSupabase())
+    monkeypatch.setattr(routes.usage_service, "check_quota", fake_check_quota)
+    monkeypatch.setattr(routes.usage_service, "get_user_plan", fake_get_user_plan)
+    monkeypatch.setattr(routes.sandbox_service, "create_sandbox", fake_create_sandbox)
+    monkeypatch.setattr(routes.usage_service, "increment_scan_count", fake_increment_scan_count)
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/v1/sandbox",
+            headers={"Authorization": "Bearer ignored.for.override"},
+            json={
+                "scan_id": "scan-standard-1",
+                "target": "https://example.com",
+                "target_type": "url",
+                "scan_type": "standard",
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json()["sandbox_id"] == "sandbox-standard-1"
+    assert captured["scan_type"] == "standard"
+    app.dependency_overrides.clear()

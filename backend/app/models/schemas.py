@@ -15,7 +15,7 @@ class SandboxCreateRequest(BaseModel):
     scan_id: str
     target: str
     target_type: Literal["url", "repository", "public_repository", "local_upload"]
-    scan_type: Literal["deep", "quick", "compliance"]
+    scan_type: Literal["standard", "deep", "quick", "compliance"]
     test_username: str | None = None  # Optional credentials for authenticated testing
     test_password: str | None = None  # Optional credentials for authenticated testing
     bypass_code: str | None = None  # Optional code to bypass quota limits
