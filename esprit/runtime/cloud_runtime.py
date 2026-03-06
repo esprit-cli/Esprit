@@ -26,6 +26,7 @@ _CREATE_SANDBOX_MAX_ATTEMPTS = 2
 _CREATE_SANDBOX_RETRY_DELAY_SECONDS = 2
 _STATE_FILE_ENV = "ESPRIT_CLOUD_SANDBOX_STATE_FILE"
 _DEFAULT_STATE_FILE = Path.home() / ".esprit" / "state" / "cloud_sandboxes.json"
+_LEGACY_STALE_SANDBOX_MAX_AGE_SECONDS = 6 * 60 * 60
 
 
 class CloudRuntime(AbstractRuntime):
@@ -94,6 +95,7 @@ class CloudRuntime(AbstractRuntime):
                     "sandbox_id": sandbox_id,
                     "api_base": api_base,
                     "created_at": str(item.get("created_at") or ""),
+                    "owner_pid": str(item.get("owner_pid") or ""),
                 }
             )
         return tracked
@@ -129,6 +131,7 @@ class CloudRuntime(AbstractRuntime):
                 "sandbox_id": sandbox_id,
                 "api_base": self.api_base,
                 "created_at": str(int(time.time())),
+                "owner_pid": str(os.getpid()),
             }
         )
         self._save_tracked_sandboxes(filtered)
@@ -162,6 +165,8 @@ class CloudRuntime(AbstractRuntime):
         cleaned = 0
         headers = {"Authorization": f"Bearer {access_token}"}
         timeout = httpx.Timeout(_DEFAULT_TIMEOUT_SECONDS, connect=10)
+        current_pid = os.getpid()
+        now = int(time.time())
 
         async with httpx.AsyncClient(timeout=timeout, trust_env=False) as client:
             for item in tracked:
@@ -171,6 +176,21 @@ class CloudRuntime(AbstractRuntime):
                     continue
 
                 if entry_api_base != normalized_api_base:
+                    remaining.append(item)
+                    continue
+
+                owner_pid = cls._parse_optional_int(item.get("owner_pid"))
+                created_at = cls._parse_optional_int(item.get("created_at"))
+
+                if owner_pid == current_pid:
+                    remaining.append(item)
+                    continue
+
+                if owner_pid is not None:
+                    if cls._is_process_alive(owner_pid):
+                        remaining.append(item)
+                        continue
+                elif created_at is None or (now - created_at) < _LEGACY_STALE_SANDBOX_MAX_AGE_SECONDS:
                     remaining.append(item)
                     continue
 
@@ -189,6 +209,28 @@ class CloudRuntime(AbstractRuntime):
 
         cls._save_tracked_sandboxes(remaining)
         return cleaned
+
+    @staticmethod
+    def _parse_optional_int(value: Any) -> int | None:
+        try:
+            parsed = int(str(value).strip())
+        except (TypeError, ValueError):
+            return None
+        return parsed if parsed >= 0 else None
+
+    @staticmethod
+    def _is_process_alive(pid: int) -> bool:
+        if pid <= 0:
+            return False
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
+        except OSError:
+            return False
+        return True
 
     @staticmethod
     def _infer_scan_target() -> tuple[str, str] | None:

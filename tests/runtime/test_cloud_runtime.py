@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import uuid
 from pathlib import Path
 from typing import Any, Self
@@ -628,6 +629,7 @@ async def test_track_and_untrack_sandbox_state_file(
     assert len(sandboxes_after_create) == 1
     assert sandboxes_after_create[0]["sandbox_id"] == "sbx-track-1"
     assert sandboxes_after_create[0]["api_base"] == "https://api.example.test"
+    assert sandboxes_after_create[0]["owner_pid"] == str(os.getpid())
 
     await runtime.destroy_sandbox("sbx-track-1")
 
@@ -647,8 +649,8 @@ async def test_cleanup_stale_sandboxes_reaps_previous_entries(
             {
                 "version": 1,
                 "sandboxes": [
-                    {"sandbox_id": "stale-1", "api_base": "https://api.example.test", "created_at": "1"},
-                    {"sandbox_id": "stale-2", "api_base": "https://api.example.test", "created_at": "2"},
+                    {"sandbox_id": "stale-1", "api_base": "https://api.example.test", "created_at": "1", "owner_pid": "1111"},
+                    {"sandbox_id": "stale-2", "api_base": "https://api.example.test", "created_at": "2", "owner_pid": "2222"},
                     {"sandbox_id": "other-env", "api_base": "https://other.example.test", "created_at": "3"},
                 ],
             }
@@ -681,6 +683,7 @@ async def test_cleanup_stale_sandboxes_reaps_previous_entries(
             return _FakeResponse(500, {"detail": "error"})
 
     monkeypatch.setattr("esprit.runtime.cloud_runtime.httpx.AsyncClient", FakeAsyncClient)
+    monkeypatch.setattr(CloudRuntime, "_is_process_alive", staticmethod(lambda pid: pid == 2222))
 
     cleaned = await CloudRuntime.cleanup_stale_sandboxes(
         access_token="access-token",
@@ -688,11 +691,63 @@ async def test_cleanup_stale_sandboxes_reaps_previous_entries(
     )
 
     assert cleaned == 1
-    assert delete_calls == [
-        "https://api.example.test/sandbox/stale-1",
-        "https://api.example.test/sandbox/stale-2",
-    ]
+    assert delete_calls == ["https://api.example.test/sandbox/stale-1"]
 
     final_payload = json.loads(state_file.read_text(encoding="utf-8"))
     final_sandboxes = final_payload.get("sandboxes", [])
     assert {entry["sandbox_id"] for entry in final_sandboxes} == {"stale-2", "other-env"}
+
+
+@pytest.mark.asyncio
+async def test_cleanup_stale_sandboxes_keeps_recent_legacy_entries(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    now = 1_700_000_000
+    state_file = tmp_path / "cloud_state.json"
+    monkeypatch.setenv("ESPRIT_CLOUD_SANDBOX_STATE_FILE", str(state_file))
+    state_file.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "sandboxes": [
+                    {
+                        "sandbox_id": "legacy-live",
+                        "api_base": "https://api.example.test",
+                        "created_at": str(now - 60),
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    class FakeAsyncClient:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            _ = (args, kwargs)
+
+        async def __aenter__(self) -> Self:
+            return self
+
+        async def __aexit__(
+            self,
+            _exc_type: type[BaseException] | None,
+            _exc: BaseException | None,
+            _tb: object,
+        ) -> None:
+            return None
+
+        async def delete(self, url: str, *, headers: dict[str, str]) -> _FakeResponse:
+            raise AssertionError(f"Cleanup should not delete recent legacy entry: {url}")
+
+    monkeypatch.setattr("esprit.runtime.cloud_runtime.httpx.AsyncClient", FakeAsyncClient)
+    monkeypatch.setattr("esprit.runtime.cloud_runtime.time.time", lambda: now)
+
+    cleaned = await CloudRuntime.cleanup_stale_sandboxes(
+        access_token="access-token",
+        api_base="https://api.example.test",
+    )
+
+    assert cleaned == 0
+    final_payload = json.loads(state_file.read_text(encoding="utf-8"))
+    assert final_payload["sandboxes"][0]["sandbox_id"] == "legacy-live"
