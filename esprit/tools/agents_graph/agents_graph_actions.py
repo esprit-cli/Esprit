@@ -438,6 +438,10 @@ def create_agent(
         }
         if parent_agent and hasattr(parent_agent, "non_interactive"):
             agent_config["non_interactive"] = parent_agent.non_interactive
+        if parent_agent and hasattr(parent_agent, "local_sources"):
+            parent_local_sources = getattr(parent_agent, "local_sources", None)
+            if isinstance(parent_local_sources, list) and parent_local_sources:
+                agent_config["local_sources"] = deepcopy(parent_local_sources)
 
         agent = EspritAgent(agent_config)
 
