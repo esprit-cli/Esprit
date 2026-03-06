@@ -24,6 +24,7 @@ def _call_extract(edits: list[dict[str, Any]], save_dir: Path) -> list[dict[str,
 
     fake_runtime = MagicMock()
     fake_runtime.get_workspace_diffs = MagicMock(return_value=edits)
+    fake_runtime.get_diff_source_ids = MagicMock(return_value=["sandbox-123"])
 
     tracer = _make_tracer(save_dir)
 
@@ -67,7 +68,7 @@ class TestExtractAndSaveDiffs:
             }
         ]
         result = _call_extract(edits, tmp_path)
-        assert result == edits
+        assert result == [{**edits[0], "sandbox_id": "sandbox-123"}]
 
         patch_file = tmp_path / "patches" / "remediation.patch"
         assert patch_file.exists()
@@ -123,7 +124,7 @@ class TestExtractAndSaveDiffs:
         edits_file = tmp_path / "patches" / "edits.json"
         assert edits_file.exists()
         loaded = json.loads(edits_file.read_text())
-        assert loaded == edits
+        assert loaded == [{**edits[0], "sandbox_id": "sandbox-123"}]
 
     def test_no_patch_file_when_no_mutating_edits(self, tmp_path: Path) -> None:
         """view-only edits (no str_replace/create/insert) produce no patch file."""
@@ -147,6 +148,82 @@ class TestExtractAndSaveDiffs:
         assert "/workspace/c.py" in content
         assert "+# b" in content
         assert "+# inserted" in content
+
+    def test_aggregates_edits_from_all_tracked_sandboxes(self, tmp_path: Path) -> None:
+        import json
+        import esprit.runtime as rt_module
+
+        tracer = _make_tracer(tmp_path)
+        edits_by_sandbox = {
+            "sandbox-root": [
+                {
+                    "command": "str_replace",
+                    "path": "/workspace/root.py",
+                    "old_str": "debug=True",
+                    "new_str": "debug=False",
+                }
+            ],
+            "sandbox-child": [
+                {
+                    "command": "insert",
+                    "path": "/workspace/child.py",
+                    "new_str": "SAFE_MODE = True",
+                    "insert_line": 3,
+                }
+            ],
+        }
+
+        with (
+            patch.object(rt_module, "_global_runtime", MagicMock()),
+            patch.object(rt_module, "_fetch_workspace_diffs", side_effect=lambda sandbox_id: edits_by_sandbox[sandbox_id]),
+            patch.object(rt_module, "_diff_source_ids", return_value=["sandbox-root", "sandbox-child"]),
+            patch("esprit.telemetry.tracer.get_global_tracer", return_value=tracer),
+            patch.object(rt_module, "_upload_patch_to_s3"),
+        ):
+            result = rt_module.extract_and_save_diffs("sandbox-root")
+
+        assert result == [
+            {**edits_by_sandbox["sandbox-root"][0], "sandbox_id": "sandbox-root"},
+            {**edits_by_sandbox["sandbox-child"][0], "sandbox_id": "sandbox-child"},
+        ]
+
+        edits_file = tmp_path / "patches" / "edits.json"
+        loaded = json.loads(edits_file.read_text())
+        assert loaded == result
+
+        patch_content = (tmp_path / "patches" / "remediation.patch").read_text()
+        assert "/workspace/root.py" in patch_content
+        assert "/workspace/child.py" in patch_content
+        assert "@@ -3,0 +3,1 @@" in patch_content
+
+    def test_continues_when_child_sandbox_diff_fetch_fails(self, tmp_path: Path) -> None:
+        import esprit.runtime as rt_module
+
+        tracer = _make_tracer(tmp_path)
+        root_edit = {
+            "command": "str_replace",
+            "path": "/workspace/root.py",
+            "old_str": "A",
+            "new_str": "B",
+        }
+
+        def _fake_fetch(sandbox_id: str) -> list[dict[str, Any]]:
+            if sandbox_id == "sandbox-root":
+                return [root_edit]
+            raise RuntimeError("diff endpoint unavailable")
+
+        with (
+            patch.object(rt_module, "_global_runtime", MagicMock()),
+            patch.object(rt_module, "_fetch_workspace_diffs", side_effect=_fake_fetch),
+            patch.object(rt_module, "_diff_source_ids", return_value=["sandbox-root", "sandbox-child"]),
+            patch("esprit.telemetry.tracer.get_global_tracer", return_value=tracer),
+            patch.object(rt_module, "_upload_patch_to_s3"),
+        ):
+            result = rt_module.extract_and_save_diffs("sandbox-root")
+
+        assert result == [{**root_edit, "sandbox_id": "sandbox-root"}]
+        patch_content = (tmp_path / "patches" / "remediation.patch").read_text()
+        assert "/workspace/root.py" in patch_content
 
 
 class _FakeS3Client:

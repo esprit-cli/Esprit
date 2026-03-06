@@ -49,17 +49,29 @@ def get_runtime() -> AbstractRuntime:
     raise ValueError(f"Unsupported runtime backend: {runtime_backend}.")
 
 
-def extract_and_save_diffs(sandbox_id: str) -> list[dict[str, object]]:
-    """Pull file edits from the sandbox and persist them to the run directory.
+def _diff_source_ids(primary_sandbox_id: str) -> list[str]:
+    if _global_runtime is None or not primary_sandbox_id:
+        return []
 
-    Call this BEFORE cleanup_runtime() while the sandbox is still alive.
-    Returns the list of edit records for further processing.
-    """
+    get_diff_source_ids = getattr(_global_runtime, "get_diff_source_ids", None)
+    if callable(get_diff_source_ids):
+        candidates = get_diff_source_ids(primary_sandbox_id)
+        if isinstance(candidates, list):
+            ordered: list[str] = []
+            seen: set[str] = set()
+            for item in candidates:
+                sandbox_id = str(item or "").strip()
+                if not sandbox_id or sandbox_id in seen:
+                    continue
+                seen.add(sandbox_id)
+                ordered.append(sandbox_id)
+            if ordered:
+                return ordered
+    return [primary_sandbox_id]
+
+
+def _fetch_workspace_diffs(sandbox_id: str) -> list[dict[str, object]]:
     import asyncio
-    import json
-    import logging
-
-    log = logging.getLogger(__name__)
 
     if _global_runtime is None or not sandbox_id:
         return []
@@ -73,16 +85,49 @@ def extract_and_save_diffs(sandbox_id: str) -> list[dict[str, object]]:
         import concurrent.futures
 
         with concurrent.futures.ThreadPoolExecutor() as pool:
-            edits = pool.submit(
+            return pool.submit(
                 asyncio.run, _global_runtime.get_workspace_diffs(sandbox_id)
             ).result(timeout=15)
-    else:
-        edits = asyncio.run(_global_runtime.get_workspace_diffs(sandbox_id))
+
+    return asyncio.run(_global_runtime.get_workspace_diffs(sandbox_id))
+
+
+def extract_and_save_diffs(sandbox_id: str) -> list[dict[str, object]]:
+    """Pull file edits from one or more sandboxes and persist them to the run directory.
+
+    Call this BEFORE cleanup_runtime() while the sandbox is still alive.
+    Returns the list of edit records for further processing.
+    """
+    import json
+    import logging
+
+    log = logging.getLogger(__name__)
+
+    if _global_runtime is None or not sandbox_id:
+        return []
+
+    edits: list[dict[str, object]] = []
+    diff_source_ids = _diff_source_ids(sandbox_id)
+    for diff_source_id in diff_source_ids:
+        try:
+            sandbox_edits = _fetch_workspace_diffs(diff_source_id)
+        except Exception:  # noqa: BLE001
+            log.exception("Failed to extract workspace diffs from sandbox %s", diff_source_id)
+            continue
+
+        for edit in sandbox_edits:
+            tagged_edit = dict(edit)
+            tagged_edit.setdefault("sandbox_id", diff_source_id)
+            edits.append(tagged_edit)
 
     if not edits:
         return []
 
-    log.info("Extracted %d file edits from sandbox %s", len(edits), sandbox_id)
+    log.info(
+        "Extracted %d file edits from %d sandbox(es)",
+        len(edits),
+        len(diff_source_ids),
+    )
 
     # Persist to the tracer's run directory if available
     try:

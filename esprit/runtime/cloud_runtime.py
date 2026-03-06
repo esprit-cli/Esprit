@@ -42,6 +42,22 @@ class CloudRuntime(AbstractRuntime):
         self.api_base = api_base.rstrip("/")
         self._sandboxes: dict[str, dict[str, Any]] = {}
 
+    def get_diff_source_ids(self, primary_sandbox_id: str | None = None) -> list[str]:
+        ordered: list[str] = []
+        seen: set[str] = set()
+
+        def _add(sandbox_id: str | None) -> None:
+            normalized = str(sandbox_id or "").strip()
+            if not normalized or normalized in seen:
+                return
+            seen.add(normalized)
+            ordered.append(normalized)
+
+        _add(primary_sandbox_id)
+        for sandbox_id in self._sandboxes:
+            _add(sandbox_id)
+        return ordered
+
     @classmethod
     def _state_file_path(cls) -> Path:
         override = (os.getenv(_STATE_FILE_ENV) or "").strip()

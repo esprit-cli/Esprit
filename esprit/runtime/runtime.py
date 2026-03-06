@@ -37,5 +37,15 @@ class AbstractRuntime(ABC):
         """
         return []
 
+    def get_diff_source_ids(self, primary_container_id: str | None = None) -> list[str]:
+        """Return runtime-owned sandboxes whose edits should be persisted.
+
+        Most runtimes only need the primary sandbox. Cloud mode can override
+        this to include child sandboxes created for sub-agents.
+        """
+        if primary_container_id:
+            return [primary_container_id]
+        return []
+
     def cleanup(self) -> None:
         raise NotImplementedError
