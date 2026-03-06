@@ -176,6 +176,16 @@ if [ -n "${UPLOAD_S3_KEY:-}" ] && [ -n "${S3_BUCKET:-}" ]; then
 fi
 # ===== End S3 extraction =====
 
+echo "Capturing workspace baseline..."
+export ESPRIT_WORKSPACE_BASELINE="${ESPRIT_WORKSPACE_BASELINE:-/tmp/esprit-workspace-baseline}"
+PYTHONPATH=/app /app/venv/bin/python - <<'PY'
+from esprit.runtime.workspace_changes import create_workspace_baseline
+
+create_workspace_baseline()
+PY
+chown -R pentester:pentester "$ESPRIT_WORKSPACE_BASELINE"
+echo "✅ Workspace baseline captured"
+
 echo "Starting tool server..."
 cd /app
 export PYTHONPATH=/app

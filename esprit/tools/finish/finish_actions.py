@@ -216,6 +216,7 @@ def finish_scan(
         return {"success": False, "message": "Validation failed", "errors": validation_errors}
 
     try:
+        from esprit.runtime import extract_and_save_diffs
         from esprit.telemetry.tracer import get_global_tracer
 
         tracer = get_global_tracer()
@@ -226,6 +227,13 @@ def finish_scan(
                 technical_analysis=technical_analysis.strip(),
                 recommendations=recommendations.strip(),
             )
+
+            sandbox_id = getattr(agent_state, "sandbox_id", None)
+            if sandbox_id:
+                try:
+                    extract_and_save_diffs(sandbox_id)
+                except Exception:  # noqa: BLE001
+                    logger.exception("Failed to persist remediation artifacts on finish_scan")
 
             vulnerability_count = len(tracer.vulnerability_reports)
 

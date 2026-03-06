@@ -18,24 +18,27 @@ def _make_tracer(save_dir: Path) -> MagicMock:
     return tracer
 
 
-def _call_extract(edits: list[dict[str, Any]], save_dir: Path) -> list[dict[str, Any]]:
+def _call_extract(
+    edits: list[dict[str, Any]],
+    save_dir: Path,
+    *,
+    workspace_changes: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
     """Invoke extract_and_save_diffs with a fake runtime returning *edits*."""
     import esprit.runtime as rt_module
 
     fake_runtime = MagicMock()
-    fake_runtime.get_workspace_diffs = MagicMock(return_value=edits)
     fake_runtime.get_diff_source_ids = MagicMock(return_value=["sandbox-123"])
 
     tracer = _make_tracer(save_dir)
 
     with (
         patch.object(rt_module, "_global_runtime", fake_runtime),
+        patch.object(rt_module, "_fetch_workspace_changes", return_value=workspace_changes or {}),
+        patch.object(rt_module, "_fetch_workspace_diffs", return_value=edits),
         patch("esprit.telemetry.tracer.get_global_tracer", return_value=tracer),
         # Prevent S3 upload attempts
         patch.object(rt_module, "_upload_patch_to_s3"),
-        # Run sync so asyncio.run() path is taken
-        patch("asyncio.get_running_loop", side_effect=RuntimeError),
-        patch("asyncio.run", side_effect=lambda coro: edits),
     ):
         return rt_module.extract_and_save_diffs("sandbox-123")
 
@@ -148,6 +151,38 @@ class TestExtractAndSaveDiffs:
         assert "/workspace/c.py" in content
         assert "+# b" in content
         assert "+# inserted" in content
+
+    def test_workspace_changes_write_authoritative_patch(self, tmp_path: Path) -> None:
+        workspace_changes = {
+            "changes": [
+                {
+                    "path": "api/auth.py",
+                    "status": "modified",
+                    "patch": "--- a/api/auth.py\n+++ b/api/auth.py\n@@ -1,2 +1,2 @@\n-debug = True\n+debug = False\n",
+                }
+            ],
+            "patch": "--- a/api/auth.py\n+++ b/api/auth.py\n@@ -1,2 +1,2 @@\n-debug = True\n+debug = False\n",
+        }
+
+        result = _call_extract([], tmp_path, workspace_changes=workspace_changes)
+
+        assert result == [
+            {
+                "path": "api/auth.py",
+                "status": "modified",
+                "patch": "--- a/api/auth.py\n+++ b/api/auth.py\n@@ -1,2 +1,2 @@\n-debug = True\n+debug = False\n",
+                "sandbox_id": "sandbox-123",
+            }
+        ]
+
+        workspace_changes_file = tmp_path / "patches" / "workspace_changes.json"
+        assert workspace_changes_file.exists()
+        assert "api/auth.py" in workspace_changes_file.read_text()
+
+        patch_content = (tmp_path / "patches" / "remediation.patch").read_text()
+        assert "--- a/api/auth.py" in patch_content
+        assert "+++ b/api/auth.py" in patch_content
+        assert "@@ -1,2 +1,2 @@" in patch_content
 
     def test_aggregates_edits_from_all_tracked_sandboxes(self, tmp_path: Path) -> None:
         import json

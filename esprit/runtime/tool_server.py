@@ -148,6 +148,17 @@ async def get_diffs(
     return {"edits": list(_edit_log), "count": len(_edit_log)}
 
 
+@app.get("/workspace-changes")
+async def get_workspace_changes(
+    credentials: HTTPAuthorizationCredentials = security_dependency,
+) -> dict[str, Any]:
+    """Return actual filesystem changes relative to the captured workspace baseline."""
+    verify_token(credentials)
+    from esprit.runtime.workspace_changes import collect_workspace_changes
+
+    return collect_workspace_changes()
+
+
 @app.get("/health")
 async def health_check() -> dict[str, Any]:
     return {

@@ -152,6 +152,33 @@ class TestRemediationCoverage:
         assert "2" in result["message"]  # fixer count
 
 
+class TestFinishScanArtifacts:
+    @patch("esprit.telemetry.tracer.get_global_tracer")
+    @patch("esprit.runtime.extract_and_save_diffs")
+    def test_finish_scan_persists_diffs_for_root_sandbox(
+        self,
+        mock_extract: MagicMock,
+        mock_tracer_fn: MagicMock,
+    ) -> None:
+        tracer = MagicMock()
+        tracer.vulnerability_reports = []
+        mock_tracer_fn.return_value = tracer
+
+        state = _FakeAgentState(agent_id="scan_root")
+        state.sandbox_id = "sandbox-123"
+
+        result = finish_actions.finish_scan(
+            executive_summary="summary",
+            methodology="method",
+            technical_analysis="analysis",
+            recommendations="reco",
+            agent_state=state,
+        )
+
+        assert result["success"] is True
+        mock_extract.assert_called_once_with("sandbox-123")
+
+
 # ── Per-scan bounce counter ──
 
 
