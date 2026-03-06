@@ -30,6 +30,22 @@ class CloudRuntime(AbstractRuntime):
         self.api_base = api_base.rstrip("/")
         self._sandboxes: dict[str, dict[str, Any]] = {}
 
+    def get_diff_source_ids(self, primary_sandbox_id: str | None = None) -> list[str]:
+        ordered: list[str] = []
+        seen: set[str] = set()
+
+        def _add(sandbox_id: str | None) -> None:
+            normalized = str(sandbox_id or "").strip()
+            if not normalized or normalized in seen:
+                return
+            seen.add(normalized)
+            ordered.append(normalized)
+
+        _add(primary_sandbox_id)
+        for sandbox_id in self._sandboxes:
+            _add(sandbox_id)
+        return ordered
+
     @staticmethod
     def _sanitize_local_sources(
         local_sources: list[dict[str, str]] | None,
@@ -220,6 +236,27 @@ class CloudRuntime(AbstractRuntime):
         except (httpx.RequestError, Exception):  # noqa: BLE001
             pass
         return []
+
+    async def get_workspace_changes(self, container_id: str) -> dict[str, Any]:
+        """Retrieve filesystem-derived workspace changes from the cloud sandbox tool server."""
+        sandbox = self._sandboxes.get(container_id, {})
+        api_url = sandbox.get("api_url")
+        auth_token = sandbox.get("auth_token")
+        if not api_url or not auth_token:
+            return {}
+        try:
+            async with httpx.AsyncClient(
+                timeout=_DEFAULT_TIMEOUT_SECONDS, trust_env=False
+            ) as client:
+                resp = await client.get(
+                    f"{api_url}/workspace-changes",
+                    headers={"Authorization": f"Bearer {auth_token}"},
+                )
+                if resp.status_code == 200:
+                    return dict(resp.json())
+        except (httpx.RequestError, Exception):  # noqa: BLE001
+            pass
+        return {}
 
     async def destroy_sandbox(self, container_id: str) -> None:
         try:

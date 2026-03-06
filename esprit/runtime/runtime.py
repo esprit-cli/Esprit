@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import TypedDict
+from typing import Any, TypedDict
 
 
 class SandboxInfo(TypedDict):
@@ -35,6 +35,16 @@ class AbstractRuntime(ABC):
         Default implementation returns an empty list for runtimes that don't
         support diff extraction.
         """
+        return []
+
+    async def get_workspace_changes(self, container_id: str) -> dict[str, Any]:
+        """Retrieve filesystem-derived workspace changes from the sandbox."""
+        return {}
+
+    def get_diff_source_ids(self, primary_container_id: str | None = None) -> list[str]:
+        """Return runtime-owned sandboxes whose edits should be persisted."""
+        if primary_container_id:
+            return [primary_container_id]
         return []
 
     def cleanup(self) -> None:

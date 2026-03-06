@@ -400,6 +400,27 @@ class DockerRuntime(AbstractRuntime):
             pass
         return []
 
+    async def get_workspace_changes(self, container_id: str) -> dict[str, object]:
+        """Retrieve filesystem-derived workspace changes from the sandbox tool server."""
+        if not self._tool_server_port or not self._tool_server_token:
+            return {}
+        try:
+            import requests as _req
+
+            host = self._resolve_docker_host()
+            resp = _req.get(
+                f"http://{host}:{self._tool_server_port}/workspace-changes",
+                headers={"Authorization": f"Bearer {self._tool_server_token}"},
+                timeout=10,
+            )
+            if resp.ok:
+                data = resp.json()
+                if isinstance(data, dict):
+                    return data
+        except Exception:  # noqa: BLE001
+            pass
+        return {}
+
     async def destroy_sandbox(self, container_id: str) -> None:
         try:
             container = self.client.containers.get(container_id)

@@ -185,12 +185,13 @@ COPY esprit/__init__.py esprit/
 COPY esprit/config/ /app/esprit/config/
 COPY esprit/utils/ /app/esprit/utils/
 COPY esprit/telemetry/ /app/esprit/telemetry/
-COPY esprit/runtime/tool_server.py esprit/runtime/__init__.py esprit/runtime/runtime.py /app/esprit/runtime/
+COPY esprit/runtime/tool_server.py esprit/runtime/__init__.py esprit/runtime/runtime.py esprit/runtime/workspace_changes.py /app/esprit/runtime/
 
 COPY esprit/tools/__init__.py esprit/tools/registry.py esprit/tools/executor.py esprit/tools/argument_parser.py esprit/tools/context.py /app/esprit/tools/
 
 COPY esprit/tools/browser/ /app/esprit/tools/browser/
 COPY esprit/tools/file_edit/ /app/esprit/tools/file_edit/
+COPY esprit/tools/notes/ /app/esprit/tools/notes/
 COPY esprit/tools/python/ /app/esprit/tools/python/
 COPY esprit/tools/terminal/ /app/esprit/tools/terminal/
 COPY esprit/tools/proxy/ /app/esprit/tools/proxy/
