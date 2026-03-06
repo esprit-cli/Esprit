@@ -309,11 +309,14 @@ class CloudRuntime(AbstractRuntime):
     def _build_modern_sandbox_payload(
         agent_id: str,
         sources_payload: list[dict[str, str]],
+        scan_mode: str | None = None,
         scan_id: str | None = None,
     ) -> dict[str, Any]:
-        scan_mode = str(os.getenv("ESPRIT_SCAN_MODE", "quick")).strip().lower()
-        if scan_mode not in {"quick", "deep", "compliance"}:
-            scan_mode = "quick"
+        requested_scan_mode = str(
+            scan_mode or os.getenv("ESPRIT_SCAN_MODE", "quick")
+        ).strip().lower()
+        if requested_scan_mode not in {"quick", "standard", "deep", "compliance"}:
+            requested_scan_mode = "quick"
 
         default_target = "https://example.com"
         target = default_target
@@ -330,7 +333,7 @@ class CloudRuntime(AbstractRuntime):
             "scan_id": scan_id or str(uuid.uuid4()),
             "target": target,
             "target_type": target_type,
-            "scan_type": scan_mode,
+            "scan_type": requested_scan_mode,
         }
         current_sandbox_id = str(os.getenv("SANDBOX_ID") or "").strip()
         if current_sandbox_id:
@@ -345,6 +348,7 @@ class CloudRuntime(AbstractRuntime):
         client: httpx.AsyncClient,
         agent_id: str,
         sources_payload: list[dict[str, str]],
+        scan_mode: str | None = None,
         scan_id: str | None = None,
     ) -> tuple[dict[str, Any], bool]:
         headers = {"Authorization": f"Bearer {self.access_token}"}
@@ -365,7 +369,12 @@ class CloudRuntime(AbstractRuntime):
             if legacy_exc.response.status_code not in {404, 405}:
                 raise
 
-        modern_payload = self._build_modern_sandbox_payload(agent_id, sources_payload, scan_id=scan_id)
+        modern_payload = self._build_modern_sandbox_payload(
+            agent_id,
+            sources_payload,
+            scan_mode=scan_mode,
+            scan_id=scan_id,
+        )
         modern_response = await client.post(
             f"{self.api_base}/sandbox",
             json=modern_payload,
@@ -441,6 +450,7 @@ class CloudRuntime(AbstractRuntime):
         agent_id: str,
         existing_token: str | None = None,
         local_sources: list[dict[str, str]] | None = None,
+        scan_mode: str | None = None,
     ) -> SandboxInfo:
         sources_payload = self._sanitize_local_sources(local_sources)
 
@@ -465,6 +475,7 @@ class CloudRuntime(AbstractRuntime):
                         client=client,
                         agent_id=agent_id,
                         sources_payload=sources_payload,
+                        scan_mode=scan_mode,
                         scan_id=scan_id,
                     )
             except httpx.HTTPStatusError as exc:

@@ -201,9 +201,10 @@ async def test_create_sandbox_tracks_state_before_tool_server_poll(
         client: Any,
         agent_id: str,
         sources_payload: list[dict[str, str]],
+        scan_mode: str | None = None,
         scan_id: str | None = None,
     ) -> tuple[dict[str, Any], bool]:
-        _ = (self, client, agent_id, sources_payload, scan_id)
+        _ = (self, client, agent_id, sources_payload, scan_mode, scan_id)
         return {
             "sandbox_id": "sbx-poll-track",
             "sandbox_token": "poll-token",
@@ -534,9 +535,10 @@ async def test_create_sandbox_avoids_retry_loop_when_modern_endpoint_is_slow(
         client: httpx.AsyncClient,
         agent_id: str,
         sources_payload: list[dict[str, str]],
+        scan_mode: str | None = None,
         scan_id: str | None = None,
     ) -> tuple[dict[str, Any], bool]:
-        _ = (self, client, agent_id, sources_payload, scan_id)
+        _ = (self, client, agent_id, sources_payload, scan_mode, scan_id)
         state["create_calls"] += 1
         idx = state["create_calls"]
         return (
@@ -569,6 +571,63 @@ async def test_create_sandbox_avoids_retry_loop_when_modern_endpoint_is_slow(
     assert result["workspace_id"] == "sbx-retry-1"
     assert result["api_url"] == "https://api.example.test/sandbox/sbx-retry-1"
     assert result["tool_server_port"] == 443
+
+
+@pytest.mark.asyncio
+async def test_create_sandbox_uses_explicit_scan_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state: dict[str, Any] = {"modern_payload": None}
+
+    class FakeAsyncClient:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            _ = (args, kwargs)
+
+        async def __aenter__(self) -> Self:
+            return self
+
+        async def __aexit__(
+            self,
+            _exc_type: type[BaseException] | None,
+            _exc: BaseException | None,
+            _tb: object,
+        ) -> None:
+            return None
+
+        async def post(
+            self,
+            url: str,
+            *,
+            json: dict[str, Any],
+            headers: dict[str, str],
+        ) -> _FakeResponse:
+            _ = headers
+            if url.endswith("/sandbox/create"):
+                return _FakeResponse(405, {"detail": "Method Not Allowed"})
+            if url.endswith("/sandbox"):
+                state["modern_payload"] = json
+                return _FakeResponse(
+                    200,
+                    {
+                        "sandbox_id": "sbx-standard",
+                        "status": "running",
+                        "tool_server_url": "https://tool.example.test",
+                    },
+                )
+            raise AssertionError(f"Unexpected POST URL: {url}")
+
+        async def get(self, _url: str, *, headers: dict[str, str]) -> _FakeResponse:
+            _ = headers
+            raise AssertionError("Status polling should not run when tool_server_url is present")
+
+    monkeypatch.setattr("esprit.runtime.cloud_runtime.httpx.AsyncClient", FakeAsyncClient)
+
+    runtime = CloudRuntime(access_token="access-token", api_base="https://api.example.test")
+    await runtime.create_sandbox(agent_id="agent-standard", scan_mode="standard")
+
+    modern_payload = state["modern_payload"]
+    assert modern_payload is not None
+    assert modern_payload["scan_type"] == "standard"
 
 
 @pytest.mark.asyncio

@@ -549,7 +549,10 @@ class BaseAgent(metaclass=AgentMeta):
             try:
                 runtime = get_runtime()
                 sandbox_info = await runtime.create_sandbox(
-                    self.state.agent_id, self.state.sandbox_token, self.local_sources
+                    self.state.agent_id,
+                    self.state.sandbox_token,
+                    self.local_sources,
+                    self.llm_config.scan_mode,
                 )
                 self.state.sandbox_id = sandbox_info["workspace_id"]
                 self.state.sandbox_token = sandbox_info["auth_token"]

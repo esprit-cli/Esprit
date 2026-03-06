@@ -316,7 +316,9 @@ class DockerRuntime(AbstractRuntime):
         agent_id: str,
         existing_token: str | None = None,
         local_sources: list[dict[str, str]] | None = None,
+        scan_mode: str | None = None,
     ) -> SandboxInfo:
+        _ = scan_mode
         scan_id = self._get_scan_id(agent_id)
         container = self._get_or_create_container(scan_id)
 
