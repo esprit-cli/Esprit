@@ -254,12 +254,14 @@ def _run_agent_in_thread(
         _agent_instances.pop(state.agent_id, None)
         raise
     else:
+        existing_status = str(_agent_graph["nodes"][state.agent_id].get("status", "")).lower()
         if state.stop_requested:
             _agent_graph["nodes"][state.agent_id]["status"] = "stopped"
-        else:
+        elif existing_status not in {"completed", "failed", "error", "stopped"}:
             _agent_graph["nodes"][state.agent_id]["status"] = "completed"
         _agent_graph["nodes"][state.agent_id]["finished_at"] = datetime.now(UTC).isoformat()
-        _agent_graph["nodes"][state.agent_id]["result"] = result
+        if _agent_graph["nodes"][state.agent_id].get("result") is None:
+            _agent_graph["nodes"][state.agent_id]["result"] = result
         _running_agents.pop(state.agent_id, None)
         _agent_instances.pop(state.agent_id, None)
 
@@ -576,14 +578,19 @@ def agent_finish(
 
         agent_node = _agent_graph["nodes"][agent_id]
 
-        agent_node["status"] = "finished" if success else "failed"
+        agent_node["status"] = "completed" if success else "failed"
         agent_node["finished_at"] = datetime.now(UTC).isoformat()
-        agent_node["result"] = {
+        completion_payload = {
             "summary": result_summary,
             "findings": findings or [],
             "success": success,
             "recommendations": final_recommendations or [],
+            "completion_type": "agent_finish",
+            "task_success": success,
         }
+        agent_node["result"] = completion_payload
+        if hasattr(agent_state, "set_completed"):
+            agent_state.set_completed(completion_payload)
 
         parent_notified = False
 
@@ -653,6 +660,7 @@ def agent_finish(
                 "has_recommendations": bool(final_recommendations),
                 "finished_at": agent_node["finished_at"],
             },
+            "success": success,
         }
 
     except Exception as e:  # noqa: BLE001

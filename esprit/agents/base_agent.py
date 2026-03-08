@@ -29,6 +29,20 @@ from .state import AgentState
 logger = logging.getLogger(__name__)
 
 
+def _completion_result_succeeded(result: dict[str, Any] | None) -> bool:
+    if not isinstance(result, dict):
+        return True
+
+    completion_summary = result.get("completion_summary")
+    if isinstance(completion_summary, dict) and isinstance(completion_summary.get("success"), bool):
+        return bool(completion_summary["success"])
+
+    if isinstance(result.get("success"), bool):
+        return bool(result["success"])
+
+    return True
+
+
 class AgentMeta(type):
     agent_name: str
     jinja_env: Environment
@@ -193,6 +207,7 @@ class BaseAgent(metaclass=AgentMeta):
             "finished_at": None,
             "result": None,
             "llm_config": self.llm_config_name,
+            "skills": list(getattr(self.llm_config, "skills", []) or []),
             "agent_type": self.__class__.__name__,
             "state": self.state.model_dump(),
         }
@@ -285,10 +300,15 @@ class BaseAgent(metaclass=AgentMeta):
 
                 if should_finish:
                     if self.non_interactive:
-                        self.state.set_completed({"success": True})
+                        completion_result = self.state.final_result or {"success": True}
+                        completion_success = _completion_result_succeeded(completion_result)
+                        self.state.set_completed(completion_result)
                         if tracer:
-                            tracer.update_agent_status(self.state.agent_id, "completed")
-                        return self.state.final_result or {}
+                            tracer.update_agent_status(
+                                self.state.agent_id,
+                                "completed" if completion_success else "failed",
+                            )
+                        return completion_result
                     await self._enter_waiting_state(tracer, task_completed=True)
                     continue
 

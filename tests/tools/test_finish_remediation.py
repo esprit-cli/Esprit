@@ -48,8 +48,13 @@ def _reset_state() -> Any:
     agents_graph_actions._agent_graph["edges"] = old_edges
 
 
-def _add_fixing_agent(name: str, status: str = "finished") -> None:
-    """Add a fixing agent node to the global agent graph."""
+def _add_fixing_agent(
+    name: str,
+    status: str = "completed",
+    skills: list[str] | None = None,
+    success: bool = True,
+) -> None:
+    """Add an agent node to the global agent graph."""
     from esprit.tools.agents_graph import agents_graph_actions
 
     agent_id = f"fix_{len(agents_graph_actions._agent_graph['nodes'])}"
@@ -57,6 +62,8 @@ def _add_fixing_agent(name: str, status: str = "finished") -> None:
         "name": name,
         "status": status,
         "task": "fix something",
+        "skills": skills or ["remediation"],
+        "result": {"success": success},
     }
 
 
@@ -132,6 +139,32 @@ class TestRemediationCoverage:
         """A running fixer should not count toward coverage."""
         mock_tracer_fn.return_value = _make_tracer(1)
         _add_fixing_agent("Fixer", status="running")
+        state = _FakeAgentState()
+        result = _check_remediation_completeness(state)
+        assert result is not None
+        assert result["fixing_agents_completed"] == 0
+
+    @patch("esprit.telemetry.tracer.get_global_tracer")
+    def test_fix_validation_agent_not_counted_without_remediation_skill(
+        self, mock_tracer_fn: MagicMock
+    ) -> None:
+        mock_tracer_fn.return_value = _make_tracer(1)
+        _add_fixing_agent(
+            "Authorization Fix Validation Agent",
+            skills=["verification"],
+            success=True,
+        )
+        state = _FakeAgentState()
+        result = _check_remediation_completeness(state)
+        assert result is not None
+        assert result["fixing_agents_completed"] == 0
+
+    @patch("esprit.telemetry.tracer.get_global_tracer")
+    def test_failed_remediation_agent_not_counted(
+        self, mock_tracer_fn: MagicMock
+    ) -> None:
+        mock_tracer_fn.return_value = _make_tracer(1)
+        _add_fixing_agent("Authorization Fixing Agent", success=False)
         state = _FakeAgentState()
         result = _check_remediation_completeness(state)
         assert result is not None

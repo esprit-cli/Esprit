@@ -12,6 +12,29 @@ _MAX_REMEDIATION_BOUNCES = 2
 _remediation_bounce_counts: dict[str, int] = {}
 
 
+def _is_successful_remediation_agent(node: dict[str, Any]) -> bool:
+    skills = node.get("skills")
+    if not isinstance(skills, list) or "remediation" not in skills:
+        return False
+
+    status = str(node.get("status", "")).lower()
+    if status not in {"completed", "finished"}:
+        return False
+
+    result = node.get("result")
+    if not isinstance(result, dict):
+        return False
+
+    completion_summary = result.get("completion_summary")
+    if isinstance(completion_summary, dict) and isinstance(completion_summary.get("success"), bool):
+        return bool(completion_summary["success"])
+
+    if isinstance(result.get("success"), bool):
+        return bool(result["success"])
+
+    return True
+
+
 def _validate_root_agent(agent_state: Any) -> dict[str, Any] | None:
     if agent_state and hasattr(agent_state, "parent_id") and agent_state.parent_id is not None:
         return {
@@ -119,13 +142,13 @@ def _check_remediation_completeness(agent_state: Any) -> dict[str, Any] | None:
         if vuln_count == 0:
             return None
 
-        # Count completed fixing agents in the agent graph
-        fixing_agents = []
-        for node in _agent_graph["nodes"].values():
-            name = (node.get("name") or "").lower()
-            status = node.get("status", "")
-            if "fix" in name and status == "finished":
-                fixing_agents.append(node)
+        # Count only successful remediation agents in the agent graph.
+        # Name matching is too loose and incorrectly counts validation agents.
+        fixing_agents = [
+            node
+            for node in _agent_graph["nodes"].values()
+            if _is_successful_remediation_agent(node)
+        ]
 
         fix_count = len(fixing_agents)
 
