@@ -104,6 +104,8 @@ VULNERABILITY REMEDIATION (how to fix code):
 - Use the `str_replace_editor` tool to patch vulnerable code directly in the source files.
 - Use `list_files` to navigate the project structure and locate relevant source files.
 - Use `search_files` to find all occurrences of a vulnerable pattern across the codebase.
+- Fixes must be fail-secure. If auth or secret configuration is missing, deny access safely instead of inventing fallback credentials or bypasses.
+- NEVER generate, default, print, or log passwords, tokens, API keys, or other secrets as part of a remediation.
 - Remediation workflow for each vulnerability:
   1. Report the vulnerability first via `create_vulnerability_report` (reporting agent)
   2. Spawn a Fixing Agent with skills="remediation,<vuln_type>"

@@ -1,4 +1,5 @@
 import logging
+import re
 import threading
 from copy import deepcopy
 from datetime import UTC, datetime
@@ -32,6 +33,33 @@ MAX_AGENTS = 10  # Hard cap on total agents to prevent runaway spawning
 
 _INHERIT_SUMMARIZE_THRESHOLD = 15  # Summarize if parent history exceeds this
 _RECENT_MESSAGES_TO_KEEP = 10  # Keep last N messages verbatim after summary
+
+_UNSAFE_REMEDIATION_PATTERNS = (
+    (
+        "generated temporary or fallback credentials",
+        (
+            "generated temporary password",
+            "generate a temporary password",
+            "generated random password",
+            "generate a random password",
+            "fallback password",
+            "temporary credentials",
+            "generated temporary credentials",
+            "default password",
+        ),
+    ),
+    (
+        "logged or printed secret material",
+        (
+            "log the generated password",
+            "logged the generated password",
+            "logging the generated password",
+            "printed the generated password",
+            "print the generated password",
+            "logged password",
+        ),
+    ),
+)
 
 
 def _snapshot_inherited_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -121,6 +149,77 @@ def _format_messages_brief(messages: list[dict[str, Any]]) -> str:
             text = text[:250] + "\n...[truncated]...\n" + text[-250:]
         parts.append(f"{role}: {text}")
     return "\n".join(parts)
+
+
+def _unsafe_remediation_reason(
+    skills: list[str] | None,
+    result_summary: str,
+    findings: list[str] | None,
+    final_recommendations: list[str] | None,
+) -> str | None:
+    if not isinstance(skills, list) or "remediation" not in skills:
+        return None
+
+    text = "\n".join(
+        part.strip()
+        for part in [
+            result_summary,
+            *(findings or []),
+            *(final_recommendations or []),
+        ]
+        if isinstance(part, str) and part.strip()
+    ).lower()
+    if not text:
+        return None
+
+    for reason, phrases in _UNSAFE_REMEDIATION_PATTERNS:
+        if any(phrase in text for phrase in phrases):
+            return reason
+
+    generation_match = re.search(
+        r"\b(?:generate(?:d|s|ing)?|creat(?:e|ed|ing)|using)\b.{0,80}"
+        r"\b(?:password|credential|credentials|token|secret)s?\b",
+        text,
+        re.DOTALL,
+    )
+    if generation_match and not any(
+        negation in text
+        for negation in (
+            "do not generate",
+            "does not generate",
+            "never generate",
+            "without generating",
+            "removed generated",
+        )
+    ):
+        return "generated credentials or secrets as part of the fix"
+
+    logging_match = re.search(
+        r"\b(?:log(?:ged|ging)?|print(?:ed|ing)?)\b.{0,80}"
+        r"\b(?:password|credential|credentials|token|secret)s?\b",
+        text,
+        re.DOTALL,
+    )
+    if logging_match and not any(
+        negation in text
+        for negation in (
+            "do not log",
+            "does not log",
+            "never log",
+            "without logging",
+            "removed password logging",
+        )
+    ):
+        return "logged or printed secrets as part of the fix"
+
+    random_secret_match = re.search(
+        r"\b(?:crypto\.)?randombytes\s*\(",
+        text,
+    ) or re.search(r"\bsecrets\.token_urlsafe\s*\(", text)
+    if random_secret_match:
+        return "generated random secret material instead of applying a fail-secure fix"
+
+    return None
 
 
 def _summarize_inherited_context(
@@ -578,15 +677,41 @@ def agent_finish(
 
         agent_node = _agent_graph["nodes"][agent_id]
 
+        findings_list = list(findings or [])
+        recommendations_list = list(final_recommendations or [])
+        unsafe_remediation_reason = None
+        if success:
+            unsafe_remediation_reason = _unsafe_remediation_reason(
+                agent_node.get("skills"),
+                result_summary,
+                findings_list,
+                recommendations_list,
+            )
+            if unsafe_remediation_reason:
+                success = False
+                findings_list.append(
+                    f"Unsafe remediation rejected: {unsafe_remediation_reason}."
+                )
+                recommendations_list.append(
+                    "Apply a fail-secure fix. Do not generate, default, print, or log "
+                    "passwords, credentials, tokens, or other secrets."
+                )
+                result_summary = (
+                    f"{result_summary}\n\n"
+                    "Unsafe remediation rejected: "
+                    f"{unsafe_remediation_reason}. Apply a fail-secure fix instead."
+                )
+
         agent_node["status"] = "completed" if success else "failed"
         agent_node["finished_at"] = datetime.now(UTC).isoformat()
         completion_payload = {
             "summary": result_summary,
-            "findings": findings or [],
+            "findings": findings_list,
             "success": success,
-            "recommendations": final_recommendations or [],
+            "recommendations": recommendations_list,
             "completion_type": "agent_finish",
             "task_success": success,
+            "unsafe_remediation_blocked": bool(unsafe_remediation_reason),
         }
         agent_node["result"] = completion_payload
         if hasattr(agent_state, "set_completed"):
@@ -599,11 +724,11 @@ def agent_finish(
 
             if parent_id in _agent_graph["nodes"]:
                 findings_xml = "\n".join(
-                    f"        <finding>{finding}</finding>" for finding in (findings or [])
+                    f"        <finding>{finding}</finding>" for finding in findings_list
                 )
                 recommendations_xml = "\n".join(
                     f"        <recommendation>{rec}</recommendation>"
-                    for rec in (final_recommendations or [])
+                    for rec in recommendations_list
                 )
 
                 report_message = f"""<agent_completion_report>
@@ -656,9 +781,10 @@ def agent_finish(
                 "agent_name": agent_node["name"],
                 "task": agent_node["task"],
                 "success": success,
-                "findings_count": len(findings or []),
-                "has_recommendations": bool(final_recommendations),
+                "findings_count": len(findings_list),
+                "has_recommendations": bool(recommendations_list),
                 "finished_at": agent_node["finished_at"],
+                "unsafe_remediation_blocked": bool(unsafe_remediation_reason),
             },
             "success": success,
         }
