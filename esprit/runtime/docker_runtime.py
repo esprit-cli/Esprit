@@ -1,8 +1,12 @@
 import contextlib
 import os
 import secrets
+import shutil
 import socket
+import tarfile
+import tempfile
 import time
+from io import BytesIO
 from pathlib import Path
 from typing import cast
 
@@ -14,6 +18,7 @@ from requests.exceptions import ConnectionError as RequestsConnectionError
 from requests.exceptions import Timeout as RequestsTimeout
 
 from esprit.config import Config
+from esprit.runtime.workspace_changes import collect_workspace_changes
 
 from . import SandboxInitializationError
 from .runtime import AbstractRuntime, SandboxInfo
@@ -37,6 +42,9 @@ class DockerRuntime(AbstractRuntime):
         self._scan_container: Container | None = None
         self._tool_server_port: int | None = None
         self._tool_server_token: str | None = None
+        self._source_copied_scan_ids: set[str] = set()
+        self._workspace_baselines: dict[str, Path] = {}
+        self._container_scan_ids: dict[str, str] = {}
 
     def _find_available_port(self) -> int:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
@@ -272,12 +280,18 @@ class DockerRuntime(AbstractRuntime):
                 return True
         return False
 
+    def _iter_local_source_files(self, local_path_obj: Path):
+        for item in local_path_obj.rglob("*"):
+            if not item.is_file():
+                continue
+            rel_path = item.relative_to(local_path_obj)
+            if self._should_exclude_path(rel_path):
+                continue
+            yield rel_path, item
+
     def _copy_local_directory_to_container(
         self, container: Container, local_path: str, target_name: str | None = None
     ) -> None:
-        import tarfile
-        from io import BytesIO
-
         try:
             local_path_obj = Path(local_path).resolve()
 
@@ -285,22 +299,11 @@ class DockerRuntime(AbstractRuntime):
                 return
 
             tar_buffer = BytesIO()
-            file_count = 0
-            skipped_count = 0
 
             with tarfile.open(fileobj=tar_buffer, mode="w") as tar:
-                for item in local_path_obj.rglob("*"):
-                    if item.is_file():
-                        rel_path = item.relative_to(local_path_obj)
-
-                        # Skip excluded directories
-                        if self._should_exclude_path(rel_path):
-                            skipped_count += 1
-                            continue
-
-                        arcname = Path(target_name) / rel_path if target_name else rel_path
-                        tar.add(item, arcname=arcname)
-                        file_count += 1
+                for rel_path, item in self._iter_local_source_files(local_path_obj):
+                    arcname = Path(target_name) / rel_path if target_name else rel_path
+                    tar.add(item, arcname=arcname)
 
             tar_buffer.seek(0)
             container.put_archive("/workspace", tar_buffer.getvalue())
@@ -310,6 +313,110 @@ class DockerRuntime(AbstractRuntime):
             )
         except (OSError, DockerException):
             pass
+
+    def _copy_local_directory_to_baseline(
+        self,
+        local_path: str,
+        baseline_root: Path,
+        target_name: str | None = None,
+    ) -> None:
+        local_path_obj = Path(local_path).resolve()
+        if not local_path_obj.exists() or not local_path_obj.is_dir():
+            return
+
+        for rel_path, src_path in self._iter_local_source_files(local_path_obj):
+            dest_path = baseline_root / (Path(target_name) / rel_path if target_name else rel_path)
+            dest_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src_path, dest_path)
+
+    def _seed_workspace_baseline(
+        self,
+        scan_id: str,
+        local_sources: list[dict[str, str]],
+    ) -> Path:
+        baseline_root = Path(tempfile.mkdtemp(prefix=f"esprit-workspace-baseline-{scan_id}-"))
+        for index, source in enumerate(local_sources, start=1):
+            source_path = source.get("source_path")
+            if not source_path:
+                continue
+            target_name = (
+                source.get("workspace_subdir") or Path(source_path).name or f"target_{index}"
+            )
+            self._copy_local_directory_to_baseline(source_path, baseline_root, target_name)
+        return baseline_root
+
+    def _extract_workspace_snapshot(self, container_id: str) -> Path | None:
+        try:
+            container = self.client.containers.get(container_id)
+            stream, _ = container.get_archive("/workspace")
+        except (DockerException, NotFound, OSError):
+            return None
+
+        snapshot_root = Path(tempfile.mkdtemp(prefix="esprit-workspace-current-"))
+        tar_buffer = BytesIO()
+        try:
+            for chunk in stream:
+                tar_buffer.write(chunk)
+            tar_buffer.seek(0)
+            with tarfile.open(fileobj=tar_buffer, mode="r:*") as tar:
+                extract_kwargs = {"path": snapshot_root}
+                if "filter" in tarfile.TarFile.extractall.__code__.co_varnames:
+                    extract_kwargs["filter"] = "data"
+                tar.extractall(**extract_kwargs)
+        except (tarfile.TarError, OSError):
+            shutil.rmtree(snapshot_root, ignore_errors=True)
+            return None
+
+        workspace_root = snapshot_root / "workspace"
+        return workspace_root if workspace_root.exists() else snapshot_root
+
+    def _baseline_root_for_container(self, container_id: str) -> Path | None:
+        scan_id = self._container_scan_ids.get(container_id)
+        if not scan_id:
+            try:
+                container = self.client.containers.get(container_id)
+                scan_id = (
+                    container.labels.get("esprit-scan-id")
+                    if isinstance(container.labels, dict)
+                    else None
+                )
+            except (DockerException, NotFound):
+                scan_id = None
+        if not scan_id:
+            return None
+        return self._workspace_baselines.get(scan_id)
+
+    def _collect_workspace_changes_from_container(self, container_id: str) -> dict[str, object]:
+        baseline_root = self._baseline_root_for_container(container_id)
+        if baseline_root is None or not baseline_root.exists():
+            return {}
+
+        workspace_root = self._extract_workspace_snapshot(container_id)
+        if workspace_root is None:
+            return {}
+
+        try:
+            return collect_workspace_changes(
+                workspace_root=workspace_root,
+                baseline_root=baseline_root,
+            )
+        finally:
+            cleanup_root = workspace_root.parent if workspace_root.name == "workspace" else workspace_root
+            shutil.rmtree(cleanup_root, ignore_errors=True)
+
+    def _cleanup_tracking(self, *, container_id: str | None = None, scan_id: str | None = None) -> None:
+        if scan_id is None and container_id:
+            scan_id = self._container_scan_ids.pop(container_id, None)
+        elif container_id:
+            self._container_scan_ids.pop(container_id, None)
+
+        if not scan_id:
+            return
+
+        self._source_copied_scan_ids.discard(scan_id)
+        baseline_root = self._workspace_baselines.pop(scan_id, None)
+        if baseline_root is not None:
+            shutil.rmtree(baseline_root, ignore_errors=True)
 
     async def create_sandbox(
         self,
@@ -322,9 +429,7 @@ class DockerRuntime(AbstractRuntime):
         scan_id = self._get_scan_id(agent_id)
         container = self._get_or_create_container(scan_id)
 
-        source_copied_key = f"_source_copied_{scan_id}"
-
-        if local_sources and not hasattr(self, source_copied_key):
+        if local_sources and scan_id not in self._source_copied_scan_ids:
             for index, source in enumerate(local_sources, start=1):
                 source_path = source.get("source_path")
                 if not source_path:
@@ -333,10 +438,13 @@ class DockerRuntime(AbstractRuntime):
                     source.get("workspace_subdir") or Path(source_path).name or f"target_{index}"
                 )
                 self._copy_local_directory_to_container(container, source_path, target_name)
-            setattr(self, source_copied_key, True)
+            self._workspace_baselines[scan_id] = self._seed_workspace_baseline(scan_id, local_sources)
+            self._source_copied_scan_ids.add(scan_id)
 
         if container.id is None:
             raise RuntimeError("Docker container ID is unexpectedly None")
+
+        self._container_scan_ids[container.id] = scan_id
 
         token = existing_token or self._tool_server_token
         if self._tool_server_port is None or token is None:
@@ -408,7 +516,7 @@ class DockerRuntime(AbstractRuntime):
     async def get_workspace_changes(self, container_id: str) -> dict[str, object]:
         """Retrieve filesystem-derived workspace changes from the sandbox tool server."""
         if not self._tool_server_port or not self._tool_server_token:
-            return {}
+            return self._collect_workspace_changes_from_container(container_id)
         try:
             import requests as _req
 
@@ -424,9 +532,10 @@ class DockerRuntime(AbstractRuntime):
                     return data
         except Exception:  # noqa: BLE001
             pass
-        return {}
+        return self._collect_workspace_changes_from_container(container_id)
 
     async def destroy_sandbox(self, container_id: str) -> None:
+        scan_id = self._container_scan_ids.get(container_id)
         try:
             container = self.client.containers.get(container_id)
             container.stop()
@@ -436,10 +545,13 @@ class DockerRuntime(AbstractRuntime):
             self._tool_server_token = None
         except (NotFound, DockerException):
             pass
+        finally:
+            self._cleanup_tracking(container_id=container_id, scan_id=scan_id)
 
     def cleanup(self) -> None:
         if self._scan_container is not None:
             container_name = self._scan_container.name
+            container_id = self._scan_container.id
             self._scan_container = None
             self._tool_server_port = None
             self._tool_server_token = None
@@ -455,3 +567,4 @@ class DockerRuntime(AbstractRuntime):
                 stderr=subprocess.DEVNULL,
                 start_new_session=True,
             )
+            self._cleanup_tracking(container_id=container_id)

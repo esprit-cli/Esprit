@@ -1,5 +1,8 @@
 """Tests for esprit.runtime.docker_runtime module."""
 
+import io
+import tarfile
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import httpx
@@ -136,3 +139,53 @@ class TestGetContainerLogs:
 
         result = runtime._get_container_logs()
         assert result == "(unable to retrieve logs)"
+
+
+class _FakeRequestsResponse:
+    def __init__(self, status_code: int, payload: dict[str, object] | None = None):
+        self.status_code = status_code
+        self._payload = payload or {}
+        self.ok = status_code < 400
+
+    def json(self):
+        return self._payload
+
+
+def _workspace_tar_bytes(files: dict[str, str]) -> bytes:
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w") as archive:
+        for rel_path, content in files.items():
+            data = content.encode("utf-8")
+            info = tarfile.TarInfo(name=f"workspace/{rel_path}")
+            info.size = len(data)
+            archive.addfile(info, io.BytesIO(data))
+    return buffer.getvalue()
+
+
+@pytest.mark.asyncio
+async def test_get_workspace_changes_falls_back_to_container_snapshot(runtime, tmp_path: Path):
+    baseline_root = tmp_path / "baseline"
+    (baseline_root / "stud").mkdir(parents=True)
+    (baseline_root / "stud" / "server.ts").write_text("if (!password) return next()\n")
+
+    runtime._workspace_baselines["scan-123"] = baseline_root
+    runtime._container_scan_ids["container-123"] = "scan-123"
+    runtime._tool_server_port = 48081
+    runtime._tool_server_token = "tool-token"
+
+    mock_container = MagicMock()
+    mock_container.get_archive.return_value = (
+        [_workspace_tar_bytes({"stud/server.ts": "if (!password) return c.text('Authentication required', 401)\n"})],
+        {},
+    )
+    runtime.client.containers.get.return_value = mock_container
+
+    with patch("requests.get", return_value=_FakeRequestsResponse(404)):
+        changes = await runtime.get_workspace_changes("container-123")
+
+    assert changes["count"] == 1
+    change = changes["changes"][0]
+    assert change["path"] == "server.ts"
+    assert change["status"] == "modified"
+    assert "Authentication required" in change["patch"]
+    assert "--- a/server.ts" in changes["patch"]
