@@ -119,3 +119,135 @@ def test_run_agent_in_thread_preserves_failed_agent_finish_result() -> None:
     assert agent_node["status"] == "failed"
     assert agent_node["result"]["success"] is False
     assert agent_node["result"]["completion_type"] == "agent_finish"
+
+
+def test_agent_finish_rejects_unsafe_remediation_claim() -> None:
+    old_nodes, old_edges, old_instances, old_states = _reset_graph()
+
+    try:
+        state = AgentState(
+            agent_id="agent_child",
+            agent_name="Authentication Fixing Agent",
+            parent_id="agent_parent",
+            task="fix auth bypass",
+        )
+        mod._agent_graph["nodes"]["agent_parent"] = {
+            "id": "agent_parent",
+            "name": "Root Agent",
+            "task": "coordinate remediation",
+            "status": "running",
+        }
+        mod._agent_graph["nodes"]["agent_child"] = {
+            "id": "agent_child",
+            "name": "Authentication Fixing Agent",
+            "task": "fix auth bypass",
+            "status": "running",
+            "parent_id": "agent_parent",
+            "skills": ["remediation", "authentication"],
+        }
+
+        result = mod.agent_finish(
+            agent_state=state,
+            result_summary=(
+                "Applied fix by generating a temporary password with "
+                "crypto.randomBytes(16) and logging the generated password."
+            ),
+            findings=["Generated temporary password for operator recovery."],
+            success=True,
+        )
+        agent_node = mod._agent_graph["nodes"]["agent_child"]
+    finally:
+        _restore_graph(old_nodes, old_edges, old_instances, old_states)
+
+    assert result["agent_completed"] is True
+    assert result["success"] is False
+    assert result["completion_summary"]["unsafe_remediation_blocked"] is True
+    assert agent_node["status"] == "failed"
+    assert agent_node["result"]["success"] is False
+    assert agent_node["result"]["unsafe_remediation_blocked"] is True
+    assert "Unsafe remediation rejected" in agent_node["result"]["summary"]
+
+
+def test_agent_finish_does_not_block_non_remediation_agent() -> None:
+    old_nodes, old_edges, old_instances, old_states = _reset_graph()
+
+    try:
+        state = AgentState(
+            agent_id="agent_child",
+            agent_name="Verification Agent",
+            parent_id="agent_parent",
+            task="verify auth fix",
+        )
+        mod._agent_graph["nodes"]["agent_parent"] = {
+            "id": "agent_parent",
+            "name": "Root Agent",
+            "task": "coordinate remediation",
+            "status": "running",
+        }
+        mod._agent_graph["nodes"]["agent_child"] = {
+            "id": "agent_child",
+            "name": "Verification Agent",
+            "task": "verify auth fix",
+            "status": "running",
+            "parent_id": "agent_parent",
+            "skills": ["verification"],
+        }
+
+        result = mod.agent_finish(
+            agent_state=state,
+            result_summary="Verified code does not generate temporary passwords.",
+            findings=["Confirmed no generated password path remains."],
+            success=True,
+        )
+        agent_node = mod._agent_graph["nodes"]["agent_child"]
+    finally:
+        _restore_graph(old_nodes, old_edges, old_instances, old_states)
+
+    assert result["agent_completed"] is True
+    assert result["success"] is True
+    assert result["completion_summary"]["unsafe_remediation_blocked"] is False
+    assert agent_node["status"] == "completed"
+
+
+def test_agent_finish_allows_safe_remediation_summary() -> None:
+    old_nodes, old_edges, old_instances, old_states = _reset_graph()
+
+    try:
+        state = AgentState(
+            agent_id="agent_child",
+            agent_name="Authentication Fixing Agent",
+            parent_id="agent_parent",
+            task="fix auth bypass",
+        )
+        mod._agent_graph["nodes"]["agent_parent"] = {
+            "id": "agent_parent",
+            "name": "Root Agent",
+            "task": "coordinate remediation",
+            "status": "running",
+        }
+        mod._agent_graph["nodes"]["agent_child"] = {
+            "id": "agent_child",
+            "name": "Authentication Fixing Agent",
+            "task": "fix auth bypass",
+            "status": "running",
+            "parent_id": "agent_parent",
+            "skills": ["remediation", "authentication"],
+        }
+
+        result = mod.agent_finish(
+            agent_state=state,
+            result_summary=(
+                "Applied a fail-secure fix. The code now denies access when the password "
+                "is missing and no longer generates or logs credentials."
+            ),
+            findings=["Removed generated password logic and password logging path."],
+            success=True,
+        )
+        agent_node = mod._agent_graph["nodes"]["agent_child"]
+    finally:
+        _restore_graph(old_nodes, old_edges, old_instances, old_states)
+
+    assert result["agent_completed"] is True
+    assert result["success"] is True
+    assert result["completion_summary"]["unsafe_remediation_blocked"] is False
+    assert agent_node["status"] == "completed"

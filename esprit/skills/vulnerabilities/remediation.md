@@ -19,6 +19,13 @@ Follow these steps exactly:
 6. **If the fix breaks something** — use `str_replace_editor(command="undo_edit", path="...")` and try a different approach
 7. **Report completion** — call `agent_finish` with a summary that includes what was changed and the verification result
 
+## Hard Safety Rules
+
+- Fixes must be **fail-secure**. If required authentication or authorization configuration is missing, deny access by default instead of inventing fallback behavior.
+- **Never** generate temporary, default, random, or fallback passwords, credentials, tokens, API keys, or secrets as a "fix".
+- **Never** log, print, return, or persist secrets or credentials in code, logs, or responses.
+- If the only available path would require generating or exposing secrets, stop and call `agent_finish(success=False)` with a clear explanation instead of applying an unsafe patch.
+
 ## Tool Reference
 
 ### View a file
