@@ -18,6 +18,14 @@ def _make_tracer(save_dir: Path) -> MagicMock:
     return tracer
 
 
+class _TracerWithRunDir:
+    def __init__(self, run_dir: Path) -> None:
+        self._run_dir = run_dir
+
+    def get_run_dir(self) -> Path:
+        return self._run_dir
+
+
 def _call_extract(
     edits: list[dict[str, Any]],
     save_dir: Path,
@@ -183,6 +191,41 @@ class TestExtractAndSaveDiffs:
         assert "--- a/api/auth.py" in patch_content
         assert "+++ b/api/auth.py" in patch_content
         assert "@@ -1,2 +1,2 @@" in patch_content
+
+    def test_writes_patches_using_real_tracer_run_dir(self, tmp_path: Path) -> None:
+        import esprit.runtime as rt_module
+
+        workspace_changes = {
+            "changes": [
+                {
+                    "path": "server.ts",
+                    "status": "modified",
+                    "patch": "--- a/server.ts\n+++ b/server.ts\n@@ -1 +1 @@\n-old\n+new\n",
+                }
+            ],
+            "patch": "--- a/server.ts\n+++ b/server.ts\n@@ -1 +1 @@\n-old\n+new\n",
+        }
+        tracer = _TracerWithRunDir(tmp_path)
+
+        with (
+            patch.object(rt_module, "_global_runtime", MagicMock()),
+            patch.object(rt_module, "_fetch_workspace_changes", return_value=workspace_changes),
+            patch.object(rt_module, "_fetch_workspace_diffs", return_value=[]),
+            patch("esprit.telemetry.tracer.get_global_tracer", return_value=tracer),
+            patch.object(rt_module, "_upload_patch_to_s3"),
+        ):
+            result = rt_module.extract_and_save_diffs("sandbox-123")
+
+        assert result == [
+            {
+                "path": "server.ts",
+                "status": "modified",
+                "patch": "--- a/server.ts\n+++ b/server.ts\n@@ -1 +1 @@\n-old\n+new\n",
+                "sandbox_id": "sandbox-123",
+            }
+        ]
+        assert (tmp_path / "patches" / "workspace_changes.json").exists()
+        assert (tmp_path / "patches" / "remediation.patch").exists()
 
     def test_aggregates_edits_from_all_tracked_sandboxes(self, tmp_path: Path) -> None:
         import json

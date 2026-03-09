@@ -146,6 +146,26 @@ def _build_legacy_patch_from_edits(edits: list[dict[str, object]]) -> str:
     return "\n".join(lines)
 
 
+def _resolve_tracer_run_dir(tracer: object) -> "Path | None":
+    from pathlib import Path
+
+    save_dir = getattr(tracer, "save_dir", None)
+    if save_dir:
+        return Path(save_dir)
+
+    get_run_dir = getattr(tracer, "get_run_dir", None)
+    if callable(get_run_dir):
+        resolved = get_run_dir()
+        if resolved:
+            return Path(resolved)
+
+    run_dir = getattr(tracer, "_run_dir", None)
+    if run_dir:
+        return Path(run_dir)
+
+    return None
+
+
 def extract_and_save_diffs(sandbox_id: str) -> list[dict[str, object]]:
     """Pull file edits from one or more sandboxes and persist them to the run directory.
 
@@ -214,10 +234,13 @@ def extract_and_save_diffs(sandbox_id: str) -> list[dict[str, object]]:
         from esprit.telemetry.tracer import get_global_tracer
 
         tracer = get_global_tracer()
-        if tracer and hasattr(tracer, "save_dir") and tracer.save_dir:
-            from pathlib import Path
+        if tracer:
+            run_dir = _resolve_tracer_run_dir(tracer)
+        else:
+            run_dir = None
 
-            patches_dir = Path(tracer.save_dir) / "patches"
+        if run_dir:
+            patches_dir = run_dir / "patches"
             patches_dir.mkdir(parents=True, exist_ok=True)
 
             if edits:
