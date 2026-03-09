@@ -20,6 +20,19 @@ def get_runtime() -> AbstractRuntime:
 
     runtime_backend = Config.get("strix_runtime_backend")
 
+    if runtime_backend == "cloud":
+        from .cloud_runtime import CloudRuntime
+
+        if _global_runtime is None or not isinstance(_global_runtime, CloudRuntime):
+            api_url = Config.get("esprit_api_url")
+            api_token = Config.get("esprit_api_token")
+            if not api_url or not api_token:
+                raise ValueError(
+                    "ESPRIT_API_URL and ESPRIT_API_TOKEN must be set for cloud runtime."
+                )
+            _global_runtime = CloudRuntime(api_url=api_url, api_token=api_token)
+        return _global_runtime
+
     if runtime_backend == "docker":
         from .docker_runtime import DockerRuntime
 

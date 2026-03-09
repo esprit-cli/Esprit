@@ -621,6 +621,60 @@ def collect_local_sources(targets_info: list[dict[str, Any]]) -> list[dict[str, 
     return local_sources
 
 
+def upload_local_sources(
+    local_sources: list[dict[str, str]],
+    scan_id: str,
+    api_url: str,
+    api_token: str,
+) -> str:
+    """Tar+gz local sources and PUT to S3 via presigned URL. Returns s3_key."""
+    import tarfile
+    from io import BytesIO
+
+    import httpx
+
+    tar_buffer = BytesIO()
+    with tarfile.open(fileobj=tar_buffer, mode="w:gz") as tar:
+        for source in local_sources:
+            source_path = source.get("source_path")
+            workspace_subdir = source.get("workspace_subdir")
+            if not source_path:
+                continue
+            local_path_obj = Path(source_path).resolve()
+            if not local_path_obj.exists() or not local_path_obj.is_dir():
+                continue
+            for item in local_path_obj.rglob("*"):
+                if item.is_file():
+                    rel_path = item.relative_to(local_path_obj)
+                    arcname = (
+                        str(Path(workspace_subdir) / rel_path)
+                        if workspace_subdir
+                        else str(rel_path)
+                    )
+                    tar.add(str(item), arcname=arcname)
+
+    tar_bytes = tar_buffer.getvalue()
+
+    with httpx.Client(timeout=30) as client:
+        resp = client.post(
+            f"{api_url}/uploads/presigned-url",
+            json={"scan_id": scan_id},
+            headers={"Authorization": f"Bearer {api_token}"},
+        )
+        resp.raise_for_status()
+        data = resp.json()
+
+    # S3 presigned PUT — do NOT include Authorization header
+    with httpx.Client(timeout=300) as client:
+        client.put(
+            data["upload_url"],
+            content=tar_bytes,
+            headers={"Content-Type": "application/gzip"},
+        ).raise_for_status()
+
+    return data["s3_key"]
+
+
 def _is_localhost_host(host: str) -> bool:
     host_lower = host.lower().strip("[]")
 

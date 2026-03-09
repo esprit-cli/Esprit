@@ -37,6 +37,7 @@ from strix.interface.utils import (  # noqa: E402
     infer_target_type,
     process_pull_line,
     rewrite_localhost_targets,
+    upload_local_sources,
     validate_config_file,
     validate_llm_response,
 )
@@ -529,8 +530,11 @@ def main() -> None:
     if args.config:
         apply_config_override(args.config)
 
-    check_docker_installed()
-    pull_docker_image()
+    runtime_backend = Config.get("strix_runtime_backend")
+
+    if runtime_backend != "cloud":
+        check_docker_installed()
+        pull_docker_image()
 
     validate_environment()
     asyncio.run(warm_up_llm())
@@ -547,6 +551,33 @@ def main() -> None:
             target_info["details"]["cloned_repo_path"] = cloned_path
 
     args.local_sources = collect_local_sources(args.targets_info)
+
+    # Cloud pre-flight: upload local sources to S3 before launching sandbox
+    if runtime_backend == "cloud" and args.local_sources:
+        import os
+        import uuid
+
+        console = Console()
+        api_url = Config.get("esprit_api_url")
+        api_token = Config.get("esprit_api_token")
+        if not api_url or not api_token:
+            console.print(
+                "[bold red]Error:[/] ESPRIT_API_URL and ESPRIT_API_TOKEN are required for cloud runs"
+            )
+            sys.exit(1)
+
+        cloud_scan_id = str(uuid.uuid4())
+        os.environ["ESPRIT_CLOUD_SCAN_ID"] = cloud_scan_id
+
+        with console.status("[bold cyan]Uploading local sources to cloud...", spinner="dots"):
+            try:
+                s3_key = upload_local_sources(
+                    args.local_sources, cloud_scan_id, api_url, api_token
+                )
+                console.print(f"[#22c55e]Source uploaded[/]  [dim]{s3_key}[/]")
+            except Exception as e:
+                console.print(f"[bold red]Upload failed:[/] {e}")
+                sys.exit(1)
 
     is_whitebox = bool(args.local_sources)
 
