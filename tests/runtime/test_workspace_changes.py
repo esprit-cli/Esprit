@@ -51,3 +51,43 @@ def test_collect_workspace_changes_detects_created_and_deleted_files(tmp_path: P
     assert '+++ b/new.py' in changes['patch']
     assert '--- a/old.py' in changes['patch']
     assert '+++ /dev/null' in changes['patch']
+
+
+def test_collect_workspace_changes_ignores_unchanged_binary_files(tmp_path: Path) -> None:
+    workspace = tmp_path / 'workspace'
+    baseline = tmp_path / 'baseline'
+    repo = workspace / 'repo'
+    repo.mkdir(parents=True)
+    asset = repo / 'logo.png'
+    asset.write_bytes(b'\x89PNG\r\n\x1a\nbinary-data')
+
+    create_workspace_baseline(workspace, baseline)
+
+    changes = collect_workspace_changes(workspace, baseline)
+
+    assert changes['count'] == 0
+    assert changes['changes'] == []
+    assert changes['patch'] == ''
+
+
+def test_collect_workspace_changes_ignores_created_files_outside_single_source_root(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / 'workspace'
+    baseline = tmp_path / 'baseline'
+    repo = workspace / 'repo'
+    repo.mkdir(parents=True)
+    target = repo / 'app.py'
+    target.write_text("debug = True\n")
+
+    create_workspace_baseline(workspace, baseline)
+
+    target.write_text("debug = False\n")
+    (workspace / 'AUTH_BYPASS_FIX_SUMMARY.md').write_text('generated notes\n')
+
+    changes = collect_workspace_changes(workspace, baseline)
+
+    assert changes['path_prefix'] == 'repo'
+    assert changes['count'] == 1
+    assert changes['changes'][0]['path'] == 'app.py'
+    assert 'AUTH_BYPASS_FIX_SUMMARY.md' not in changes['patch']
