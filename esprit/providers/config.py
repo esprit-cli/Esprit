@@ -5,7 +5,10 @@ Stores user preferences like default model, etc.
 """
 
 import json
+import logging
 import os
+import re
+import tempfile
 import time
 from pathlib import Path
 from typing import Any
@@ -16,6 +19,7 @@ from rich.prompt import Prompt
 from rich.table import Table
 
 console = Console()
+logger = logging.getLogger(__name__)
 
 # Available models by provider
 AVAILABLE_MODELS = {
@@ -238,6 +242,271 @@ def _load_opencode_route_models() -> dict[str, list[tuple[str, str]]]:
     return routes
 
 
+# ---------------------------------------------------------------------------
+# LiteLLM dynamic model catalog
+# ---------------------------------------------------------------------------
+
+LITELLM_CATALOG_URL = (
+    "https://raw.githubusercontent.com/BerriAI/litellm/main/"
+    "model_prices_and_context_window.json"
+)
+
+_LITELLM_CACHE_TTL_SECONDS = 300.0  # 5 minutes
+_litellm_cache: dict[str, Any] = {
+    "expires_at": 0.0,
+    "models": {},
+}
+
+# Map LiteLLM provider names → Esprit provider IDs
+_LITELLM_PROVIDER_MAP: dict[str, str] = {
+    "openai": "openai",
+    "anthropic": "anthropic",
+    "gemini": "google",
+    "github_copilot": "github-copilot",
+}
+
+# Model ID prefixes / substrings to skip even when mode matches
+_LITELLM_SKIP_PREFIXES = ("ft:",)
+_LITELLM_SKIP_SUBSTRINGS = ("realtime", "audio", "tts", "whisper", "embedding")
+
+# Date suffix patterns to strip dated snapshot models (e.g. -20250514, -2025-04-14)
+_DATE_SUFFIX_RE = re.compile(r"-\d{4}-?\d{2}-?\d{2}$")
+
+# Deprecated / legacy model families to exclude entirely
+_DEPRECATED_PREFIXES = ("gpt-3.5", "gpt-4-0", "gpt-4-1")
+_DEPRECATED_MODELS = frozenset({
+    "gpt-4", "gpt-4-turbo", "gpt-4-turbo-preview",
+})
+
+# Niche / experimental models to skip
+_LITELLM_SKIP_NICHE_SUBSTRINGS = (
+    "gemma", "learnlm", "lyria", "robotics", "container",
+    "deep-research", "exp-", "computer-use", "customtools",
+    "search-preview", "search-api", "-chat-latest", "chatgpt-",
+    "-live-preview", "-preview-0", "-4-o-preview",
+)
+
+# Numeric build suffixes to drop (e.g. gemini-2.0-flash-001)
+_BUILD_SUFFIX_RE = re.compile(r"-\d{3}$")
+
+
+def _model_id_to_display_name(model_id: str) -> str:
+    """Generate a human-readable display name from a model ID.
+
+    Examples:
+        gpt-5.3-codex       → GPT 5.3 Codex
+        claude-sonnet-4-6    → Claude Sonnet 4 6
+        gemini/gemini-2.5-flash → Gemini 2.5 Flash
+    """
+    # Strip provider prefix (e.g. "gemini/gemini-2.5-flash" → "gemini-2.5-flash")
+    bare = model_id.split("/")[-1] if "/" in model_id else model_id
+
+    # Split on hyphens, title-case each part
+    parts = bare.split("-")
+    result: list[str] = []
+    for part in parts:
+        # Keep version-like tokens (e.g. "4.1", "2.5") as-is
+        if re.match(r"^\d+(\.\d+)*$", part):
+            result.append(part)
+        # Uppercase known acronyms
+        elif part.lower() in {"gpt", "o1", "o3", "o4", "xl", "api"}:
+            result.append(part.upper())
+        else:
+            result.append(part.capitalize())
+
+    return " ".join(result)
+
+
+def _fetch_litellm_catalog(
+    timeout_seconds: float = 2.0,
+) -> dict[str, list[tuple[str, str]]]:
+    """Fetch models from LiteLLM's public catalog and filter to relevant providers."""
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return {}
+
+    try:
+        response = httpx.get(LITELLM_CATALOG_URL, timeout=timeout_seconds)
+        response.raise_for_status()
+        raw = response.json()
+    except (httpx.HTTPError, ValueError, TypeError):
+        return {}
+
+    if not isinstance(raw, dict):
+        return {}
+
+    result: dict[str, list[tuple[str, str]]] = {}
+
+    for model_id, info in raw.items():
+        if model_id == "sample_spec" or not isinstance(info, dict):
+            continue
+
+        provider = info.get("litellm_provider", "")
+        esprit_provider = _LITELLM_PROVIDER_MAP.get(provider)
+        if not esprit_provider:
+            continue
+
+        mode = info.get("mode", "")
+        if mode not in ("chat", "responses"):
+            continue
+
+        # Skip fine-tuned, realtime, audio, etc.
+        model_lower = model_id.lower()
+        if any(model_lower.startswith(p) for p in _LITELLM_SKIP_PREFIXES):
+            continue
+        if any(s in model_lower for s in _LITELLM_SKIP_SUBSTRINGS):
+            continue
+        # Skip image-size-prefixed entries (e.g. "1024-x-1024/dall-e-2")
+        if re.match(r"^\d+-x-\d+/", model_id):
+            continue
+
+        # For gemini models, strip the "gemini/" prefix for the stored model ID
+        bare_model_id = model_id.split("/", 1)[-1] if "/" in model_id else model_id
+        bare_lower = bare_model_id.lower()
+
+        # Skip deprecated model families
+        if bare_model_id in _DEPRECATED_MODELS:
+            continue
+        if any(bare_lower.startswith(p) for p in _DEPRECATED_PREFIXES):
+            continue
+
+        # Skip niche / experimental models
+        if any(s in bare_lower for s in _LITELLM_SKIP_NICHE_SUBSTRINGS):
+            continue
+
+        # Skip date-suffixed snapshots (e.g. claude-sonnet-4-5-20250929,
+        # gpt-5-2025-08-07).  Keep only the alias without the date.
+        if _DATE_SUFFIX_RE.search(bare_model_id):
+            continue
+
+        # Skip build-number suffixes (e.g. gemini-2.0-flash-001)
+        if _BUILD_SUFFIX_RE.search(bare_model_id):
+            continue
+
+        display_name = _model_id_to_display_name(model_id)
+        result.setdefault(esprit_provider, []).append((bare_model_id, display_name))
+
+    # Deduplicate and sort newest-first within each provider
+    for prov in result:
+        seen: set[str] = set()
+        deduped: list[tuple[str, str]] = []
+        for mid, mname in result[prov]:
+            if mid not in seen:
+                seen.add(mid)
+                deduped.append((mid, mname))
+        result[prov] = sorted(deduped, key=lambda m: _model_sort_key(m[0]), reverse=True)
+
+    return result
+
+
+def _model_sort_key(model_id: str) -> tuple[float, str]:
+    """Extract a sortable version number from a model ID.
+
+    Returns (version_number, variant) so higher versions sort first.
+    Examples:
+        gpt-5.4       → (5.4, "")
+        gpt-5.4-mini  → (5.4, "mini")
+        claude-opus-4-6 → (4.6, "opus")
+        o3-mini       → (3.0, "mini")
+        codex-mini-latest → (0.0, "codex-mini-latest")
+    """
+    bare = model_id.lower()
+
+    # GPT models: extract version after "gpt-"
+    m = re.search(r"gpt-(\d+(?:\.\d+)?)", bare)
+    if m:
+        return (float(m.group(1)), bare)
+
+    # Claude models: extract major-minor from "claude-{role}-{major}-{minor}"
+    m = re.search(r"claude-\w+-(\d+)-(\d+)", bare)
+    if m:
+        return (float(f"{m.group(1)}.{m.group(2)}"), bare)
+    m = re.search(r"claude-\w+-(\d+)", bare)
+    if m:
+        return (float(m.group(1)), bare)
+
+    # O-series: o1, o3, o4
+    m = re.match(r"o(\d+)", bare)
+    if m:
+        return (float(m.group(1)), bare)
+
+    # Gemini models: extract version after "gemini-"
+    m = re.search(r"gemini-(\d+(?:\.\d+)?)", bare)
+    if m:
+        return (float(m.group(1)), bare)
+
+    return (0.0, bare)
+
+
+def _get_litellm_cache_path() -> Path:
+    return Path.home() / ".esprit" / "models_cache.json"
+
+
+def _save_litellm_cache_to_disk(
+    data: dict[str, list[tuple[str, str]]],
+) -> None:
+    """Atomically persist the filtered catalog to disk."""
+    cache_path = _get_litellm_cache_path()
+    try:
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp_path = tempfile.mkstemp(
+            dir=str(cache_path.parent), suffix=".tmp"
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(data, f)
+            os.replace(tmp_path, str(cache_path))
+        except Exception:
+            # Clean up temp file on failure
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
+    except Exception:
+        logger.debug("Failed to write LiteLLM model cache to disk", exc_info=True)
+
+
+def _load_litellm_cache_from_disk() -> dict[str, list[tuple[str, str]]]:
+    """Load cached catalog from disk."""
+    cache_path = _get_litellm_cache_path()
+    if not cache_path.exists():
+        return {}
+    try:
+        with cache_path.open(encoding="utf-8") as f:
+            raw = json.load(f)
+        # Convert lists back to list[tuple[str, str]]
+        return {
+            provider: [(m[0], m[1]) for m in models]
+            for provider, models in raw.items()
+            if isinstance(models, list)
+        }
+    except (json.JSONDecodeError, OSError, IndexError, TypeError):
+        return {}
+
+
+def _get_cached_litellm_models() -> dict[str, list[tuple[str, str]]]:
+    """Return cached LiteLLM models, refreshing periodically."""
+    now = time.monotonic()
+    if _litellm_cache["expires_at"] > now and _litellm_cache["models"]:
+        return dict(_litellm_cache["models"])
+
+    models = _fetch_litellm_catalog()
+    if models:
+        _litellm_cache["expires_at"] = now + _LITELLM_CACHE_TTL_SECONDS
+        _litellm_cache["models"] = models
+        _save_litellm_cache_to_disk(models)
+        return dict(models)
+
+    # Network failed — try disk cache
+    disk_models = _load_litellm_cache_from_disk()
+    if disk_models:
+        _litellm_cache["expires_at"] = now + _LITELLM_CACHE_TTL_SECONDS
+        _litellm_cache["models"] = disk_models
+        return dict(disk_models)
+
+    return {}
+
+
 def get_available_models() -> dict[str, list[tuple[str, str]]]:
     """Get model catalog, merged with compatible OpenCode route definitions."""
     merged: dict[str, list[tuple[str, str]]] = {
@@ -278,6 +547,16 @@ def get_available_models() -> dict[str, list[tuple[str, str]]]:
             for model_id, model_name in merged.get("opencode", [])
             if model_id in detected_opencode_model_ids
         ]
+
+    # Merge dynamically fetched LiteLLM models (openai, anthropic, google,
+    # github-copilot).  When dynamic models are available for a provider,
+    # they fully replace the hardcoded list so the catalog stays current
+    # and doesn't show duplicates.
+    litellm_models = _get_cached_litellm_models()
+    for provider_id, models in litellm_models.items():
+        if not models:
+            continue
+        merged[provider_id] = list(models)
 
     return merged
 

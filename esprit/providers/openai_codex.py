@@ -45,20 +45,6 @@ CODEX_API_URL = f"{CODEX_API_BASE}/responses"
 OAUTH_PORT = 1455
 OAUTH_TIMEOUT = 300  # 5 minutes
 
-# Allowed models for Codex OAuth
-ALLOWED_CODEX_MODELS = {
-    "gpt-5.3-codex",
-    "gpt-5.2-codex",
-    "gpt-5.2",
-    "gpt-5.1-codex-max",
-    "gpt-5.1-codex",
-    "gpt-5.1-codex-mini",
-    "gpt-5.1",
-    "gpt-5-codex",
-    "gpt-5",
-    "gpt-5-codex-mini",
-}
-
 # Polling safety margin
 POLLING_SAFETY_MARGIN_MS = 3000
 

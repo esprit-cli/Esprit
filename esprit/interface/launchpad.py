@@ -186,6 +186,7 @@ class _MenuEntry:
     key: str
     label: str
     hint: str = ""
+    hint_color: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -743,7 +744,7 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
         models_by_provider = get_available_models()
         public_opencode_models = get_public_opencode_models(models_by_provider)
 
-        # Provider badges and display info
+        # Provider badges, display info, and badge colors
         _BADGES: dict[str, str] = {
             "esprit": "ES",
             "antigravity": "AG",
@@ -752,6 +753,15 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
             "anthropic": "CC",
             "google": "GG",
             "github-copilot": "CO",
+        }
+        _BADGE_COLORS: dict[str, str] = {
+            "esprit": "#a78bfa",      # purple
+            "antigravity": "#94a3b8",  # slate
+            "opencode": "#67e8f9",     # cyan
+            "openai": "#4ade80",       # green
+            "anthropic": "#f9a825",    # amber/gold
+            "google": "#60a5fa",       # blue
+            "github-copilot": "#c084fc",  # violet
         }
         _PROVIDER_LABELS: dict[str, str] = {
             "esprit": "ESPRIT CLOUD",
@@ -832,12 +842,14 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
             ))
 
             # Model entries
+            badge_color = _BADGE_COLORS.get(provider_id, "")
             for model_id, model_name, full_model in matching_models:
                 marker = "\u25cf" if full_model == current else "\u25cb"
                 entries.append(_MenuEntry(
                     f"model:{full_model}",
                     f"{marker} {model_name}",
                     badge,
+                    hint_color=badge_color,
                 ))
 
         entries.append(_MenuEntry("back", "\u2190 Back"))
@@ -1196,7 +1208,8 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
             elif is_selected:
                 prefix = "> "
                 label_style = Style(color=theme.accent, bold=True)
-                hint_style = Style(color=theme.selected_hint)
+                badge_color = entry.hint_color or theme.selected_hint
+                hint_style = Style(color=badge_color, bold=True)
                 menu_text.append(prefix, style=label_style)
                 menu_text.append(label, style=label_style)
                 if entry.hint:
@@ -1204,7 +1217,8 @@ class LaunchpadApp(App[LaunchpadResult | None]):  # type: ignore[misc]
             else:
                 prefix = "  "
                 label_style = Style(color=theme.menu_label)
-                hint_style = Style(color=theme.menu_hint)
+                badge_color = entry.hint_color or theme.menu_hint
+                hint_style = Style(color=badge_color)
                 menu_text.append(prefix, style=label_style)
                 menu_text.append(label, style=label_style)
                 if entry.hint:

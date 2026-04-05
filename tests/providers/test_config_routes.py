@@ -16,6 +16,7 @@ def test_get_available_models_merges_supported_opencode_routes(
     tmp_path: Path,
 ) -> None:
     monkeypatch.setattr(provider_config, "_get_cached_opencode_live_model_ids", lambda: set())
+    monkeypatch.setattr(provider_config, "_get_cached_litellm_models", lambda: {})
     config_path = tmp_path / "opencode.json"
     _write_opencode_config(
         config_path,
