@@ -658,6 +658,17 @@ def get_config() -> Config:
     return Config()
 
 
+_PROVIDER_LABELS: dict[str, str] = {
+    "esprit": "ESPRIT (YOUR SUBSCRIPTION)",
+    "antigravity": "ANTIGRAVITY",
+    "openai": "OPENAI",
+    "anthropic": "ANTHROPIC",
+    "google": "GOOGLE",
+    "opencode": "OPENCODE ZEN",
+    "github-copilot": "GITHUB COPILOT",
+}
+
+
 def cmd_config_model(model: str | None = None) -> int:
     """Configure the default LLM model."""
     from esprit.providers.token_store import TokenStore
@@ -709,15 +720,7 @@ def cmd_config_model(model: str | None = None) -> int:
             else:
                 creds = token_store.get(provider_id)
                 auth_type = creds.type.upper() if creds else "OAUTH"
-            provider_label = {
-                "esprit": "ESPRIT (YOUR SUBSCRIPTION)",
-                "antigravity": "ANTIGRAVITY",
-                "openai": "OPENAI",
-                "anthropic": "ANTHROPIC",
-                "google": "GOOGLE",
-                "opencode": "OPENCODE ZEN",
-                "github-copilot": "GITHUB COPILOT",
-            }.get(provider_id, provider_id.upper())
+            provider_label = _PROVIDER_LABELS.get(provider_id, provider_id.upper())
             connection_hint = f"{auth_type} connected" if auth_type != "PUBLIC" else "PUBLIC no-auth"
             console.print(f"  [bold green]●[/] [bold cyan]{provider_label}[/] [dim]({connection_hint})[/]")
             models_to_show = models

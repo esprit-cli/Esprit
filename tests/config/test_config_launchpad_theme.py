@@ -61,6 +61,7 @@ def test_apply_saved_keeps_ui_section_when_env_is_rewritten(monkeypatch, tmp_pat
 
 def test_runtime_profile_round_trip(monkeypatch, tmp_path) -> None:
     config_root = _configure_temp_config_dir(monkeypatch, tmp_path)
+    monkeypatch.delenv("ESPRIT_LLM", raising=False)
 
     assert Config.get_runtime_profile() == "cloud"
     assert Config.save_runtime_profile("connectors") is True
