@@ -152,16 +152,26 @@ PY
   return 1
 }
 
+clone_runtime_repo() {
+  rm -rf "$RUNTIME_DIR"
+  git clone --depth 1 --branch "$REPO_REF" "$REPO_URL" "$RUNTIME_DIR"
+}
+
 sync_runtime_repo() {
   print_message info "${MUTED}Syncing Esprit runtime source...${NC}"
 
   if [ -d "$RUNTIME_DIR/.git" ]; then
     git -C "$RUNTIME_DIR" remote set-url origin "$REPO_URL"
     git -C "$RUNTIME_DIR" fetch --depth 1 origin "$REPO_REF"
-    git -C "$RUNTIME_DIR" checkout -q FETCH_HEAD
+    if [ -n "$(git -C "$RUNTIME_DIR" status --porcelain 2>/dev/null)" ]; then
+      print_message warning "Managed runtime checkout has local changes; refreshing runtime source..."
+      clone_runtime_repo
+    elif ! git -C "$RUNTIME_DIR" checkout -q FETCH_HEAD; then
+      print_message warning "Runtime checkout update failed; refreshing runtime source..."
+      clone_runtime_repo
+    fi
   else
-    rm -rf "$RUNTIME_DIR"
-    git clone --depth 1 --branch "$REPO_REF" "$REPO_URL" "$RUNTIME_DIR"
+    clone_runtime_repo
   fi
 
   local runtime_commit

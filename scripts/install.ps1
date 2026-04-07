@@ -110,6 +110,12 @@ function Validate-PythonRuntime {
     Invoke-Python $PyBin @('-m', 'pip', '--version')
 }
 
+function Clone-RuntimeRepo {
+    if (Test-Path $RUNTIME_DIR) { Remove-Item -Recurse -Force $RUNTIME_DIR }
+    & git clone --depth 1 --branch $REPO_REF $REPO_URL $RUNTIME_DIR
+    if ($LASTEXITCODE -ne 0) { throw 'git clone failed' }
+}
+
 function Sync-RuntimeRepo {
     Print-Message 'info' 'Syncing Esprit runtime source...'
 
@@ -117,12 +123,20 @@ function Sync-RuntimeRepo {
         & git -C $RUNTIME_DIR remote set-url origin $REPO_URL
         & git -C $RUNTIME_DIR fetch --depth 1 origin $REPO_REF
         if ($LASTEXITCODE -ne 0) { throw 'git fetch failed' }
-        & git -C $RUNTIME_DIR checkout -q FETCH_HEAD
-        if ($LASTEXITCODE -ne 0) { throw 'git checkout failed' }
+        $status = (& git -C $RUNTIME_DIR status --porcelain 2>$null | Out-String).Trim()
+        if ($LASTEXITCODE -ne 0) { throw 'git status failed' }
+        if ($status) {
+            Print-Message 'warning' 'Managed runtime checkout has local changes; refreshing runtime source...'
+            Clone-RuntimeRepo
+        } else {
+            & git -C $RUNTIME_DIR checkout -q FETCH_HEAD
+            if ($LASTEXITCODE -ne 0) {
+                Print-Message 'warning' 'Runtime checkout update failed; refreshing runtime source...'
+                Clone-RuntimeRepo
+            }
+        }
     } else {
-        if (Test-Path $RUNTIME_DIR) { Remove-Item -Recurse -Force $RUNTIME_DIR }
-        & git clone --depth 1 --branch $REPO_REF $REPO_URL $RUNTIME_DIR
-        if ($LASTEXITCODE -ne 0) { throw 'git clone failed' }
+        Clone-RuntimeRepo
     }
 
     $commit = & git -C $RUNTIME_DIR rev-parse --short HEAD 2>$null
