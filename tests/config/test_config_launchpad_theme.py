@@ -76,3 +76,15 @@ def test_runtime_profile_infers_from_model_when_not_saved(monkeypatch, tmp_path)
     _configure_temp_config_dir(monkeypatch, tmp_path)
     monkeypatch.setenv("ESPRIT_LLM", "openai/gpt-5.3-codex")
     assert Config.get_runtime_profile() == "connectors"
+
+
+def test_save_current_persists_cloud_fallback_override(monkeypatch, tmp_path) -> None:
+    config_root = _configure_temp_config_dir(monkeypatch, tmp_path)
+
+    monkeypatch.setenv("ESPRIT_CLOUD_MODEL_FALLBACK", "false")
+
+    assert Config.save_current() is True
+
+    config_file = config_root / "cli-config.json"
+    saved = json.loads(config_file.read_text(encoding="utf-8"))
+    assert saved["env"]["ESPRIT_CLOUD_MODEL_FALLBACK"] == "false"

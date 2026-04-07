@@ -16,6 +16,7 @@ class Config:
     litellm_base_url = None
     ollama_api_base = None
     esprit_reasoning_effort = "high"
+    esprit_cloud_model_fallback = None
     esprit_llm_max_retries = "5"
     esprit_memory_compressor_timeout = "30"
     llm_timeout = "300"
@@ -27,6 +28,7 @@ class Config:
         "litellm_base_url",
         "ollama_api_base",
         "esprit_reasoning_effort",
+        "esprit_cloud_model_fallback",
         "esprit_llm_max_retries",
         "esprit_memory_compressor_timeout",
         "llm_timeout",

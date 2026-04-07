@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import os
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from types import SimpleNamespace
@@ -90,6 +91,8 @@ _OPENCODE_UPSTREAM_ERROR_MARKERS = (
     "prompt_tokens",
     "upstream model error",
 )
+
+_DISABLED_BOOL_LITERALS = {"false", "0", "no"}
 
 _STRICT_POLICY_PROVIDER_PREFIXES = frozenset({
     "openai",
@@ -392,6 +395,8 @@ class LLM:
 
         bare_model = self.config.model_name.split("/", 1)[1]
         bedrock_model = resolve_bedrock_model(bare_model)
+        if not self._subscription_model_supports_vision(bedrock_model):
+            messages = self._strip_images(messages)
         credentials = _load_esprit_credentials()
 
         if not credentials or not credentials.access_token:
@@ -499,6 +504,14 @@ class LLM:
 
     def _is_esprit_subscription_model(self) -> bool:
         return bool(self.config.model_name and self.config.model_name.lower().startswith("esprit/"))
+
+    def _subscription_model_supports_vision(self, resolved_model: str) -> bool:
+        if not resolved_model:
+            return False
+        try:
+            return bool(supports_vision(model=resolved_model))
+        except Exception:  # noqa: BLE001
+            return False
 
     def _format_esprit_proxy_error_details(self, response: httpx.Response) -> str:
         details = response.text.strip()
@@ -1471,8 +1484,11 @@ class LLM:
         return False
 
     def _try_esprit_model_fallback(self, e: Exception) -> bool:
-        """Switch Esprit cloud model on upstream throttling/transient outages."""
-        if str(Config.get("esprit_auto_fallback") or "").lower() in ("false", "0", "no"):
+        """Switch Esprit cloud models conservatively on upstream throttling/outages."""
+        fallback_pref = os.getenv("ESPRIT_CLOUD_MODEL_FALLBACK")
+        if fallback_pref is None:
+            fallback_pref = os.getenv("ESPRIT_AUTO_FALLBACK")
+        if fallback_pref is not None and fallback_pref.strip().lower() in _DISABLED_BOOL_LITERALS:
             return False
 
         current_model = (self.config.model_name or "").strip().lower()
@@ -1489,6 +1505,7 @@ class LLM:
 
         plan = (get_user_plan() or "free").strip().lower()
         paid_plan = plan in {"pro", "team", "enterprise"}
+        allow_upgrade = bool(fallback_pref and fallback_pref.strip().lower() not in _DISABLED_BOOL_LITERALS)
         current_alias = current_model.split("/", 1)[1] if "/" in current_model else current_model
         haiku_aliases = {
             "default",
@@ -1503,11 +1520,11 @@ class LLM:
         if current_alias in kimi_aliases:
             candidates.append("default")
         elif current_alias in haiku_aliases:
-            if paid_plan:
+            if allow_upgrade and paid_plan:
                 candidates.append("kimi-k2.5")
         else:
             candidates.append("default")
-            if paid_plan:
+            if allow_upgrade and paid_plan:
                 candidates.append("kimi-k2.5")
 
         if not hasattr(self, "_tried_esprit_fallback_models"):

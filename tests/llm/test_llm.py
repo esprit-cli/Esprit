@@ -473,14 +473,15 @@ class TestOpenCodePublicFallback:
 
 
 class TestEspritModelFallback:
-    def test_paid_plan_falls_back_from_default_to_kimi_on_rate_limit(
+    def test_paid_plan_only_upgrades_from_default_to_kimi_when_explicitly_enabled(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         llm = LLM.__new__(LLM)
         llm.config = SimpleNamespace(model_name="esprit/default")
 
         monkeypatch.setattr("esprit.auth.credentials.get_user_plan", lambda: "pro")
-        monkeypatch.setattr("esprit.llm.llm.Config.get", lambda _name: None)
+        monkeypatch.setenv("ESPRIT_CLOUD_MODEL_FALLBACK", "true")
+        monkeypatch.delenv("ESPRIT_AUTO_FALLBACK", raising=False)
 
         err = RuntimeError("rate limited")
         err.status_code = 429  # type: ignore[attr-defined]
@@ -495,7 +496,8 @@ class TestEspritModelFallback:
         llm.config = SimpleNamespace(model_name="esprit/default")
 
         monkeypatch.setattr("esprit.auth.credentials.get_user_plan", lambda: "free")
-        monkeypatch.setattr("esprit.llm.llm.Config.get", lambda _name: None)
+        monkeypatch.delenv("ESPRIT_CLOUD_MODEL_FALLBACK", raising=False)
+        monkeypatch.delenv("ESPRIT_AUTO_FALLBACK", raising=False)
 
         err = RuntimeError("rate limited")
         err.status_code = 429  # type: ignore[attr-defined]
@@ -510,7 +512,8 @@ class TestEspritModelFallback:
         llm.config = SimpleNamespace(model_name="esprit/kimi-k2.5")
 
         monkeypatch.setattr("esprit.auth.credentials.get_user_plan", lambda: "pro")
-        monkeypatch.setattr("esprit.llm.llm.Config.get", lambda _name: None)
+        monkeypatch.delenv("ESPRIT_CLOUD_MODEL_FALLBACK", raising=False)
+        monkeypatch.delenv("ESPRIT_AUTO_FALLBACK", raising=False)
 
         err = RuntimeError("rate limited")
         err.status_code = 429  # type: ignore[attr-defined]
@@ -518,20 +521,21 @@ class TestEspritModelFallback:
         assert llm._try_esprit_model_fallback(err) is True
         assert llm.config.model_name == "esprit/default"
 
-    def test_paid_plan_falls_back_from_default_to_kimi_on_gateway_timeout(
+    def test_default_model_does_not_upgrade_to_kimi_on_gateway_timeout_by_default(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         llm = LLM.__new__(LLM)
         llm.config = SimpleNamespace(model_name="esprit/default")
 
         monkeypatch.setattr("esprit.auth.credentials.get_user_plan", lambda: "pro")
-        monkeypatch.setattr("esprit.llm.llm.Config.get", lambda _name: None)
+        monkeypatch.delenv("ESPRIT_CLOUD_MODEL_FALLBACK", raising=False)
+        monkeypatch.delenv("ESPRIT_AUTO_FALLBACK", raising=False)
 
         err = RuntimeError("gateway timeout")
         err.status_code = 504  # type: ignore[attr-defined]
 
-        assert llm._try_esprit_model_fallback(err) is True
-        assert llm.config.model_name == "esprit/kimi-k2.5"
+        assert llm._try_esprit_model_fallback(err) is False
+        assert llm.config.model_name == "esprit/default"
 
 
 class TestBuildCompletionArgs:
@@ -801,6 +805,91 @@ class TestEspritProxyRouting:
         assert observed["completion_tokens"] == 7
 
     @pytest.mark.asyncio
+    async def test_stream_esprit_proxy_strips_images_for_non_vision_models(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        llm = LLM.__new__(LLM)
+        llm.config = SimpleNamespace(model_name="esprit/kimi-k2.5", timeout=120)
+        llm._total_stats = SimpleNamespace(
+            requests=0,
+            input_tokens=0,
+            output_tokens=0,
+            cached_tokens=0,
+            cost=0.0,
+            last_input_tokens=0,
+        )
+        llm._reasoning_effort = "high"
+
+        monkeypatch.setattr(LLM, "_supports_reasoning", lambda self: False)
+        monkeypatch.setattr(LLM, "_update_usage_stats", lambda self, _response: None)
+        monkeypatch.setattr(
+            "esprit.providers.esprit_subs._load_esprit_credentials",
+            lambda: SimpleNamespace(access_token="token"),
+        )
+        monkeypatch.setattr(
+            "esprit.providers.esprit_subs.resolve_bedrock_model",
+            lambda _model: "moonshotai.kimi-k2.5",
+        )
+        monkeypatch.setattr(
+            "esprit.providers.esprit_subs.LLM_PROXY_URL",
+            "https://example.test/api/v1/llm/generate",
+        )
+        monkeypatch.setattr("esprit.llm.llm.supports_vision", lambda model: False)
+
+        captured: dict[str, object] = {}
+
+        class FakeResponse:
+            status_code = 200
+            text = ""
+
+            @staticmethod
+            def json() -> dict[str, object]:
+                return {
+                    "choices": [{"message": {"content": "proxy-ok"}}],
+                    "usage": {"prompt_tokens": 10, "completion_tokens": 2},
+                }
+
+        class FakeAsyncClient:
+            def __init__(self, timeout: int):  # noqa: D401
+                _ = timeout
+
+            async def __aenter__(self) -> "FakeAsyncClient":
+                return self
+
+            async def __aexit__(self, _exc_type, _exc, _tb) -> None:  # noqa: ANN001
+                return None
+
+            async def post(
+                self, url: str, headers: dict[str, str], json: dict[str, object]  # noqa: A002
+            ) -> FakeResponse:
+                _ = (url, headers)
+                captured["json"] = json
+                return FakeResponse()
+
+        monkeypatch.setattr("esprit.llm.llm.httpx.AsyncClient", FakeAsyncClient)
+
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "ping"},
+                    {"type": "image_url", "image_url": {"url": "data:image/png;base64,abc"}},
+                ],
+            }
+        ]
+        outputs: list[str] = []
+        async for item in llm._stream_esprit_proxy(messages):
+            outputs.append(item.content)
+
+        assert outputs == ["proxy-ok"]
+        assert captured["json"]["messages"] == [
+            {
+                "role": "user",
+                "content": "ping\n[Image removed - model doesn't support vision]",
+            }
+        ]
+
+    @pytest.mark.asyncio
     async def test_stream_esprit_proxy_surfaces_http_status(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -1034,6 +1123,36 @@ class TestEspritProxyRouting:
         assert "Upstream model gateway timed out" in details
         assert "<html>" not in details.lower()
         assert "request_id: edge-123" in details
+
+
+class TestEspritCloudFallback:
+    def test_does_not_upgrade_default_model_without_explicit_opt_in(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        llm = LLM.__new__(LLM)
+        llm.config = SimpleNamespace(model_name="esprit/default")
+        monkeypatch.delenv("ESPRIT_CLOUD_MODEL_FALLBACK", raising=False)
+        monkeypatch.delenv("ESPRIT_AUTO_FALLBACK", raising=False)
+        monkeypatch.setattr("esprit.auth.credentials.get_user_plan", lambda: "team")
+
+        error = LLMRequestFailedError("proxy unavailable", status_code=503)
+
+        assert llm._try_esprit_model_fallback(error) is False
+        assert llm.config.model_name == "esprit/default"
+
+    def test_allows_upgrade_when_cloud_fallback_is_explicitly_enabled(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        llm = LLM.__new__(LLM)
+        llm.config = SimpleNamespace(model_name="esprit/default")
+        monkeypatch.setenv("ESPRIT_CLOUD_MODEL_FALLBACK", "true")
+        monkeypatch.delenv("ESPRIT_AUTO_FALLBACK", raising=False)
+        monkeypatch.setattr("esprit.auth.credentials.get_user_plan", lambda: "team")
+
+        error = LLMRequestFailedError("proxy unavailable", status_code=503)
+
+        assert llm._try_esprit_model_fallback(error) is True
+        assert llm.config.model_name == "esprit/kimi-k2.5"
 
 
 class TestRaiseError:
