@@ -173,7 +173,15 @@ function Install-PythonRuntime {
     if ($LASTEXITCODE -ne 0) { throw 'pip upgrade failed' }
     & $venvPip install --upgrade $packageDir --quiet
     if ($LASTEXITCODE -ne 0) { throw 'pip install failed' }
+
+    # Keep browser preview rendering stack consistent across machines.
+    & $venvPip install --upgrade "Pillow>=10.0.0" "textual-image>=0.8.5,<0.9.0" --quiet
+    if ($LASTEXITCODE -ne 0) { throw 'image stack install failed' }
+
+    $imageStack = & $venvPython -c "from importlib.metadata import version; import textual, textual_image, PIL; print(f'textual {version(\"textual\")}, textual-image {version(\"textual-image\")}, Pillow {version(\"Pillow\")}')" 2>$null
+    if ($LASTEXITCODE -ne 0) { throw 'image stack verification failed' }
     Print-Message 'success' '✓ Python runtime installed'
+    Print-Message 'info' "Image stack: $imageStack"
 }
 
 function Write-Launcher {

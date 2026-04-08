@@ -203,7 +203,32 @@ install_python_runtime() {
   print_message info "${MUTED}Installing Esprit dependencies (this can take a few minutes)...${NC}"
   "$VENV_DIR/bin/python" -m pip install --upgrade pip setuptools wheel >/dev/null
   "$VENV_DIR/bin/pip" install --upgrade "$package_dir" >/dev/null
+
+  # Keep browser preview rendering stack consistent across machines.
+  "$VENV_DIR/bin/pip" install --upgrade "Pillow>=10.0.0" "textual-image>=0.8.5,<0.9.0" >/dev/null
+
+  local image_stack
+  image_stack=$("$VENV_DIR/bin/python" - <<'PY'
+from importlib.metadata import version
+pkgs = (
+    ("textual", "textual"),
+    ("textual-image", "textual_image"),
+    ("Pillow", "PIL"),
+)
+parts = []
+for dist_name, module_name in pkgs:
+    __import__(module_name)
+    parts.append(f"{dist_name} {version(dist_name)}")
+print(", ".join(parts))
+PY
+  ) || {
+    print_message error "Image rendering dependencies failed to verify."
+    print_message info "Re-run installer with --force or check pip output above."
+    exit 1
+  }
+
   print_message success "✓ Python runtime installed"
+  print_message info "${MUTED}Image stack:${NC} $image_stack"
 }
 
 write_launcher() {

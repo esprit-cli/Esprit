@@ -83,6 +83,16 @@ _AUTH_ERROR_TEXT_MARKERS = (
     "authenticationerror",
     "unauthorized",
 )
+_NON_RETRYABLE_ERROR_MARKERS = (
+    "stream must be set to true",
+    "instructions are required",
+    "invalid api key",
+    "incorrect api key",
+    "api_key client option must be set",
+    "missing scopes: api.responses.write",
+    "unauthorized",
+)
+_LITELLM_NONE_WRAPPER_MARKER = "argument of type 'nonetype' is not iterable"
 
 _ESPRIT_PROXY_TRANSIENT_STATUS_CODES = {502, 503, 504}
 _ESPRIT_PROXY_MAX_TRANSIENT_RETRIES = 2
@@ -1228,10 +1238,94 @@ class LLM:
             pass
 
     def _should_retry(self, e: Exception) -> bool:
-        code = getattr(e, "status_code", None) or getattr(
-            getattr(e, "response", None), "status_code", None
-        )
-        return code is None or litellm._should_retry(code)
+        code = self._extract_effective_status_code(e)
+        if code is not None:
+            return bool(litellm._should_retry(code))
+
+        details = self._extract_effective_error_details(e).lower()
+        if any(marker in details for marker in _NON_RETRYABLE_ERROR_MARKERS):
+            return False
+        if _LITELLM_NONE_WRAPPER_MARKER in details:
+            return False
+        return True
+
+    @staticmethod
+    def _walk_exception_chain(error: BaseException) -> list[BaseException]:
+        chain: list[BaseException] = []
+        seen: set[int] = set()
+        current: BaseException | None = error
+        while current is not None and id(current) not in seen:
+            chain.append(current)
+            seen.add(id(current))
+            next_exc = current.__cause__ or current.__context__
+            current = next_exc if isinstance(next_exc, BaseException) else None
+        return chain
+
+    def _extract_effective_status_code(self, error: Exception) -> int | None:
+        for exc in self._walk_exception_chain(error):
+            status_code = getattr(exc, "status_code", None)
+            if isinstance(status_code, int) and 100 <= status_code <= 599:
+                return status_code
+            response = getattr(exc, "response", None)
+            response_status = getattr(response, "status_code", None)
+            if isinstance(response_status, int) and 100 <= response_status <= 599:
+                return response_status
+        return None
+
+    @classmethod
+    def _looks_like_litellm_none_wrapper(cls, details: str) -> bool:
+        lower = details.lower()
+        return _LITELLM_NONE_WRAPPER_MARKER in lower
+
+    @classmethod
+    def _normalize_provider_error_details(cls, raw: str) -> str:
+        details = raw.strip()
+        if not details:
+            return ""
+
+        openai_marker = "OpenAIException - "
+        if openai_marker in details:
+            payload = details.split(openai_marker, 1)[1].strip()
+            if payload.startswith("{"):
+                try:
+                    parsed = json.loads(payload)
+                except ValueError:
+                    parsed = None
+                if isinstance(parsed, dict):
+                    detail = parsed.get("detail")
+                    if isinstance(detail, str) and detail.strip():
+                        return detail.strip()
+
+                    error_obj = parsed.get("error")
+                    if isinstance(error_obj, dict):
+                        error_message = str(error_obj.get("message") or "").strip()
+                        error_type = str(error_obj.get("type") or "").strip()
+                        resets_in_seconds = error_obj.get("resets_in_seconds")
+                        if error_message:
+                            if isinstance(resets_in_seconds, (int, float)) and resets_in_seconds > 0:
+                                mins = int(resets_in_seconds // 60)
+                                secs = int(resets_in_seconds % 60)
+                                error_message = f"{error_message} (resets in {mins}m {secs:02d}s)"
+                            if error_type:
+                                return f"{error_type}: {error_message}"
+                            return error_message
+
+            if payload:
+                return payload
+
+        return details
+
+    def _extract_effective_error_details(self, error: Exception) -> str:
+        candidates: list[str] = []
+        for exc in self._walk_exception_chain(error):
+            normalized = self._normalize_provider_error_details(str(exc))
+            if normalized:
+                candidates.append(normalized)
+
+        for details in candidates:
+            if not self._looks_like_litellm_none_wrapper(details):
+                return details
+        return candidates[0] if candidates else ""
 
     def _raise_error(self, e: Exception) -> None:
         from esprit.telemetry import posthog
@@ -1239,19 +1333,21 @@ class LLM:
         posthog.error("llm_error", type(e).__name__)
 
         if isinstance(e, LLMRequestFailedError):
-            status_code = e.status_code or getattr(
-                getattr(e, "response", None), "status_code", None
-            )
-            details = e.details or e.message
+            status_code = e.status_code or self._extract_effective_status_code(e)
+            details = e.details or self._extract_effective_error_details(e) or e.message
             raise LLMRequestFailedError(e.message, details, status_code=status_code) from e
 
-        status_code = getattr(e, "status_code", None) or getattr(
-            getattr(e, "response", None), "status_code", None
-        )
-        details = str(e)
+        status_code = self._extract_effective_status_code(e)
+        details = self._extract_effective_error_details(e) or str(e)
+
+        if self._looks_like_litellm_none_wrapper(details):
+            details = (
+                "Upstream provider returned an unmapped error via LiteLLM. "
+                "Retry once, then switch model/provider if this persists."
+            )
 
         # Translate common OpenAI scope failures into actionable guidance.
-        if "api.responses.write" in details:
+        if "api.responses.write" in details.lower():
             details = (
                 "OpenAI credentials are missing the `api.responses.write` scope. "
                 "Use a Project API key/token with Responses API write permission "

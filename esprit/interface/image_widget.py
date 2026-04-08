@@ -32,6 +32,16 @@ def _check_textual_image() -> bool:
     return _TEXTUAL_IMAGE_AVAILABLE
 
 
+def _supports_pixel_protocols() -> bool:
+    """Return True when terminal protocol is pixel-accurate."""
+    try:
+        from esprit.interface.image_protocol import PROTOCOL
+
+        return PROTOCOL in {"tgp", "sixel", "halfcell"}
+    except Exception:
+        return False
+
+
 def _decode_base64_to_pil(b64_data: str) -> Any:
     """Decode a base64 PNG string to a PIL Image."""
     from PIL import Image as PILImage
@@ -90,7 +100,7 @@ class BrowserScreenshotWidget(Widget):  # type: ignore[misc]
             content_widget.update(Text("No screenshot available", style="dim"))
             return
 
-        if _check_textual_image():
+        if _check_textual_image() and _supports_pixel_protocols():
             self._render_with_textual_image(content_widget)
         else:
             self._render_with_halfblock(content_widget)
