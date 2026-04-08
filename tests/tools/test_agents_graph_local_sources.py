@@ -28,6 +28,12 @@ def test_create_agent_inherits_parent_local_sources(monkeypatch) -> None:
 
     parent_state = AgentState(agent_name="Root", is_whitebox=True)
     parent_state.add_message("user", "scan this codebase")
+    parent_state.sandbox_id = "sandbox-root"
+    parent_state.sandbox_token = "token-root"
+    parent_state.sandbox_info = {
+        "workspace_id": "sandbox-root",
+        "api_url": "https://api.example.test/sandbox/sandbox-root",
+    }
     parent_agent = SimpleNamespace(
         state=parent_state,
         llm_config=SimpleNamespace(timeout=123, scan_mode="standard"),
@@ -77,5 +83,9 @@ def test_create_agent_inherits_parent_local_sources(monkeypatch) -> None:
     child_state = child_config["state"]
     assert isinstance(child_state, AgentState)
     assert child_state.is_whitebox is True
+    assert child_state.sandbox_id == "sandbox-root"
+    assert child_state.sandbox_token == "token-root"
+    assert child_state.sandbox_info == parent_state.sandbox_info
+    assert child_state.sandbox_info is not parent_state.sandbox_info
     assert child_config["llm_config"].scan_mode == "standard"
     assert thread_targets

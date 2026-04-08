@@ -512,8 +512,16 @@ def create_agent(
 
         # Inherit white-box flag from parent agent
         parent_is_whitebox = False
+        inherited_sandbox_id = None
+        inherited_sandbox_token = None
+        inherited_sandbox_info = None
         if parent_agent and hasattr(parent_agent, "state"):
             parent_is_whitebox = getattr(parent_agent.state, "is_whitebox", False)
+            inherited_sandbox_id = getattr(parent_agent.state, "sandbox_id", None)
+            inherited_sandbox_token = getattr(parent_agent.state, "sandbox_token", None)
+            parent_sandbox_info = getattr(parent_agent.state, "sandbox_info", None)
+            if isinstance(parent_sandbox_info, dict):
+                inherited_sandbox_info = deepcopy(parent_sandbox_info)
 
         state = AgentState(
             task=task,
@@ -521,6 +529,9 @@ def create_agent(
             parent_id=parent_id,
             max_iterations=300,
             is_whitebox=parent_is_whitebox,
+            sandbox_id=inherited_sandbox_id,
+            sandbox_token=inherited_sandbox_token,
+            sandbox_info=inherited_sandbox_info,
         )
 
         timeout = None
