@@ -310,27 +310,29 @@ VulnerabilityOverlayScreen {
 
 AgentHealthPopupScreen {
     align: center middle;
-    background: #0a0202 84%;
+    background: #050101 88%;
 }
 
 #health_popup_dialog {
     grid-size: 1;
     grid-gutter: 1;
     grid-rows: auto 1fr auto;
-    padding: 1 2;
-    width: 94%;
-    max-width: 170;
-    height: 86%;
-    max-height: 54;
-    border: solid #2f0f0f;
-    background: #160606;
+    padding: 1 3;
+    width: 96%;
+    max-width: 192;
+    height: 90%;
+    max-height: 58;
+    border: heavy #7f1d1d;
+    background: #120303;
 }
 
 #health_popup_status {
     height: auto;
-    border-bottom: solid #2f0f0f;
-    color: #d4d4d4;
-    padding: 0 0 1 0;
+    border: solid #4c1515;
+    color: #fff1f2;
+    background: #1a0505;
+    padding: 1 2;
+    margin-bottom: 1;
 }
 
 #health_popup_main {
@@ -339,21 +341,27 @@ AgentHealthPopupScreen {
 }
 
 #health_popup_list_scroll {
-    width: 46%;
-    border-right: solid #2f0f0f;
-    padding-right: 1;
-    scrollbar-background: #160606;
-    scrollbar-color: #2f0f0f;
-    scrollbar-corner-color: #160606;
+    width: 42%;
+    min-width: 58;
+    border: solid #4c1515;
+    background: #180505;
+    padding: 1 2 1 1;
+    margin-right: 2;
+    scrollbar-background: #180505;
+    scrollbar-color: #67e8f9;
+    scrollbar-corner-color: #180505;
     scrollbar-size: 1 1;
 }
 
 #health_popup_detail_scroll {
     width: 1fr;
-    padding-left: 1;
-    scrollbar-background: #160606;
-    scrollbar-color: #2f0f0f;
-    scrollbar-corner-color: #160606;
+    min-width: 74;
+    border: solid #4c1515;
+    background: #150404;
+    padding: 1 2;
+    scrollbar-background: #150404;
+    scrollbar-color: #67e8f9;
+    scrollbar-corner-color: #150404;
     scrollbar-size: 1 1;
 }
 
@@ -361,12 +369,14 @@ AgentHealthPopupScreen {
 #health_popup_detail {
     width: 100%;
     background: transparent;
+    color: #fff7ed;
+    padding: 0;
 }
 
 #health_popup_buttons {
     width: 100%;
-    border-top: solid #2f0f0f;
-    align: right middle;
+    border-top: solid #4c1515;
+    align: center middle;
     padding-top: 1;
 }
 
@@ -374,26 +384,27 @@ AgentHealthPopupScreen {
 #health_retry_selected,
 #close_health_popup {
     width: auto;
-    min-width: 12;
-    height: auto;
-    background: transparent;
-    color: #e8d5d5;
-    border: none;
+    min-width: 18;
+    height: 3;
+    background: #220707;
+    color: #fff1f2;
+    border: solid #5f1d1d;
     margin: 0 1;
     padding: 0 2;
+    text-style: bold;
 }
 
 #health_stop_selected:hover, #health_stop_selected:focus {
-    background: transparent;
-    color: #ef4444;
-    border: none;
+    background: #2e0909;
+    color: #fecaca;
+    border: solid #fb7185;
 }
 
 #health_retry_selected:hover, #health_retry_selected:focus,
 #close_health_popup:hover, #close_health_popup:focus {
-    background: transparent;
-    color: #22d3ee;
-    border: none;
+    background: #2a0909;
+    color: #67e8f9;
+    border: solid #67e8f9;
 }
 
 #chat_area_container {

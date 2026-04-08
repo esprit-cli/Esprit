@@ -1493,6 +1493,8 @@ class VulnerabilityOverlayScreen(ModalScreen):  # type: ignore[misc]
 class AgentHealthPopupScreen(ModalScreen):  # type: ignore[misc]
     """Live health diagnostics for all agents with intervention actions."""
 
+    _ROW_LINE_HEIGHT = 4
+
     def __init__(self) -> None:
         super().__init__()
         self._selected_index = 0
@@ -1566,6 +1568,44 @@ class AgentHealthPopupScreen(ModalScreen):  # type: ignore[misc]
         rows = self._get_health_rows()
         list_content.update(self._render_list(rows))
         detail_content.update(self._render_detail())
+        self.call_after_refresh(self._ensure_selection_visible)
+
+    def _row_top_offset(self, index: int) -> int:
+        return max(0, index * self._ROW_LINE_HEIGHT)
+
+    def _selected_scroll_offset(self, viewport_height: int, current_scroll: int) -> int:
+        rows = self._get_health_rows()
+        if not rows:
+            return 0
+
+        selected_top = self._row_top_offset(self._selected_index)
+        selected_bottom = selected_top + (self._ROW_LINE_HEIGHT - 1)
+        if viewport_height <= 0:
+            return selected_top
+
+        current_top = max(0, current_scroll)
+        current_bottom = current_top + max(0, viewport_height - 1)
+        if selected_top >= current_top and selected_bottom <= current_bottom:
+            return current_top
+        if selected_top < current_top:
+            return max(0, selected_top - 1)
+
+        if selected_bottom <= current_bottom:
+            return current_top
+
+        padding = max(1, min(3, viewport_height // 4))
+        return max(0, selected_bottom - viewport_height + padding)
+
+    def _ensure_selection_visible(self) -> None:
+        try:
+            list_scroll = self.query_one("#health_popup_list_scroll", VerticalScroll)
+        except (ValueError, Exception):
+            return
+
+        viewport_height = int(getattr(getattr(list_scroll, "size", None), "height", 0) or 0)
+        current_scroll = int(getattr(list_scroll, "scroll_y", 0) or 0)
+        target_y = self._selected_scroll_offset(viewport_height, current_scroll)
+        list_scroll.scroll_to(y=target_y, animate=False, force=True, immediate=True)
 
     def _render_list(self, rows: list[dict[str, Any]]) -> Text:
         text = Text()
@@ -1576,19 +1616,30 @@ class AgentHealthPopupScreen(ModalScreen):  # type: ignore[misc]
 
         for idx, row in enumerate(rows):
             risk = row.get("risk", "low")
-            color = {"high": "#dc2626", "medium": "#d97706", "low": "#22c55e"}.get(risk, "#22c55e")
-            marker = "▶ " if idx == self._selected_index else "  "
-            text.append(marker, style=f"bold {color}")
-            text.append(f"[{risk.upper():6s}] ", style=color)
-            text.append(str(row.get("name", row.get("agent_id", "Agent"))), style="bold white")
-            text.append(f"  {row.get('status', 'unknown')}", style="dim")
-            text.append("\n  ", style="dim")
+            color = {"high": "#fb7185", "medium": "#f59e0b", "low": "#34d399"}.get(risk, "#34d399")
+            selected = idx == self._selected_index
+            row_style = "on #2a0a0a" if selected else ""
+            dim_style = "bold #fca5a5" if selected else "dim #b08989"
+            marker = "▶ " if selected else "  "
+            text.append(marker, style=f"bold {color} {row_style}".strip())
+            text.append(f"[{risk.upper():6s}] ", style=f"bold {color} {row_style}".strip())
+            text.append(
+                str(row.get("name", row.get("agent_id", "Agent"))),
+                style=f"bold #fff7ed {row_style}".strip(),
+            )
+            text.append(f"  {row.get('status', 'unknown')}", style=f"{dim_style} {row_style}".strip())
+            text.append("\n  ", style=f"{dim_style} {row_style}".strip())
             text.append(
                 f"age {row.get('last_output_age', '--')} · errors {row.get('error_streak', 0)} · retries {row.get('retry_count', 0)}",
-                style="dim",
+                style=f"{dim_style} {row_style}".strip(),
+            )
+            text.append("\n  ", style=f"{dim_style} {row_style}".strip())
+            text.append(
+                str(row.get("snippet", "No recent activity.")),
+                style=f"{'bold #ffe4e6' if selected else '#f4d7d7'} {row_style}".strip(),
             )
             if idx < len(rows) - 1:
-                text.append("\n")
+                text.append("\n\n", style="dim #4b1d1d")
 
         return text
 
@@ -1599,26 +1650,43 @@ class AgentHealthPopupScreen(ModalScreen):  # type: ignore[misc]
             text.append("Select an agent to inspect diagnostics.", style="dim")
             return text
 
-        text.append("Agent Health\n", style="bold #22d3ee")
-        text.append("Agent: ", style="bold #4ade80")
-        text.append(f"{row.get('name', 'Unknown')}\n")
-        text.append("Status: ", style="bold #4ade80")
-        text.append(f"{row.get('status', 'unknown')}\n")
-        text.append("Risk: ", style="bold #4ade80")
-        text.append(f"{row.get('risk', 'low').upper()}\n")
-        text.append("Last Output Age: ", style="bold #4ade80")
-        text.append(f"{row.get('last_output_age', '--')}\n")
-        text.append("Error Streak: ", style="bold #4ade80")
-        text.append(f"{row.get('error_streak', 0)}\n")
-        text.append("Retry Count: ", style="bold #4ade80")
-        text.append(f"{row.get('retry_count', 0)}\n\n")
+        risk = str(row.get("risk", "low")).lower()
+        risk_color = {"high": "#fb7185", "medium": "#f59e0b", "low": "#34d399"}.get(risk, "#34d399")
+        text.append("Agent Health", style="bold #67e8f9")
+        text.append("  ", style="dim")
+        text.append("live diagnostics", style="bold #fda4af")
+        text.append("\n\n", style="dim")
+
+        stats = [
+            ("Agent", row.get("name", "Unknown")),
+            ("Status", row.get("status", "unknown")),
+            ("Risk", str(row.get("risk", "low")).upper()),
+            ("Last Output", row.get("last_output_age", "--")),
+            ("Error Streak", row.get("error_streak", 0)),
+            ("Retry Count", row.get("retry_count", 0)),
+        ]
+        label_width = max(len(label) for label, _value in stats)
+        for label, value in stats:
+            value_style = f"bold {risk_color}" if label == "Risk" else "bold #fff7ed"
+            text.append(f"{label:<{label_width}}", style="bold #86efac")
+            text.append("  ")
+            text.append(str(value), style=value_style)
+            text.append("\n")
+        text.append("\n", style="dim")
 
         snippet = row.get("snippet")
         if snippet:
-            text.append("Latest Activity\n", style="bold #4ade80")
-            text.append(str(snippet), style="white")
+            text.append("Latest Activity\n", style="bold #67e8f9")
+            text.append(str(snippet), style="bold #ffe4e6")
         else:
             text.append("No activity snippet available yet.", style="dim")
+
+        text.append("\n\n", style="dim")
+        text.append("Controls\n", style="bold #67e8f9")
+        text.append("↑/↓ move  ", style="bold #fff7ed")
+        text.append("R retry  ", style="bold #fff7ed")
+        text.append("S stop  ", style="bold #fff7ed")
+        text.append("Esc close", style="bold #fff7ed")
 
         return text
 
