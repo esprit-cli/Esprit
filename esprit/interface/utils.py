@@ -353,83 +353,56 @@ def build_live_stats_text(tracer: Any, agent_config: dict[str, Any] | None = Non
     stats_text = Text()
     if not tracer:
         return stats_text
-
-    if agent_config:
-        llm_config = agent_config["llm_config"]
-        model = getattr(llm_config, "model_name", "Unknown")
+    insights = _build_run_insights(tracer, agent_config=agent_config)
+    if insights["model"]:
         stats_text.append("Model ", style="dim")
-        stats_text.append(model, style="white")
+        stats_text.append(str(insights["model"]), style="white")
         stats_text.append("\n")
 
-    vuln_count = len(tracer.vulnerability_reports)
-    tool_count = tracer.get_real_tool_count()
-    agent_count = len(tracer.agents)
-
-    stats_text.append("Vulnerabilities ", style="dim")
-    stats_text.append(f"{vuln_count}", style="white")
+    stats_text.append("Phase ", style="dim")
+    stats_text.append(str(insights["current_phase"]), style="white")
     stats_text.append("\n")
-    if vuln_count > 0:
-        severity_counts = {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0}
-        for report in tracer.vulnerability_reports:
-            severity = report.get("severity", "").lower()
-            if severity in severity_counts:
-                severity_counts[severity] += 1
-
-        severity_parts = []
-        for severity in ["critical", "high", "medium", "low", "info"]:
-            count = severity_counts[severity]
-            if count > 0:
-                severity_color = get_severity_color(severity)
-                severity_text = Text()
-                severity_text.append(f"{severity.upper()}: ", style=severity_color)
-                severity_text.append(str(count), style=f"bold {severity_color}")
-                severity_parts.append(severity_text)
-
-        for i, part in enumerate(severity_parts):
-            stats_text.append(part)
-            if i < len(severity_parts) - 1:
-                stats_text.append(" | ", style="dim white")
-
-        stats_text.append("\n")
 
     stats_text.append("Agents ", style="dim")
-    stats_text.append(str(agent_count), style="white")
+    stats_text.append(str(insights["active_agents"]), style="white")
+    stats_text.append(" active", style="dim white")
+    stats_text.append("  ·  ", style="dim white")
+    stats_text.append(str(insights["waiting_agents"]), style="white")
+    stats_text.append(" waiting", style="dim white")
+    stats_text.append("\n")
+
+    stats_text.append("Findings ", style="dim")
+    stats_text.append(str(insights["findings_total"]), style="white")
+    if insights["findings_by_severity"]:
+        stats_text.append("  ·  ", style="dim white")
+        parts = []
+        for severity in ("critical", "high", "medium", "low", "info"):
+            count = int(insights["findings_by_severity"].get(severity, 0) or 0)
+            if count > 0:
+                parts.append((severity, count))
+        for index, (severity, count) in enumerate(parts):
+            if index > 0:
+                stats_text.append(" ", style="dim white")
+            color = get_severity_color(severity)
+            stats_text.append(f"{severity[0].upper()}{count}", style=f"bold {color}")
+    stats_text.append("\n")
+
+    stats_text.append("Retries ", style="dim")
+    stats_text.append(str(insights["retry_count"]), style="white")
     stats_text.append("  ·  ", style="dim white")
     stats_text.append("Tools ", style="dim")
-    stats_text.append(str(tool_count), style="white")
-
-    llm_stats = tracer.get_total_llm_stats()
-    total_stats = llm_stats["total"]
-
+    stats_text.append(str(insights["tool_count"]), style="white")
     stats_text.append("\n")
 
-    stats_text.append("Input Tokens ", style="dim")
-    stats_text.append(format_token_count(total_stats["input_tokens"]), style="white")
-
+    stats_text.append("Context ", style="dim")
+    stats_text.append(
+        f"{format_token_count(insights['context_tokens'])} / {format_token_count(insights['context_limit'])}",
+        style="white",
+    )
+    stats_text.append(f" ({insights['context_pct']:.0f}%)", style="dim white")
     stats_text.append("  ·  ", style="dim white")
-    stats_text.append("Cached Tokens ", style="dim")
-    stats_text.append(format_token_count(total_stats["cached_tokens"]), style="white")
-
-    stats_text.append("\n")
-
-    stats_text.append("Output Tokens ", style="dim")
-    stats_text.append(format_token_count(total_stats["output_tokens"]), style="white")
-
-    stats_text.append("  ·  ", style="dim white")
-
-    # Cost
-    model = ""
-    if agent_config:
-        llm_config = agent_config["llm_config"]
-        model = getattr(llm_config, "model_name", "")
-
-    session_cost = _resolve_session_cost(total_stats, model)
-
     stats_text.append("Cost ", style="dim")
-    if session_cost >= 0.005:
-        stats_text.append(f"${session_cost:.2f}", style="#fbbf24")
-    else:
-        stats_text.append(f"${session_cost:.2f}", style="dim white")
+    stats_text.append(f"${insights['session_cost']:.2f}", style="#fbbf24" if insights["session_cost"] >= 0.005 else "dim white")
 
     return stats_text
 
@@ -490,6 +463,150 @@ def _estimate_projection(
     return (projected_total_duration, projected_cost, remaining_seconds)
 
 
+def _derive_current_phase(tracer: Any) -> str:
+    executions = list(getattr(tracer, "tool_executions", {}).values())
+    if executions:
+        executions.sort(
+            key=lambda item: (
+                str(item.get("completed_at") or ""),
+                str(item.get("timestamp") or ""),
+                int(item.get("execution_id") or 0),
+            ),
+            reverse=True,
+        )
+        latest = executions[0]
+        tool_name = str(latest.get("tool_name") or "").strip().replace("_", " ")
+        status = str(latest.get("status") or "").lower()
+        if tool_name:
+            if status == "running":
+                return f"Running {tool_name}"
+            if status in {"failed", "error"}:
+                return f"Last error in {tool_name}"
+            return f"Last tool: {tool_name}"
+
+    agents = list(getattr(tracer, "agents", {}).values())
+    for agent in agents:
+        status = str(agent.get("status") or "").lower()
+        if status == "running":
+            task = str(agent.get("task") or "").strip()
+            if task:
+                return task[:80]
+    return "Waiting for agent activity"
+
+
+def _status_counts(tracer: Any) -> dict[str, int]:
+    counts = {"running": 0, "waiting": 0, "failed": 0}
+    for agent in getattr(tracer, "agents", {}).values():
+        status = str(agent.get("status") or "").lower()
+        if status == "running":
+            counts["running"] += 1
+        elif status == "waiting":
+            counts["waiting"] += 1
+        elif status in {"failed", "error", "sandbox_failed", "llm_failed"}:
+            counts["failed"] += 1
+    return counts
+
+
+def _retry_count(tracer: Any) -> int:
+    count = 0
+    for execution in getattr(tracer, "tool_executions", {}).values():
+        tool_name = str(execution.get("tool_name") or "")
+        args = execution.get("args", {}) or {}
+        if tool_name == "llm_error_details" and (args.get("will_retry") or args.get("retryable")):
+            count += 1
+    return count
+
+
+def _artifact_flags(tracer: Any) -> dict[str, bool]:
+    report_available = bool(getattr(tracer, "final_scan_result", None))
+    patches_available = False
+    findings_saved = bool(getattr(tracer, "vulnerability_reports", []))
+    get_run_dir = getattr(tracer, "get_run_dir", None)
+    if callable(get_run_dir):
+        try:
+            run_dir = get_run_dir()
+            report_available = report_available or (run_dir / "penetration_test_report.md").exists()
+            findings_saved = findings_saved or (run_dir / "vulnerabilities.csv").exists()
+            patches_available = (run_dir / "patches").exists()
+        except Exception:  # noqa: BLE001
+            pass
+    return {
+        "report": report_available,
+        "patches": patches_available,
+        "findings": findings_saved,
+    }
+
+
+def _build_run_insights(
+    tracer: Any,
+    *,
+    agent_config: dict[str, Any] | None = None,
+    scan_completed: bool = False,
+    scan_failed: bool = False,
+) -> dict[str, Any]:
+    model = ""
+    if agent_config:
+        llm_config = agent_config["llm_config"]
+        model = getattr(llm_config, "model_name", "")
+
+    elapsed = 0.0
+    elapsed_str = ""
+    if hasattr(tracer, "start_time") and tracer.start_time:
+        from datetime import datetime, timezone
+
+        try:
+            start = datetime.fromisoformat(tracer.start_time)
+            if (scan_completed or scan_failed) and hasattr(tracer, "end_time") and tracer.end_time:
+                end = datetime.fromisoformat(tracer.end_time)
+            else:
+                end = datetime.now(timezone.utc)
+            elapsed = (end - start).total_seconds()
+            elapsed_str = _format_elapsed(elapsed)
+        except (ValueError, TypeError):
+            pass
+
+    llm_stats = tracer.get_total_llm_stats() if hasattr(tracer, "get_total_llm_stats") else {"total": {}}
+    total_stats = llm_stats.get("total", {}) or {}
+    input_tokens = int(total_stats.get("input_tokens", 0) or 0)
+    output_tokens = int(total_stats.get("output_tokens", 0) or 0)
+    cached_tokens = int(total_stats.get("cached_tokens", 0) or 0)
+    total_tokens = input_tokens + output_tokens
+    context_tokens = int(llm_stats.get("max_context_tokens", 0) or 0)
+
+    from esprit.llm.pricing import get_pricing_db
+
+    context_limit = get_pricing_db().get_context_limit(model) if model else 128_000
+    ctx_input = context_tokens if context_tokens > 0 else input_tokens
+    ctx_pct = min(100, (ctx_input / max(context_limit, 1)) * 100) if context_limit else 0.0
+    status_counts = _status_counts(tracer)
+    findings_by_severity = {}
+    for report in getattr(tracer, "vulnerability_reports", []):
+        sev = str(report.get("severity", "")).lower()
+        findings_by_severity[sev] = findings_by_severity.get(sev, 0) + 1
+    return {
+        "model": model,
+        "elapsed_seconds": elapsed,
+        "elapsed_str": elapsed_str,
+        "tool_count": tracer.get_real_tool_count() if hasattr(tracer, "get_real_tool_count") else len(getattr(tracer, "tool_executions", {})),
+        "agent_count": len(getattr(tracer, "agents", {})),
+        "active_agents": status_counts["running"],
+        "waiting_agents": status_counts["waiting"],
+        "failed_agents": status_counts["failed"],
+        "retry_count": _retry_count(tracer),
+        "current_phase": _derive_current_phase(tracer),
+        "llm_stats": llm_stats,
+        "total_tokens": total_tokens,
+        "context_tokens": ctx_input,
+        "context_limit": context_limit,
+        "context_pct": ctx_pct,
+        "session_cost": _resolve_session_cost(total_stats, model),
+        "findings_total": len(getattr(tracer, "vulnerability_reports", [])),
+        "findings_by_severity": findings_by_severity,
+        "artifacts": _artifact_flags(tracer),
+        "cached_tokens": cached_tokens,
+    }
+
+
 def build_tui_stats_text(
     tracer: Any,
     agent_config: dict[str, Any] | None = None,
@@ -511,11 +628,14 @@ def build_tui_stats_text(
     text_color = str(tokens.get("text", "white"))
     marker_colors = {marker: get_marker_color(tokens, marker) for marker in ("run", "ok", "warn", "err", "web")}
 
-    model = ""
-    # Model name with provider badge
-    if agent_config:
-        llm_config = agent_config["llm_config"]
-        model = getattr(llm_config, "model_name", "Unknown")
+    insights = _build_run_insights(
+        tracer,
+        agent_config=agent_config,
+        scan_completed=scan_completed,
+        scan_failed=scan_failed,
+    )
+    model = str(insights["model"] or "")
+    if model:
         bare_model = model.split("/", 1)[-1] if "/" in model else model
         is_antigravity = model.startswith("antigravity/")
 
@@ -532,24 +652,8 @@ def build_tui_stats_text(
             stats_text.append("CC ", style="bold #d97706")
         stats_text.append(bare_model, style=text_color)
 
-    # Elapsed time and scan status
-    elapsed = 0.0
-    elapsed_str = ""
-    if hasattr(tracer, "start_time") and tracer.start_time:
-        from datetime import datetime, timezone
-
-        try:
-            start = datetime.fromisoformat(tracer.start_time)
-            # Use frozen end_time when scan is done/failed, otherwise live clock
-            if (scan_completed or scan_failed) and hasattr(tracer, "end_time") and tracer.end_time:
-                end = datetime.fromisoformat(tracer.end_time)
-                elapsed = (end - start).total_seconds()
-            else:
-                elapsed = (datetime.now(timezone.utc) - start).total_seconds()
-            elapsed_str = _format_elapsed(elapsed)
-        except (ValueError, TypeError):
-            pass
-
+    elapsed = float(insights["elapsed_seconds"])
+    elapsed_str = str(insights["elapsed_str"])
     if elapsed_str:
         stats_text.append("\n")
         if scan_failed:
@@ -567,34 +671,6 @@ def build_tui_stats_text(
     stats_text.append("─" * 28, style="dim #3f3f3f")
 
     # Activity metrics
-    agent_count = len(tracer.agents)
-    tool_count = (
-        tracer.get_real_tool_count()
-        if hasattr(tracer, "get_real_tool_count")
-        else len(tracer.tool_executions)
-    )
-
-    llm_stats = tracer.get_total_llm_stats()
-    total_stats = llm_stats["total"]
-    input_tokens = total_stats["input_tokens"]
-    output_tokens = total_stats["output_tokens"]
-
-    from esprit.llm.pricing import get_pricing_db, get_lifetime_cost
-    cached_tokens = total_stats["cached_tokens"]
-    uncached_input_tokens = int(
-        llm_stats.get("uncached_input_tokens", max(0, input_tokens - cached_tokens))
-    )
-    cache_hit_ratio = float(
-        llm_stats.get(
-            "cache_hit_ratio",
-            round((cached_tokens / max(input_tokens, 1)) * 100, 2) if input_tokens > 0 else 0.0,
-        )
-    )
-    total_tokens = input_tokens + output_tokens
-    requests = total_stats["requests"]
-    context_tokens = llm_stats.get("max_context_tokens", 0)
-
-    # Agents / Tools / Requests
     stats_text.append("\n")
     if scan_failed:
         activity_char = "[err]"
@@ -604,131 +680,79 @@ def build_tui_stats_text(
         activity_char = "[run]"
     marker_key = "err" if scan_failed else "ok" if scan_completed else "run"
     stats_text.append(f"{activity_char} ", style=f"bold {marker_colors[marker_key]}")
-    stats_text.append(f"{agent_count}", style=f"bold {text_color}")
-    stats_text.append(" agents  ", style=f"dim {muted}")
-    stats_text.append(f"{tool_count}", style=f"bold {text_color}")
-    stats_text.append(" tools  ", style=f"dim {muted}")
-    stats_text.append(f"{requests}", style=f"bold {text_color}")
-    stats_text.append(" reqs", style=f"dim {muted}")
+    stats_text.append(f"{insights['active_agents']}", style=f"bold {text_color}")
+    stats_text.append(" active  ", style=f"dim {muted}")
+    stats_text.append(f"{insights['waiting_agents']}", style=f"bold {text_color}")
+    stats_text.append(" waiting", style=f"dim {muted}")
 
-    # Token breakdown
+    stats_text.append("\n")
+    stats_text.append("─" * 28, style="dim #3f3f3f")
+    stats_text.append("\n")
+    stats_text.append("▸ Phase ", style=f"dim {muted}")
+    phase = str(insights["current_phase"])
+    stats_text.append(phase[:22] + ("..." if len(phase) > 22 else ""), style=text_color)
+
     stats_text.append("\n")
     stats_text.append("─" * 28, style="dim #3f3f3f")
 
-    if total_tokens > 0:
-        stats_text.append("\n")
-        stats_text.append("▸ In   ", style=f"dim {muted}")
-        stats_text.append(f"{format_token_count(input_tokens):>6s}", style=text_color)
-        if cached_tokens > 0:
-            stats_text.append(f"  ({format_token_count(cached_tokens)} cached)", style="#a78bfa")
-
-        stats_text.append("\n")
-        stats_text.append("▸ Bill ", style=f"dim {muted}")
-        stats_text.append(f"{format_token_count(uncached_input_tokens):>6s}", style=text_color)
-        if input_tokens > 0:
-            stats_text.append(f"  ({cache_hit_ratio:.0f}% hit)", style="#a78bfa")
-
-        stats_text.append("\n")
-        stats_text.append("▸ Out  ", style=f"dim {muted}")
-        stats_text.append(f"{format_token_count(output_tokens):>6s}", style=text_color)
-
-        # Tokens per second
-        if elapsed > 0 and output_tokens > 0:
-            tps = output_tokens / elapsed
-            stats_text.append(f"  ({tps:.0f} tok/s)", style=f"dim {info}")
-
-        stats_text.append("\n")
-        stats_text.append("▸ Total ", style=f"dim {muted}")
-        stats_text.append(f"{format_token_count(total_tokens):>5s}", style=f"bold {text_color}")
-
-        # Context window usage bar — uses last request's input tokens (current window)
-        context_limit = get_pricing_db().get_context_limit(model) if model else 128_000
-        ctx_input = context_tokens if context_tokens > 0 else input_tokens
-        ctx_pct = min(100, (ctx_input / max(context_limit, 1)) * 100)
-        bar_width = 18
-        filled = int(bar_width * ctx_pct / 100)
-        bar_color = success if ctx_pct < 60 else warning if ctx_pct < 85 else error
-        stats_text.append("\n")
-        stats_text.append("▸ Ctx  ", style=f"dim {muted}")
-        stats_text.append("█" * filled, style=bar_color)
-        stats_text.append("░" * (bar_width - filled), style="dim #3f3f3f")
-        stats_text.append(f" {ctx_pct:.0f}%", style=bar_color)
-    else:
-        stats_text.append("\n")
-        stats_text.append("▸ Tokens ", style=f"dim {muted}")
-        stats_text.append("0", style=f"dim {text_color}")
-
-    # Cost — calculated from pricing DB
     stats_text.append("\n")
-    stats_text.append("─" * 28, style="dim #3f3f3f")
+    stats_text.append("▸ Retry ", style=f"dim {muted}")
+    stats_text.append(str(insights["retry_count"]), style=text_color)
+    stats_text.append("  ")
+    stats_text.append("Fail ", style=f"dim {muted}")
+    stats_text.append(str(insights["failed_agents"]), style=text_color)
 
-    session_cost = _resolve_session_cost(total_stats, model)
-    lifetime_cost = get_lifetime_cost()
+    bar_width = 18
+    filled = int(bar_width * insights["context_pct"] / 100)
+    bar_color = success if insights["context_pct"] < 60 else warning if insights["context_pct"] < 85 else error
 
     stats_text.append("\n")
-    stats_text.append("  Cost ", style=f"dim {muted}")
-    if session_cost >= 0.005:
-        stats_text.append(f"${session_cost:.2f}", style=f"bold {warning}")
-    else:
-        stats_text.append(f"${session_cost:.2f}", style=f"dim {text_color}")
-    if lifetime_cost >= 0.01:
-        stats_text.append("  all-time ", style=f"dim {muted}")
-        stats_text.append(f"${lifetime_cost:.2f}", style="dim #a78bfa")
+    stats_text.append("▸ Ctx  ", style=f"dim {muted}")
+    stats_text.append("█" * filled, style=bar_color)
+    stats_text.append("░" * (bar_width - filled), style="dim #3f3f3f")
+    stats_text.append(f" {insights['context_pct']:.0f}%", style=bar_color)
 
-    # Vulnerabilities
-    vuln_count = (
-        len(tracer.vulnerability_reports)
-        if hasattr(tracer, "vulnerability_reports")
-        else 0
+    stats_text.append("\n")
+    stats_text.append("▸ Cost ", style=f"dim {muted}")
+    stats_text.append(
+        f"${insights['session_cost']:.2f}",
+        style=f"bold {warning}" if insights["session_cost"] >= 0.005 else f"dim {text_color}",
     )
-    if vuln_count > 0:
+    if insights["total_tokens"] > 0:
+        stats_text.append("  Tok ", style=f"dim {muted}")
+        stats_text.append(format_token_count(insights["total_tokens"]), style=text_color)
+
+    if insights["findings_total"] > 0:
         stats_text.append("\n")
         stats_text.append("─" * 28, style="dim #3f3f3f")
         stats_text.append("\n")
         stats_text.append("[warn] ", style=f"bold {marker_colors['warn']}")
-        stats_text.append(f"{vuln_count} ", style=f"bold {error}")
-        stats_text.append("vulns found", style=error)
-
-        # Severity mini-breakdown
-        severity_counts: dict[str, int] = {}
-        for report in tracer.vulnerability_reports:
-            sev = report.get("severity", "").lower()
-            severity_counts[sev] = severity_counts.get(sev, 0) + 1
-        sev_parts = []
-        for sev in ["critical", "high", "medium", "low", "info"]:
-            c = severity_counts.get(sev, 0)
-            if c > 0:
-                sev_parts.append((c, sev, get_severity_color(sev)))
-        if sev_parts:
+        stats_text.append(f"{insights['findings_total']} ", style=f"bold {error}")
+        stats_text.append("findings", style=error)
+        parts = []
+        for severity in ("critical", "high", "medium", "low", "info"):
+            count = int(insights["findings_by_severity"].get(severity, 0) or 0)
+            if count > 0:
+                parts.append((severity, count))
+        if parts:
             stats_text.append("\n  ")
-            for i, (c, label, color) in enumerate(sev_parts):
-                if i > 0:
+            for index, (severity, count) in enumerate(parts):
+                if index > 0:
                     stats_text.append(" ", style="dim")
-                stats_text.append(f"{c}{label[0].upper()}", style=f"bold {color}")
+                stats_text.append(f"{count}{severity[0].upper()}", style=f"bold {get_severity_color(severity)}")
 
-    # Rotating tips
-    _TIPS = [
-        ("[run]", "Send a message", "during a scan to interrupt and redirect the agent"),
-        ("[run]", "Context at 100%?", "Esprit auto-compacts memory, summarizing older messages"),
-        ("[info]", "esprit provider login", "to add OAuth accounts for free model access"),
-        ("[info]", "esprit provider status", "to see which providers are connected"),
-        ("[info]", "esprit config model", "to switch between AI models mid-session"),
-        ("[warn]", "Press Esc", "to stop the current agent, Ctrl-Q to quit"),
-        ("[info]", "Quick scan mode", "is faster but less thorough than deep scan"),
-        ("[ok]", "Antigravity models", "are free — no API key or billing needed"),
-        ("[info]", "Results are saved", "in esprit_runs/ after each scan completes"),
-        ("[run]", "Add multiple accounts", "for OpenAI or Antigravity for rate-limit rotation"),
-    ]
-    tip_index = (spinner_frame // 30) % len(_TIPS)  # rotate every ~10 seconds
-    marker, title, desc = _TIPS[tip_index]
     stats_text.append("\n")
     stats_text.append("─" * 28, style="dim #3f3f3f")
     stats_text.append("\n")
-    marker_key = marker.strip("[]").lower()
-    marker_color = marker_colors.get(marker_key, marker_colors["run"])
-    stats_text.append(f"{marker} ", style=f"bold {marker_color}")
-    stats_text.append(title, style=text_color)
-    stats_text.append(f"\n  {desc}", style=f"dim {muted}")
+    stats_text.append("▸ Art ", style=f"dim {muted}")
+    artifact_labels = []
+    if insights["artifacts"]["findings"]:
+        artifact_labels.append("findings")
+    if insights["artifacts"]["report"]:
+        artifact_labels.append("report")
+    if insights["artifacts"]["patches"]:
+        artifact_labels.append("patches")
+    stats_text.append(", ".join(artifact_labels) if artifact_labels else "none yet", style=text_color)
 
     return stats_text
 

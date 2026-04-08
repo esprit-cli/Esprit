@@ -809,11 +809,11 @@ class EspritDashboard {
 
     const llm = s.llm.total || {};
     this._updateStatCard('stat-agents', s.agent_count || 0);
-    this._updateStatCard('stat-tools', s.tool_count || 0);
-    this._updateStatCard('stat-tokens', this._fmtNum(s.llm.total_tokens || 0));
+    this._updateStatCard('stat-tools', s.active_agents || 0);
+    this._updateStatCard('stat-tokens', s.vuln_count || 0);
     this._updateStatCard('stat-cost', '$' + (llm.cost || 0).toFixed(2));
-    this._updateStatCard('stat-projected', '$' + ((s.projected_cost || llm.cost || 0)).toFixed(2));
-    this._updateStatCard('stat-tps', s.tokens_per_second || 0);
+    this._updateStatCard('stat-projected', s.retry_count || 0);
+    this._updateStatCard('stat-tps', (s.current_phase || 'idle').slice(0, 18));
 
     if (s.start_time) {
       const start = new Date(s.start_time);
@@ -974,7 +974,7 @@ class EspritDashboard {
         const table = this._el('table', { className: 'history-table' });
         const thead = this._el('thead');
         const headRow = this._el('tr');
-        ['Date', 'Target', 'Status', 'Findings'].forEach(h => {
+        ['Date', 'Target', 'Status', 'Findings', 'Scope', 'Resume'].forEach(h => {
           headRow.appendChild(this._el('th', { textContent: h }));
         });
         thead.appendChild(headRow);
@@ -988,10 +988,12 @@ class EspritDashboard {
           const statusTd = this._el('td');
           statusTd.appendChild(this._el('span', {
             className: 'history-status history-status--' + run.status,
-            textContent: run.status,
+            textContent: run.resumable ? run.status : run.status + ' / review',
           }));
           tr.appendChild(statusTd);
           tr.appendChild(this._el('td', { textContent: String(run.findings) }));
+          tr.appendChild(this._el('td', { textContent: String(run.source_scope || '') }));
+          tr.appendChild(this._el('td', { textContent: run.resumable ? 'yes' : 'no' }));
           tbody.appendChild(tr);
         });
         table.appendChild(tbody);

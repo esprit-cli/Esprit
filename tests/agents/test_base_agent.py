@@ -129,13 +129,13 @@ class TestLLMAutoResumePolicy:
 
         assert agent._should_auto_resume_llm_failure() is True
 
-    def test_root_agent_does_not_auto_resume_llm_failure(self) -> None:
+    def test_root_agent_can_auto_resume_retryable_llm_failure(self) -> None:
         state = AgentState(parent_id=None)
         state.enter_waiting_state(llm_failed=True)
         state.waiting_start_time = datetime.now(UTC) - timedelta(seconds=20)
         agent = self._make_agent_for_waiting_checks(state)
 
-        assert agent._should_auto_resume_llm_failure() is False
+        assert agent._should_auto_resume_llm_failure() is True
 
     def test_auto_resume_respects_attempt_cap(self) -> None:
         state = AgentState(parent_id="agent_parent")
@@ -145,6 +145,25 @@ class TestLLMAutoResumePolicy:
         agent._llm_auto_resume_attempts = 2
 
         assert agent._should_auto_resume_llm_failure() is False
+
+    def test_retryable_non_interactive_llm_failure_waits_instead_of_failing(self) -> None:
+        state = AgentState(parent_id=None)
+        agent = self._make_agent_for_waiting_checks(state)
+        agent.non_interactive = True
+
+        result = agent._handle_llm_error(
+            LLMRequestFailedError(
+                "LLM request failed: Esprit proxy returned HTTP 504",
+                details="Upstream model gateway timed out before the provider returned a response.",
+                status_code=504,
+            ),
+            tracer=None,
+        )
+
+        assert result is None
+        assert state.is_waiting_for_input() is True
+        assert state.llm_failed is True
+        assert state.completed is False
 
 
 class TestNonInteractiveWaitGuard:

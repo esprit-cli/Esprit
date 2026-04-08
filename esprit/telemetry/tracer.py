@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Any, Optional
 from uuid import uuid4
 
 from esprit.telemetry import posthog
+from esprit.run_history import append_run_registry_entry, build_run_manifest, write_run_manifest
 
 
 if TYPE_CHECKING:
@@ -226,6 +227,8 @@ class Tracer:
         }
 
         self.agents[agent_id] = agent_data
+        if parent_id is None:
+            self.save_run_data()
 
     def log_chat_message(
         self,
@@ -300,6 +303,7 @@ class Tracer:
                     self._set_run_status("stopped")
                 elif status == "running":
                     self._set_run_status("running")
+                self.save_run_data()
 
     def set_scan_config(self, config: dict[str, Any]) -> None:
         self.scan_config = config
@@ -308,6 +312,9 @@ class Tracer:
                 "targets": config.get("targets", []),
                 "user_instructions": config.get("user_instructions", ""),
                 "max_iterations": config.get("max_iterations", 200),
+                "cwd": config.get("cwd", ""),
+                "scan_mode": config.get("scan_mode", "deep"),
+                "model": config.get("model", ""),
             }
         )
         self.get_run_dir()
@@ -426,13 +433,24 @@ class Tracer:
                                 "timestamp": report["timestamp"],
                                 "file": f"vulnerabilities/{report['id']}.md",
                             }
-                        )
+                    )
 
                 if new_reports:
                     logger.info(
                         f"Saved {len(new_reports)} new vulnerability report(s) to: {vuln_dir}"
                     )
                 logger.info(f"Updated vulnerability index: {vuln_csv_file}")
+
+            manifest = build_run_manifest(
+                run_dir=run_dir,
+                run_metadata=self.run_metadata,
+                scan_config=self.scan_config,
+                llm_stats=self.get_total_llm_stats(),
+                vulnerability_reports=self.vulnerability_reports,
+                final_report_present=bool(self.final_scan_result),
+            )
+            write_run_manifest(run_dir, manifest)
+            append_run_registry_entry(manifest)
 
             logger.info(f"📊 Essential scan data saved to: {run_dir}")
 

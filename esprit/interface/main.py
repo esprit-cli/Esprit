@@ -11,6 +11,7 @@ Commands:
 
 import argparse
 import asyncio
+import copy
 import logging
 import os
 import platform
@@ -36,6 +37,8 @@ from rich.progress import (
     TimeRemainingColumn,
     TransferSpeedColumn,
 )
+from rich.prompt import Prompt
+from rich.table import Table
 from rich.text import Text
 
 from esprit.config import Config, apply_saved_config, save_current_config
@@ -62,6 +65,7 @@ from esprit.interface.utils import (  # noqa: E402
     validate_llm_response,
 )
 from esprit.runtime.docker_runtime import HOST_GATEWAY_HOSTNAME  # noqa: E402
+from esprit.run_history import build_resume_instruction, list_runs  # noqa: E402
 from esprit.telemetry import posthog  # noqa: E402
 from esprit.telemetry.tracer import get_global_tracer  # noqa: E402
 
@@ -1093,6 +1097,27 @@ Supported providers:
     scan_parser.add_argument("-m", "--scan-mode", choices=["quick", "standard", "deep"], default="deep")
     scan_parser.add_argument("--config", type=str, help="Path to custom config file")
 
+    resume_parser = subparsers.add_parser(
+        "resume",
+        help="Resume from a previous Esprit run",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    resume_parser.add_argument("--run", type=str, help="Run name or run id to resume")
+    resume_parser.add_argument("--scope", choices=["all", "cwd"], default="all", help="History scope")
+    resume_parser.add_argument(
+        "--status",
+        choices=["any", "running", "failed", "completed", "stopped", "partial"],
+        default="any",
+        help="Filter runs by status",
+    )
+    resume_parser.add_argument("-n", "--non-interactive", action="store_true", help="Non-interactive mode")
+    resume_parser.add_argument("--config", type=str, help="Path to custom config file")
+
+    subparsers.add_parser(
+        "doctor",
+        help="Check Esprit environment health",
+    )
+
     # Uninstall subcommand
     subparsers.add_parser(
         "uninstall",
@@ -1118,6 +1143,7 @@ Supported providers:
         version=f"esprit {get_version()}",
     )
     parser.add_argument("--self-update", action="store_true", help="Update Esprit to the latest version")
+    parser.add_argument("--resume", action="store_true", help="Resume from a previous Esprit run")
 
     args = parser.parse_args()
     args.skip_pre_scan_checks = False
@@ -1147,10 +1173,25 @@ Supported providers:
     if args.command == "uninstall":
         sys.exit(cmd_uninstall())
 
+    if args.command == "doctor":
+        return args
+
+    if args.resume and args.command is None:
+        args.command = "resume"
+        if not hasattr(args, "scope"):
+            args.scope = "all"
+        if not hasattr(args, "status"):
+            args.status = "any"
+        if not hasattr(args, "run"):
+            args.run = None
+
     # Handle scan subcommand or legacy --target
     targets = []
     if args.command == "scan":
         targets = args.target
+    elif args.command == "resume":
+        args.targets_info = []
+        return args
     elif args.target:
         targets = args.target
     else:
@@ -1213,6 +1254,160 @@ def _apply_launchpad_result(args: argparse.Namespace, launchpad_result: Launchpa
     args.skip_pre_scan_checks = launchpad_result.prechecked
     args.targets_info = _build_targets_info([launchpad_result.target])
     return True
+
+
+def _pick_resume_run(console: Console, args: argparse.Namespace) -> dict[str, Any] | None:
+    runs = list_runs(
+        cwd=Path.cwd(),
+        scope=str(getattr(args, "scope", "all") or "all"),
+        status_filter=str(getattr(args, "status", "any") or "any"),
+    )
+    if not runs:
+        console.print("[yellow]No resumable or reviewable runs found.[/]")
+        return None
+
+    requested_run = str(getattr(args, "run", "") or "").strip()
+    if requested_run:
+        lowered = requested_run.lower()
+        for run in runs:
+            run_name = str(run.get("run_name", "")).lower()
+            run_id = str(run.get("run_id", "")).lower()
+            if lowered in {run_name, run_id}:
+                return run
+        console.print(f"[red]Run not found:[/] {requested_run}")
+        return None
+
+    table = Table(title="Previous Esprit Runs")
+    table.add_column("#", style="bold cyan", justify="right")
+    table.add_column("Run")
+    table.add_column("Target")
+    table.add_column("Status")
+    table.add_column("Findings", justify="right")
+    table.add_column("Scope")
+
+    for index, run in enumerate(runs[:20], start=1):
+        resume = run.get("resume", {}) or {}
+        status = str(run.get("status", "unknown"))
+        scope_label = str(run.get("source_scope", "global"))
+        if not resume.get("resumable", False):
+            status = f"{status} (review only)"
+        table.add_row(
+            str(index),
+            str(run.get("run_name", "")),
+            str(run.get("target_summary", "")),
+            status,
+            str(run.get("findings_total", 0)),
+            scope_label,
+        )
+
+    console.print()
+    console.print(table)
+    choice = Prompt.ask("Select a run to resume", default="1")
+    try:
+        selected_index = int(choice)
+    except ValueError:
+        console.print(f"[red]Invalid selection:[/] {choice}")
+        return None
+    if selected_index < 1 or selected_index > min(len(runs), 20):
+        console.print(f"[red]Selection out of range:[/] {selected_index}")
+        return None
+    return runs[selected_index - 1]
+
+
+def _prepare_resume_scan_args(console: Console, args: argparse.Namespace) -> bool:
+    run = _pick_resume_run(console, args)
+    if not run:
+        return False
+
+    resume = run.get("resume", {}) or {}
+    if not resume.get("resumable", False):
+        console.print("[yellow]That run can be reviewed, but it cannot be resumed automatically.[/]")
+        missing_paths = list(resume.get("missing_paths", []) or [])
+        if missing_paths:
+            console.print("[dim]Missing local paths:[/]")
+            for path in missing_paths:
+                console.print(f"[dim]- {path}[/]")
+        return False
+
+    restored_targets = copy.deepcopy(list(run.get("targets", []) or []))
+    if not restored_targets:
+        console.print("[red]Selected run does not contain resumable target metadata.[/]")
+        return False
+
+    previous_instruction = str(run.get("user_instructions", "") or "").strip()
+    resume_instruction = build_resume_instruction(run)
+    combined_instruction = "\n\n".join(
+        part for part in (previous_instruction, resume_instruction, str(getattr(args, "instruction", "") or "").strip()) if part
+    )
+
+    args.command = "scan"
+    args.targets_info = restored_targets
+    args.instruction = combined_instruction
+    args.scan_mode = str(run.get("scan_mode") or getattr(args, "scan_mode", "deep") or "deep")
+    args.parent_run_id = run.get("run_id")
+    args.resumed_from_run_id = run.get("run_id")
+    args.resume_source_run = run
+    return True
+
+
+def run_doctor() -> int:
+    console = Console()
+    checks: list[tuple[str, bool, str]] = []
+
+    config_dir = Config.config_dir()
+    try:
+        config_dir.mkdir(parents=True, exist_ok=True)
+        checks.append(("Config directory", True, str(config_dir)))
+    except OSError as exc:
+        checks.append(("Config directory", False, str(exc)))
+
+    runs_dir = Path.cwd() / "esprit_runs"
+    try:
+        runs_dir.mkdir(parents=True, exist_ok=True)
+        checks.append(("Run directory", True, str(runs_dir)))
+    except OSError as exc:
+        checks.append(("Run directory", False, str(exc)))
+
+    configured_model = (Config.get("esprit_llm") or "").strip()
+    checks.append(("Configured model", bool(configured_model), configured_model or "Not set"))
+
+    try:
+        import textual  # noqa: F401
+        import litellm as _litellm  # noqa: F401
+
+        checks.append(("Core Python deps", True, "textual + litellm available"))
+    except Exception as exc:  # noqa: BLE001
+        checks.append(("Core Python deps", False, str(exc)))
+
+    try:
+        check_docker_connection()
+    except Exception as exc:  # noqa: BLE001
+        checks.append(("Docker connection", False, str(exc)))
+    else:
+        checks.append(("Docker connection", True, "Docker reachable"))
+
+    try:
+        from esprit.auth.credentials import is_authenticated
+
+        authenticated = bool(is_authenticated())
+        checks.append(("Esprit auth", authenticated, "Logged in" if authenticated else "Not logged in"))
+    except Exception as exc:  # noqa: BLE001
+        checks.append(("Esprit auth", False, str(exc)))
+
+    table = Table(title="Esprit Doctor")
+    table.add_column("Check")
+    table.add_column("Status")
+    table.add_column("Details")
+
+    failures = 0
+    for label, ok, details in checks:
+        if not ok:
+            failures += 1
+        table.add_row(label, "[green]ok[/]" if ok else "[red]fail[/]", details)
+
+    console.print()
+    console.print(table)
+    return 0 if failures == 0 else 1
 
 
 def display_completion_message(args: argparse.Namespace, results_path: Path) -> None:
@@ -1556,11 +1751,18 @@ def main() -> None:
     if args.config:
         apply_config_override(args.config)
 
+    if args.command == "doctor":
+        sys.exit(run_doctor())
+
     if args.command == "launchpad":
         launchpad_result = asyncio.run(run_launchpad())
         if launchpad_result is None:
             return
         if not _apply_launchpad_result(args, launchpad_result):
+            return
+
+    if args.command == "resume":
+        if not _prepare_resume_scan_args(console, args):
             return
 
     # Interactive pre-scan checks: provider, model, account selection.
@@ -1641,6 +1843,9 @@ def main() -> None:
     asyncio.run(warm_up_llm())
 
     persist_config()
+
+    args.working_directory = str(Path.cwd())
+    args.model_name = str(Config.get("esprit_llm") or "")
 
     args.run_name = generate_run_name(args.targets_info)
 

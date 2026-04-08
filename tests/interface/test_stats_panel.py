@@ -22,13 +22,15 @@ class _FakePricingDB:
         return 0.12
 
 
-def test_tui_stats_shows_billable_input_and_cache_hit(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_tui_stats_surfaces_phase_context_and_cost(monkeypatch: pytest.MonkeyPatch) -> None:
     tracer = SimpleNamespace(
-        agents={"agent_1": {}},
-        tool_executions={},
+        agents={"agent_1": {"status": "running"}},
+        tool_executions={
+            1: {"tool_name": "browser_action", "status": "running", "timestamp": "2026-01-01T00:00:00+00:00"}
+        },
         vulnerability_reports=[],
         start_time=datetime.now(timezone.utc).isoformat(),
-        get_real_tool_count=lambda: 0,
+        get_real_tool_count=lambda: 1,
         get_total_llm_stats=lambda: {
             "total": {
                 "input_tokens": 1_000,
@@ -52,13 +54,15 @@ def test_tui_stats_shows_billable_input_and_cache_hit(monkeypatch: pytest.Monkey
     text = build_tui_stats_text(tracer, agent_config=agent_config, spinner_frame=0)
     plain = text.plain
 
-    assert "▸ Bill " in plain
-    assert "600" in plain
-    assert "(40% hit)" in plain
+    assert "Phase " in plain
+    assert "Running browser action" in plain
+    assert "Ctx" in plain
     assert "$0.12" in plain
 
 
-def test_tui_stats_uses_ascii_markers_for_vulns_and_tips(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_tui_stats_uses_ascii_markers_without_rotating_tips(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     tracer = SimpleNamespace(
         agents={"agent_1": {}},
         tool_executions={},
@@ -88,6 +92,9 @@ def test_tui_stats_uses_ascii_markers_for_vulns_and_tips(monkeypatch: pytest.Mon
 
     assert "[warn]" in plain
     assert "[run]" in plain
+    assert "Send a message" not in plain
+    assert "Press Esc" not in plain
+    assert "findings" in plain
     for removed_marker in ("⚠", "💬", "🔄", "🔑", "📊", "🔀", "⌨️", "🔍", "💰", "📁", "👥"):
         assert removed_marker not in plain
 
@@ -120,8 +127,8 @@ def test_tui_stats_hides_projection_fields(monkeypatch: pytest.MonkeyPatch) -> N
     plain = text.plain
 
     assert "Proj " not in plain
-    assert "total " not in plain
-    assert "left " not in plain
+    assert "all-time " not in plain
+    assert "reqs" not in plain
 
 
 def test_tui_stats_prefers_tracer_aggregated_cost(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -179,5 +186,7 @@ def test_live_stats_prefers_tracer_aggregated_cost(monkeypatch: pytest.MonkeyPat
     text = build_live_stats_text(tracer, agent_config=agent_config)
     plain = text.plain
 
+    assert "Phase " in plain
+    assert "Context " in plain
     assert "Cost $0.07" in plain
     assert "$0.12" not in plain

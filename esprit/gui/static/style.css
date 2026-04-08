@@ -1657,6 +1657,9 @@ svg[data-lucide] { display: inline-flex; vertical-align: middle; }
 
 .history-status--completed { color: var(--green, #22c55e); background: rgba(34,197,94,0.1); }
 .history-status--partial { color: var(--yellow, #eab308); background: rgba(234,179,8,0.1); }
+.history-status--failed { color: var(--red, #ef4444); background: rgba(239,68,68,0.12); }
+.history-status--stopped { color: var(--amber, #f59e0b); background: rgba(245,158,11,0.12); }
+.history-status--running { color: var(--cyan, #22d3ee); background: rgba(34,211,238,0.12); }
 
 @media (max-width: 768px) {
   #main { flex-direction: column; overflow-y: auto; }

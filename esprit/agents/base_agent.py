@@ -349,21 +349,18 @@ class BaseAgent(metaclass=AgentMeta):
             self._llm_auto_resume_attempts += 1
             attempt = self._llm_auto_resume_attempts
             status_hint = (
-                f" (status {self._last_llm_error_status_code})"
+                f" (HTTP {self._last_llm_error_status_code})"
                 if self._last_llm_error_status_code is not None
                 else ""
             )
-            if self._last_llm_error_status_code is not None:
-                logger.warning(
-                    f"Rate limited (HTTP {self._last_llm_error_status_code}), "
-                    f"retrying in {self._llm_auto_resume_cooldown:.0f}s... "
-                    f"(attempt {attempt}/{self._max_llm_auto_resume_attempts})"
-                )
-            else:
-                logger.warning(
-                    f"LLM request failed, retrying in {self._llm_auto_resume_cooldown:.0f}s... "
-                    f"(attempt {attempt}/{self._max_llm_auto_resume_attempts})"
-                )
+            logger.warning(
+                "Transient LLM failure%s, retrying automatically in %.0fs... "
+                "(attempt %s/%s)",
+                status_hint,
+                self._llm_auto_resume_cooldown,
+                attempt,
+                self._max_llm_auto_resume_attempts,
+            )
             self.state.resume_from_waiting()
             self.state.add_message(
                 "user",
@@ -506,20 +503,42 @@ class BaseAgent(metaclass=AgentMeta):
 
         return None
 
+    def _has_llm_auto_resume_attempts_remaining(self) -> bool:
+        return (
+            self._last_llm_failure_retryable
+            and self._llm_auto_resume_attempts < self._max_llm_auto_resume_attempts
+        )
+
     def _should_auto_resume_llm_failure(self) -> bool:
         if not self.state.is_waiting_for_input() or not self.state.llm_failed:
             return False
-        if not self.state.parent_id:
-            return False
-        if not self._last_llm_failure_retryable:
-            return False
-        if self._llm_auto_resume_attempts >= self._max_llm_auto_resume_attempts:
+        if not self._has_llm_auto_resume_attempts_remaining():
             return False
         if not self.state.waiting_start_time:
             return False
 
         elapsed = (datetime.now(UTC) - self.state.waiting_start_time).total_seconds()
         return elapsed >= self._llm_auto_resume_cooldown
+
+    def _build_llm_error_tool_args(
+        self,
+        error_msg: str,
+        error_details: str | None,
+        status_code: int | None,
+    ) -> dict[str, Any]:
+        args: dict[str, Any] = {"error": error_msg}
+        if error_details:
+            args["details"] = error_details
+        if status_code is not None:
+            args["status_code"] = status_code
+        if self._last_llm_failure_retryable:
+            args["retryable"] = True
+        if self._has_llm_auto_resume_attempts_remaining():
+            args["will_retry"] = True
+            args["retry_in_seconds"] = self._llm_auto_resume_cooldown
+            args["attempt"] = self._llm_auto_resume_attempts + 1
+            args["max_attempts"] = self._max_llm_auto_resume_attempts
+        return args
 
     async def _enter_waiting_state(
         self,
@@ -861,6 +880,21 @@ class BaseAgent(metaclass=AgentMeta):
         self._last_llm_error_status_code = status_code
         self._last_llm_failure_retryable = self._is_retryable_llm_status_code(status_code)
         self.state.add_error(error_msg)
+        tool_args = self._build_llm_error_tool_args(error_msg, error_details, status_code)
+        should_wait_for_retry = self._has_llm_auto_resume_attempts_remaining()
+
+        if should_wait_for_retry or not self.non_interactive:
+            self.state.enter_waiting_state(llm_failed=True)
+            if tracer:
+                tracer.update_agent_status(self.state.agent_id, "llm_failed", error_msg)
+                if error_details or tool_args.get("will_retry"):
+                    exec_id = tracer.log_tool_execution_start(
+                        self.state.agent_id,
+                        "llm_error_details",
+                        tool_args,
+                    )
+                    tracer.update_tool_execution(exec_id, "failed", {"details": error_details})
+            return None
 
         if self.non_interactive:
             self.state.set_completed({"success": False, "error": error_msg})
@@ -870,22 +904,10 @@ class BaseAgent(metaclass=AgentMeta):
                     exec_id = tracer.log_tool_execution_start(
                         self.state.agent_id,
                         "llm_error_details",
-                        {"error": error_msg, "details": error_details},
+                        tool_args,
                     )
                     tracer.update_tool_execution(exec_id, "failed", {"details": error_details})
             return {"success": False, "error": error_msg}
-
-        self.state.enter_waiting_state(llm_failed=True)
-        if tracer:
-            tracer.update_agent_status(self.state.agent_id, "llm_failed", error_msg)
-            if error_details:
-                exec_id = tracer.log_tool_execution_start(
-                    self.state.agent_id,
-                    "llm_error_details",
-                    {"error": error_msg, "details": error_details},
-                )
-                tracer.update_tool_execution(exec_id, "failed", {"details": error_details})
-
         return None
 
     async def _handle_iteration_error(

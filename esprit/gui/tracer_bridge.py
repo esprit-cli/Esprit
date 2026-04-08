@@ -351,16 +351,63 @@ class TracerBridge:
             pass
 
         elapsed_whole_seconds = float(int(elapsed_seconds))
-        projected_total_seconds, projected_cost, projected_remaining_seconds = self._estimate_projection(
-            elapsed_seconds=elapsed_whole_seconds,
-            current_cost=float(stats.get("total", {}).get("cost", 0.0) or 0.0),
-        )
+
+        active_agents = 0
+        waiting_agents = 0
+        failed_agents = 0
+        for agent in t.agents.values():
+            status = str(agent.get("status", "")).lower()
+            if status == "running":
+                active_agents += 1
+            elif status == "waiting":
+                waiting_agents += 1
+            elif status in {"failed", "error", "sandbox_failed", "llm_failed"}:
+                failed_agents += 1
+
+        retry_count = 0
+        for execution in t.tool_executions.values():
+            if str(execution.get("tool_name", "")) != "llm_error_details":
+                continue
+            args = execution.get("args", {}) or {}
+            if args.get("will_retry") or args.get("retryable"):
+                retry_count += 1
+
+        current_phase = "Waiting for agent activity"
+        executions = list(t.tool_executions.values())
+        if executions:
+            executions.sort(
+                key=lambda item: (
+                    str(item.get("completed_at") or ""),
+                    str(item.get("timestamp") or ""),
+                    int(item.get("execution_id") or 0),
+                ),
+                reverse=True,
+            )
+            latest = executions[0]
+            tool_name = str(latest.get("tool_name") or "").replace("_", " ").strip()
+            status = str(latest.get("status") or "").lower()
+            if tool_name:
+                if status == "running":
+                    current_phase = f"Running {tool_name}"
+                elif status in {"failed", "error"}:
+                    current_phase = f"Last error in {tool_name}"
+                else:
+                    current_phase = f"Last tool: {tool_name}"
 
         return {
             "llm": stats,
             "agent_count": len(t.agents),
+            "active_agents": active_agents,
+            "waiting_agents": waiting_agents,
+            "failed_agents": failed_agents,
             "tool_count": t.get_real_tool_count(),
             "vuln_count": len(t.vulnerability_reports),
+            "findings_by_severity": {
+                severity: sum(
+                    1 for report in t.vulnerability_reports if str(report.get("severity", "")).lower() == severity
+                )
+                for severity in ("critical", "high", "medium", "low", "info")
+            },
             "start_time": t.start_time,
             "end_time": t.end_time,
             "status": self._derive_run_status(),
@@ -370,43 +417,14 @@ class TracerBridge:
             "run_name": t.run_name,
             "run_id": t.run_id,
             "elapsed_seconds": elapsed_whole_seconds,
-            "projected_total_seconds": projected_total_seconds,
-            "projected_cost": projected_cost,
-            "projected_remaining_seconds": projected_remaining_seconds,
+            "retry_count": retry_count,
+            "current_phase": current_phase,
+            "artifacts": {
+                "report": bool(t.final_scan_result),
+                "patches": bool(getattr(t, "_run_dir", None) and (t.get_run_dir() / "patches").exists()),
+                "findings": bool(t.vulnerability_reports),
+            },
         }
-
-    def _estimate_projection(self, *, elapsed_seconds: float, current_cost: float) -> tuple[float, float, float]:
-        if elapsed_seconds <= 0:
-            return (0.0, current_cost, 0.0)
-
-        run_status = self._derive_run_status()
-        if run_status in {"completed", "failed", "stopped"}:
-            return (elapsed_seconds, current_cost, 0.0)
-
-        statuses = [str(a.get("status", "running")).lower() for a in self._tracer.agents.values()]
-        if not statuses:
-            progress = 0.12
-        else:
-            status_weights = {
-                "completed": 1.0,
-                "stopped": 1.0,
-                "failed": 1.0,
-                "llm_failed": 1.0,
-                "error": 1.0,
-                "sandbox_failed": 1.0,
-                "stopping": 0.85,
-                "waiting": 0.55,
-                "running": 0.35,
-            }
-            progress = sum(status_weights.get(status, 0.25) for status in statuses) / len(statuses)
-            progress = max(0.08, min(0.98, progress))
-
-        projected_total = elapsed_seconds / progress
-        projected_total = max(elapsed_seconds, min(projected_total, elapsed_seconds * 8))
-        projected_cost = current_cost / progress if current_cost > 0 else 0.0
-        projected_cost = max(current_cost, projected_cost)
-        remaining = max(0.0, projected_total - elapsed_seconds)
-        return (round(projected_total, 2), round(projected_cost, 4), round(remaining, 2))
 
     def _get_theme(self) -> dict[str, Any]:
         try:

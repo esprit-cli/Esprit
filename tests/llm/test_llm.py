@@ -1158,6 +1158,31 @@ class TestEspritProxyRouting:
         assert "<html>" not in details.lower()
         assert "request_id: edge-123" in details
 
+    def test_format_esprit_proxy_error_details_rewrites_service_unavailable(self) -> None:
+        llm = LLM.__new__(LLM)
+
+        response = SimpleNamespace(
+            status_code=503,
+            text="Service Unavailable",
+            headers={"x-request-id": "req-503"},
+        )
+
+        details = llm._format_esprit_proxy_error_details(response)
+        assert details.startswith("Upstream model service is temporarily unavailable.")
+        assert "request_id: req-503" in details
+
+    def test_format_esprit_proxy_error_details_rewrites_bad_gateway_html(self) -> None:
+        llm = LLM.__new__(LLM)
+
+        response = SimpleNamespace(
+            status_code=502,
+            text="<html><body>502 Bad Gateway</body></html>",
+            headers={},
+        )
+
+        details = llm._format_esprit_proxy_error_details(response)
+        assert details == "Upstream model gateway returned an invalid response."
+
 
 class TestEspritCloudFallback:
     def test_does_not_upgrade_default_model_without_explicit_opt_in(

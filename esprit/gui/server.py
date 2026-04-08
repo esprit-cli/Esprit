@@ -5,6 +5,7 @@ import json
 import logging
 import threading
 import webbrowser
+from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -127,39 +128,26 @@ class GUIServer:
 
         @app.get("/api/scan-history")
         async def scan_history() -> JSONResponse:
-            import csv
-            from io import StringIO
+            from esprit.run_history import list_runs
 
-            runs_dir = Path.cwd() / "esprit_runs"
             history: list[dict[str, Any]] = []
-            if runs_dir.is_dir():
-                for entry in sorted(runs_dir.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True):
-                    if not entry.is_dir():
-                        continue
-                    name = entry.name
-                    # Extract target from directory name (format: target_hash)
-                    parts = name.rsplit("_", 1)
-                    target = parts[0] if len(parts) == 2 else name
-                    mtime = entry.stat().st_mtime
-                    # Count vulnerabilities from CSV if present
-                    vuln_count = 0
-                    csv_file = entry / "vulnerabilities.csv"
-                    if csv_file.exists():
-                        try:
-                            text = csv_file.read_text(encoding="utf-8")
-                            reader = csv.reader(StringIO(text))
-                            next(reader, None)  # skip header
-                            vuln_count = sum(1 for _ in reader)
-                        except Exception:  # noqa: BLE001
-                            pass
-                    has_report = (entry / "penetration_test_report.md").exists()
-                    history.append({
-                        "name": name,
-                        "target": target,
-                        "date": mtime,
-                        "findings": vuln_count,
-                        "status": "completed" if has_report or vuln_count > 0 else "partial",
-                    })
+            for run in list_runs(cwd=Path.cwd(), scope="all"):
+                updated_at = str(run.get("updated_at") or run.get("end_time") or run.get("start_time") or "")
+                try:
+                    date_value = datetime.fromisoformat(updated_at).timestamp() if updated_at else 0
+                except ValueError:
+                    date_value = 0
+                history.append({
+                    "name": run.get("run_name"),
+                    "target": run.get("target_summary"),
+                    "date": date_value,
+                    "findings": int(run.get("findings_total", 0) or 0),
+                    "status": str(run.get("status", "unknown")),
+                    "duration_seconds": 0,
+                    "resumable": bool(((run.get("resume") or {}).get("resumable"))),
+                    "source_scope": run.get("source_scope", "global"),
+                    "run_dir": run.get("run_dir", ""),
+                })
             return JSONResponse(history)
 
         @app.websocket("/ws")

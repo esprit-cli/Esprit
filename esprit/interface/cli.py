@@ -73,6 +73,12 @@ async def run_cli(args: Any) -> None:  # noqa: PLR0915
         "targets": args.targets_info,
         "user_instructions": args.instruction or "",
         "run_name": args.run_name,
+        "cwd": str(getattr(args, "working_directory", "")),
+        "scan_mode": scan_mode,
+        "model": str(getattr(args, "model_name", "")),
+        "local_sources": list(getattr(args, "local_sources", []) or []),
+        "parent_run_id": getattr(args, "parent_run_id", None),
+        "resumed_from_run_id": getattr(args, "resumed_from_run_id", None),
     }
 
     llm_config = LLMConfig(scan_mode=scan_mode)

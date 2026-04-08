@@ -25,6 +25,20 @@ class TestGUIServerAlwaysCreated:
             args = parse_arguments()
             assert not hasattr(args, "gui")
 
+    def test_resume_parser_is_available(self) -> None:
+        from esprit.interface.main import parse_arguments
+
+        with patch("sys.argv", ["esprit", "--resume"]):
+            args = parse_arguments()
+            assert args.command == "resume"
+
+    def test_doctor_parser_is_available(self) -> None:
+        from esprit.interface.main import parse_arguments
+
+        with patch("sys.argv", ["esprit", "doctor"]):
+            args = parse_arguments()
+            assert args.command == "doctor"
+
 
 class TestGUIServerCreation:
     """Tests for GUI server creation in main()."""

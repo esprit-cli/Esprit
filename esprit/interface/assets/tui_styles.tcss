@@ -436,6 +436,20 @@ AgentHealthPopupScreen {
     display: none;
 }
 
+#slash_command_menu {
+    height: auto;
+    max-height: 8;
+    background: #120505 88%;
+    border-top: solid #2f0f0f;
+    border-bottom: solid #2f0f0f;
+    padding: 0 2;
+    color: #e8d5d5;
+}
+
+#slash_command_menu.hidden {
+    display: none;
+}
+
 #status_text {
     width: 1fr;
     height: 100%;

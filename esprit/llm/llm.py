@@ -536,12 +536,26 @@ class LLM:
             details = "Empty error response"
 
         lower_details = details.lower()
-        if response.status_code in _ESPRIT_PROXY_TRANSIENT_STATUS_CODES and (
-            "<html" in lower_details
+        html_error_page = "<html" in lower_details
+        if response.status_code == 504 and (
+            html_error_page
             or "gateway time-out" in lower_details
             or "gateway timeout" in lower_details
+            or details == "Empty error response"
         ):
-            details = "Upstream model gateway timed out. Please retry shortly."
+            details = "Upstream model gateway timed out before the provider returned a response."
+        elif response.status_code == 503 and (
+            html_error_page
+            or lower_details == "service unavailable"
+            or details == "Empty error response"
+        ):
+            details = "Upstream model service is temporarily unavailable."
+        elif response.status_code == 502 and (
+            html_error_page
+            or "bad gateway" in lower_details
+            or details == "Empty error response"
+        ):
+            details = "Upstream model gateway returned an invalid response."
 
         if response.status_code >= 500 and details == "Internal Server Error":
             details = (

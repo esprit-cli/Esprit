@@ -97,6 +97,22 @@ class ChatTextArea(TextArea):  # type: ignore[misc]
                 event.prevent_default()
                 event.stop()
                 return
+            if self._app_reference._slash_menu_visible:
+                if key in {"down", "tab"}:
+                    self._app_reference._move_slash_selection(1)
+                    event.prevent_default()
+                    event.stop()
+                    return
+                if key in {"up", "shift+tab"}:
+                    self._app_reference._move_slash_selection(-1)
+                    event.prevent_default()
+                    event.stop()
+                    return
+                if key == "escape":
+                    self._app_reference._hide_slash_command_menu()
+                    event.prevent_default()
+                    event.stop()
+                    return
 
         if event.key == "shift+enter":
             self.insert("\n")
@@ -107,6 +123,11 @@ class ChatTextArea(TextArea):  # type: ignore[misc]
             text_content = str(self.text)  # type: ignore[has-type]
             message = text_content.strip()
             if message:
+                if message.startswith("/") and self._app_reference._try_handle_slash_command(message):
+                    self.text = ""
+                    self._app_reference._hide_slash_command_menu()
+                    event.prevent_default()
+                    return
                 self.text = ""
 
                 self._app_reference._send_user_message(message)
@@ -129,6 +150,9 @@ class ChatTextArea(TextArea):  # type: ignore[misc]
         if self.parent.styles.height != new_height:
             self.parent.styles.height = new_height
             self.scroll_cursor_visible()
+
+        if self._app_reference:
+            self._app_reference._handle_chat_input_changed(str(self.text))
 
 
 class SplashScreen(Static):  # type: ignore[misc]
@@ -1893,6 +1917,10 @@ class EspritTUIApp(App):  # type: ignore[misc]
 
         self._previously_compacting: set[str] = set()
         self._compaction_done_until: dict[str, float] = {}
+        self._slash_menu_visible = False
+        self._slash_menu_selected_index = 0
+        self._slash_menu_query = ""
+        self._slash_menu_matches: list[dict[str, str]] = []
 
         self._setup_cleanup_handlers()
 
@@ -1927,6 +1955,12 @@ class EspritTUIApp(App):  # type: ignore[misc]
             "targets": args.targets_info,
             "user_instructions": args.instruction or "",
             "run_name": args.run_name,
+            "cwd": str(getattr(args, "working_directory", "")),
+            "scan_mode": str(getattr(args, "scan_mode", "deep")),
+            "model": str(getattr(args, "model_name", "")),
+            "local_sources": list(getattr(args, "local_sources", []) or []),
+            "parent_run_id": getattr(args, "parent_run_id", None),
+            "resumed_from_run_id": getattr(args, "resumed_from_run_id", None),
         }
 
     def _build_agent_config(self, args: argparse.Namespace) -> dict[str, Any]:
@@ -1942,6 +1976,198 @@ class EspritTUIApp(App):  # type: ignore[misc]
             config["local_sources"] = args.local_sources
 
         return config
+
+    def _slash_command_specs(self) -> list[dict[str, str]]:
+        return [
+            {"name": "/help", "description": "Show available slash commands"},
+            {"name": "/status", "description": "Post a compact scan status summary"},
+            {"name": "/pause", "description": "Pause the root agent after the current step"},
+            {"name": "/resume", "description": "Resume the root agent"},
+            {"name": "/retry", "description": "Retry the root agent from the latest state"},
+            {"name": "/focus", "description": "Refocus the root agent on a specific goal"},
+            {"name": "/findings", "description": "Open the findings workspace"},
+            {"name": "/agents", "description": "Open the agent health view"},
+            {"name": "/quit", "description": "Quit Esprit cleanly"},
+        ]
+
+    def _handle_chat_input_changed(self, text: str) -> None:
+        stripped = text.strip()
+        if not stripped.startswith("/"):
+            self._hide_slash_command_menu()
+            return
+
+        query = stripped.split(maxsplit=1)[0].lower()
+        matches = [
+            spec
+            for spec in self._slash_command_specs()
+            if spec["name"].startswith(query) or query in spec["name"]
+        ]
+        self._slash_menu_visible = True
+        self._slash_menu_query = query
+        self._slash_menu_matches = matches or [{"name": query or "/", "description": "No matching commands"}]
+        self._slash_menu_selected_index = min(self._slash_menu_selected_index, len(self._slash_menu_matches) - 1)
+        self._refresh_slash_command_menu()
+
+    def _refresh_slash_command_menu(self) -> None:
+        if not self.is_mounted or self.show_splash:
+            return
+        try:
+            menu = self.query_one("#slash_command_menu", Static)
+        except (ValueError, Exception):
+            return
+
+        if not self._slash_menu_visible:
+            menu.add_class("hidden")
+            menu.update("")
+            return
+
+        menu.remove_class("hidden")
+        body = Text()
+        for index, spec in enumerate(self._slash_menu_matches[:6]):
+            if index > 0:
+                body.append("\n")
+            selected = index == self._slash_menu_selected_index
+            marker = "› " if selected else "  "
+            style = "bold #22d3ee" if selected else "white"
+            body.append(marker, style=style)
+            body.append(spec["name"], style=style)
+            description = str(spec.get("description") or "")
+            if description:
+                body.append("  ", style="dim")
+                body.append(description, style="dim")
+        menu.update(body)
+
+    def _hide_slash_command_menu(self) -> None:
+        self._slash_menu_visible = False
+        self._slash_menu_selected_index = 0
+        self._slash_menu_query = ""
+        self._slash_menu_matches = []
+        self._refresh_slash_command_menu()
+
+    def _move_slash_selection(self, step: int) -> None:
+        if not self._slash_menu_visible or not self._slash_menu_matches:
+            return
+        count = len(self._slash_menu_matches[:6])
+        self._slash_menu_selected_index = (self._slash_menu_selected_index + step) % max(count, 1)
+        self._refresh_slash_command_menu()
+
+    def _emit_local_command_message(self, content: str) -> None:
+        agent_id = self.selected_agent_id or self._get_root_agent_id()
+        if self.tracer:
+            self.tracer.log_chat_message(
+                content=content,
+                role="assistant",
+                agent_id=agent_id,
+                metadata={"local_command": True},
+            )
+        self._displayed_events.clear()
+        self._update_chat_view()
+
+    def _pause_agent(self, agent_id: str) -> bool:
+        try:
+            from esprit.tools.agents_graph.agents_graph_actions import _agent_instances
+
+            agent_instance = _agent_instances.get(agent_id)
+            if agent_instance and hasattr(agent_instance, "cancel_current_execution"):
+                agent_instance.cancel_current_execution()
+                return True
+        except Exception:  # noqa: BLE001
+            logging.exception("Failed to pause agent %s", agent_id)
+        return False
+
+    def _status_summary(self) -> str:
+        llm_stats = self.tracer.get_total_llm_stats()
+        total = llm_stats.get("total", {}) or {}
+        root_id = self._get_root_agent_id()
+        root_status = "unknown"
+        if root_id and root_id in self.tracer.agents:
+            root_status = str(self.tracer.agents[root_id].get("status", "unknown"))
+        return (
+            f"Run {self.scan_config.get('run_name')} | root {root_status} | "
+            f"{len(self.tracer.vulnerability_reports)} findings | "
+            f"{len(self.tracer.agents)} agents | "
+            f"{self.tracer.get_real_tool_count()} tools | "
+            f"${float(total.get('cost', 0.0) or 0.0):.2f}"
+        )
+
+    def _try_handle_slash_command(self, message: str) -> bool:
+        raw = message.strip()
+        if not raw.startswith("/"):
+            return False
+
+        parts = raw.split(maxsplit=1)
+        command_name = parts[0].lower()
+        argument = parts[1].strip() if len(parts) > 1 else ""
+
+        if command_name in {"/help"}:
+            commands = ", ".join(spec["name"] for spec in self._slash_command_specs())
+            self._emit_local_command_message(f"Available slash commands: {commands}")
+            return True
+
+        if command_name == "/status":
+            self._emit_local_command_message(self._status_summary())
+            return True
+
+        if command_name == "/findings":
+            self.action_toggle_vulnerability_overlay()
+            return True
+
+        if command_name == "/agents":
+            self.action_toggle_agent_health_popup()
+            return True
+
+        if command_name == "/quit":
+            self.action_request_quit()
+            return True
+
+        root_agent_id = self._get_root_agent_id()
+        if not root_agent_id:
+            self._emit_local_command_message("No root agent is available yet.")
+            return True
+
+        if command_name == "/pause":
+            paused = self._pause_agent(root_agent_id)
+            self._emit_local_command_message(
+                "Pause requested for the root agent." if paused else "Failed to pause the root agent."
+            )
+            return True
+
+        if command_name == "/resume":
+            success = self._send_user_message_to_agent(
+                root_agent_id,
+                "Resume execution from the latest known state and continue the scan.",
+                interrupt_if_streaming=False,
+                metadata={"slash_command": "/resume"},
+            )
+            self._emit_local_command_message(
+                "Resume requested for the root agent." if success else "Failed to resume the root agent."
+            )
+            return True
+
+        if command_name == "/retry":
+            success = self.retry_agent(root_agent_id)
+            self._emit_local_command_message(
+                "Retry requested for the root agent." if success else "Failed to retry the root agent."
+            )
+            return True
+
+        if command_name == "/focus":
+            if not argument:
+                self._emit_local_command_message("Usage: /focus <what to prioritize>")
+                return True
+            success = self._send_user_message_to_agent(
+                root_agent_id,
+                f"System focus update: {argument}. Prioritize this from the current state unless it conflicts with critical findings already in progress.",
+                interrupt_if_streaming=True,
+                metadata={"slash_command": "/focus"},
+            )
+            self._emit_local_command_message(
+                f"Focus updated: {argument}" if success else "Failed to send focus update."
+            )
+            return True
+
+        self._emit_local_command_message(f"Unknown slash command: {command_name}")
+        return True
 
     def _cleanup_runtime_resources(self, *, save_diffs: bool) -> None:
         with self._runtime_cleanup_lock:
@@ -2021,6 +2247,7 @@ class EspritTUIApp(App):  # type: ignore[misc]
 
             status_text = Static("", id="status_text")
             keymap_indicator = Static("", id="keymap_indicator")
+            slash_command_menu = Static("", id="slash_command_menu", classes="hidden")
 
             agent_status_display = Horizontal(
                 status_text, keymap_indicator, id="agent_status_display", classes="hidden"
@@ -2047,6 +2274,7 @@ class EspritTUIApp(App):  # type: ignore[misc]
 
             chat_area_container.mount(chat_history)
             chat_area_container.mount(agent_status_display)
+            chat_area_container.mount(slash_command_menu)
             chat_area_container.mount(chat_input_container)
 
             self._apply_responsive_layout(self.size.width)
@@ -3655,10 +3883,34 @@ class EspritTUIApp(App):  # type: ignore[misc]
     def _render_error_details(self, text: Any, tool_name: str, args: dict[str, Any]) -> Any:
         palette = self._theme_palette()
         error_style = str(palette.get("status_failed", "#ef4444"))
+        warning_style = str(palette.get("status_running", "#f59e0b"))
         muted_style = str(palette.get("muted", "#9ca3af"))
         if tool_name == "llm_error_details":
-            text.append("[err] ", style=self._marker_style("err"))
-            text.append("LLM request failed", style=f"bold {error_style}")
+            will_retry = bool(args.get("will_retry"))
+            status_code = args.get("status_code")
+            if will_retry:
+                text.append("[warn] ", style=self._marker_style("warn"))
+                text.append(
+                    "Transient LLM failure, retrying automatically",
+                    style=f"bold {warning_style}",
+                )
+            else:
+                text.append("[err] ", style=self._marker_style("err"))
+                text.append("LLM request failed", style=f"bold {error_style}")
+            if status_code:
+                text.append("\nStatus: ", style=f"dim {muted_style}")
+                text.append(f"HTTP {status_code}")
+            if will_retry and args.get("retry_in_seconds") is not None:
+                retry_in = int(float(args["retry_in_seconds"]))
+                attempt = args.get("attempt")
+                max_attempts = args.get("max_attempts")
+                text.append("\nNext step: ", style=f"dim {muted_style}")
+                text.append(f"auto-resume in {retry_in}s")
+                if attempt and max_attempts:
+                    text.append(
+                        f" (attempt {attempt}/{max_attempts})",
+                        style=f"dim {muted_style}",
+                    )
         else:
             text.append("[err] ", style=self._marker_style("err"))
             text.append("Sandbox initialization failed", style=f"bold {error_style}")
@@ -3711,6 +3963,7 @@ class EspritTUIApp(App):  # type: ignore[misc]
     def _send_user_message(self, message: str) -> None:
         if not self.selected_agent_id:
             return
+        self._hide_slash_command_menu()
         self._send_user_message_to_agent(self.selected_agent_id, message, interrupt_if_streaming=True)
 
         self._displayed_events.clear()
