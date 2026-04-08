@@ -326,6 +326,40 @@ class TestPromptCacheControl:
         updated = llm._add_cache_control(messages)
         assert updated[0]["content"][0]["cache_control"] == {"type": "ephemeral"}
 
+    def test_resolves_esprit_alias_for_prompt_cache_support(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        llm = LLM.__new__(LLM)
+        llm.config = SimpleNamespace(model_name="esprit/default")
+
+        captured_models: list[str] = []
+
+        def fake_supports_prompt_caching(model: str) -> bool:
+            captured_models.append(model)
+            return model == "bedrock/us.anthropic.claude-haiku-4-5-20251001-v1:0"
+
+        monkeypatch.setattr(
+            "esprit.llm.llm.supports_prompt_caching",
+            fake_supports_prompt_caching,
+        )
+        monkeypatch.setattr(
+            "esprit.providers.esprit_subs.resolve_bedrock_model",
+            lambda alias: "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+        )
+
+        messages = [
+            {"role": "system", "content": "system prompt"},
+            {"role": "user", "content": "scan https://example.com"},
+        ]
+
+        updated = llm._add_cache_control(messages)
+
+        assert captured_models == ["bedrock/us.anthropic.claude-haiku-4-5-20251001-v1:0"]
+        assert isinstance(updated[0]["content"], list)
+        assert updated[0]["content"][0]["cache_control"] == {"type": "ephemeral"}
+        assert isinstance(updated[1]["content"], list)
+        assert updated[1]["content"][0]["cache_control"] == {"type": "ephemeral"}
+
 
 class TestRaiseErrorDetails:
     def test_includes_status_code_from_response(self, monkeypatch: pytest.MonkeyPatch) -> None:

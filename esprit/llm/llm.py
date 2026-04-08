@@ -1582,12 +1582,24 @@ class LLM:
                 result.append(msg)
         return result
 
+    def _get_prompt_cache_support_model(self) -> str:
+        model_name = self.config.model_name
+        if not model_name.lower().startswith("esprit/"):
+            return model_name
+
+        try:
+            from esprit.providers.esprit_subs import resolve_bedrock_model
+
+            bare_model = model_name.split("/", 1)[1]
+            return f"bedrock/{resolve_bedrock_model(bare_model)}"
+        except Exception:  # noqa: BLE001
+            # Fall back to a cache-capable Claude alias if alias resolution fails.
+            return "anthropic/claude-haiku-4-5-20251001"
+
     def _add_cache_control(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         # Esprit models route to Bedrock Claude which supports prompt caching,
-        # but litellm doesn't recognise the "esprit/..." alias.
-        model_for_cache_check = self.config.model_name
-        if model_for_cache_check.lower().startswith("esprit/"):
-            model_for_cache_check = "anthropic/claude-3-5-haiku-latest"
+        # but litellm doesn't recognise the "esprit/..." alias directly.
+        model_for_cache_check = self._get_prompt_cache_support_model()
         if not messages or not supports_prompt_caching(model_for_cache_check):
             return messages
 
