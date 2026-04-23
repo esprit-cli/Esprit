@@ -32,6 +32,10 @@ SAMPLE_CATALOG = {
         "litellm_provider": "openai",
         "mode": "responses",
     },
+    "claude-opus-4-7": {
+        "litellm_provider": "anthropic",
+        "mode": "chat",
+    },
     "claude-sonnet-4-6": {
         "litellm_provider": "anthropic",
         "mode": "chat",
@@ -119,8 +123,9 @@ def test_fetch_litellm_catalog_success(monkeypatch):
     assert "gpt-4" not in openai_ids  # deprecated
     assert "gpt-5.4-2026-03-05" not in openai_ids  # date-suffixed
 
-    # Anthropic: keep base, skip dated
+    # Anthropic: keep current aliases, skip dated snapshots
     anthropic_ids = {mid for mid, _ in result.get("anthropic", [])}
+    assert "claude-opus-4-7" in anthropic_ids
     assert "claude-sonnet-4-6" in anthropic_ids
     assert "claude-sonnet-4-6-20260205" not in anthropic_ids
 
@@ -176,7 +181,7 @@ def test_disk_cache_write_and_read(tmp_path: Path, monkeypatch):
 
     data = {
         "openai": [("gpt-5.4", "GPT 5.4")],
-        "anthropic": [("claude-sonnet-4-6", "Claude Sonnet 4 6")],
+        "anthropic": [("claude-opus-4-7", "Claude Opus 4 7")],
     }
 
     provider_config._save_litellm_cache_to_disk(data)
@@ -299,7 +304,7 @@ def test_model_id_to_display_name():
 def test_cached_litellm_models_falls_to_disk(tmp_path: Path, monkeypatch):
     """When fetch fails, disk cache is used."""
     cache_path = tmp_path / "models_cache.json"
-    disk_data = {"anthropic": [("claude-sonnet-4-6", "Claude Sonnet 4 6")]}
+    disk_data = {"anthropic": [("claude-opus-4-7", "Claude Opus 4 7")]}
     cache_path.write_text(json.dumps(disk_data), encoding="utf-8")
 
     monkeypatch.setattr(
