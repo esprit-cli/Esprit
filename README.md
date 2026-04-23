@@ -104,7 +104,7 @@ esprit provider login google          # Gemini (OAuth)
 esprit provider login github-copilot  # Copilot (OAuth)
 
 # Or set an API key directly
-export ESPRIT_LLM="anthropic/claude-sonnet-4-5-20250514"
+export ESPRIT_LLM="anthropic/claude-opus-4-7"
 export LLM_API_KEY="sk-ant-..."
 
 # 3. Run a scan
