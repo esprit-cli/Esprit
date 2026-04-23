@@ -38,8 +38,8 @@ AVAILABLE_MODELS = {
         ("gpt-5.2-codex", "GPT-5.2 Codex"),
     ],
     "anthropic": [
-        ("claude-sonnet-4-5-20250514", "Claude Sonnet 4.5 (recommended)"),
-        ("claude-opus-4-5-20251101", "Claude Opus 4.5 (advanced reasoning)"),
+        ("claude-opus-4-7", "Claude Opus 4.7 (recommended)"),
+        ("claude-sonnet-4-6", "Claude Sonnet 4.6"),
         ("claude-haiku-4-5-20251001", "Claude Haiku 4.5 (faster)"),
     ],
     "github-copilot": [
